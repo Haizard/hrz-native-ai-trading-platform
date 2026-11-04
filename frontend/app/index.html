@@ -524,6 +524,13 @@
             <option value="structure_anchored">Type 2 · Structure</option>
           </select>
         </label>
+        <label class="vwapQuick" title="VWAP reset period; Deriv uses a labeled quote-price proxy">
+          <span>VWAP</span>
+          <select class="vwapAnchor" aria-label="VWAP reset period">
+            <option value="off">Off</option><option value="session" selected>Session</option>
+            <option value="week">Week</option><option value="month">Month</option>
+          </select>
+        </label>
         <!--
           The generated-indicator chip. Present only while a generated
           indicator is attached to this chart; the × removes it. A live
@@ -610,6 +617,16 @@
           <option value="line">Line</option>
           <option value="area">Area</option>
           <option value="footprint">Footprint (volume by price)</option>
+        </select>
+        <select class="vwapSource" title="Candle price source for volume-based VWAP">
+          <option value="typical" selected>VWAP source · HLC3</option>
+          <option value="close">VWAP source · Close</option>
+          <option value="hl2">VWAP source · HL2</option>
+          <option value="ohlc4">VWAP source · OHLC4</option>
+        </select>
+        <label title="Show volume-weighted standard-deviation bands"><input class="vwapBands" type="checkbox" />VWAP deviation bands</label>
+        <select class="vwapMultiplier" title="VWAP band distance in standard deviations">
+          <option value="1" selected>±1σ</option><option value="2">±2σ</option><option value="3">±3σ</option>
         </select>
         <select class="profileSession" title="Session size for Session Bayesian profile">
           <option value="1h">1 hour</option><option value="4h">4 hours</option>

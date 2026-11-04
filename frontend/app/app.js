@@ -529,7 +529,7 @@ function buildScene(request) {
 /// that quietly answered for `#thesis` would be a bug nothing points at.
 const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartNote",
-  "footprintStats", "symbol", "timeframe", "limit", "mode", "profileType", "profileSession", "profileHistory", "profileHeatmap", "profileCvdReset", "profileShowPoc", "profileShowVa", "profileNakedPoc", "profileExtendPoc", "profileShowBos", "profileShowChoch", "profileColorCandles", "profileShowStats", "profileShowVolumeAtLevel", "structureProfileBins", "zones", "forecast", "volScale", "fit", "logScale", "pctScale",
+  "footprintStats", "symbol", "timeframe", "limit", "mode", "profileType", "profileSession", "profileHistory", "profileHeatmap", "profileCvdReset", "profileShowPoc", "profileShowVa", "profileNakedPoc", "profileExtendPoc", "profileShowBos", "profileShowChoch", "profileColorCandles", "profileShowStats", "profileShowVolumeAtLevel", "structureProfileBins", "vwapAnchor", "vwapSource", "vwapBands", "vwapMultiplier", "zones", "forecast", "volScale", "fit", "logScale", "pctScale",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
   "magnet", "aiLayer", "profileAnchor", "undo", "redo",
   // The pane's own chrome (title, zoom/collapse buttons) and the hidden bar
@@ -1170,6 +1170,7 @@ function createChartPane(root, hooks = {}) {
     // The forecast cone (docs/35): over the candles, under the levels and
     // zones -- it occupies the future region, where nothing else draws.
     drawForecast(ctx, scene);
+    drawVwap(ctx, scene);
     drawLevels(ctx, scene);
     // The answer's own levels, above the derived ones and below the user's own
     // marks. They arrive from the engine already positioned -- the shell picks a
@@ -3029,6 +3030,24 @@ function createChartPane(root, hooks = {}) {
         ctx.font = "bold 9px ui-monospace, monospace";
         ctx.fillText(signal.toUpperCase(), labelX, event.y + 9);
       }
+      for (const cue of scene.profile_entry_signals || []) {
+        const buy = cue.side === "buy";
+        const color = buy ? "#49d69a" : "#ff6b78";
+        const label = cue.label || `${buy ? "BUY" : "SELL"} POC RETEST`;
+        const x = Math.max(scene.plot.x + 4, Math.min(cue.x + 7, scene.plot.x + scene.plot.w - 118));
+        const y = Math.max(scene.plot.y + 14, Math.min(cue.y - 8, scene.plot.y + scene.plot.h - 5));
+        ctx.save();
+        ctx.globalAlpha = 0.96;
+        ctx.strokeStyle = color;
+        ctx.fillStyle = "rgba(8, 13, 24, 0.88)";
+        ctx.font = "bold 10px ui-monospace, monospace";
+        const width = Math.max(88, ctx.measureText(label).width + 12);
+        ctx.fillRect(x, y - 12, width, 18);
+        ctx.strokeRect(x + 0.5, y - 11.5, width - 1, 17);
+        ctx.fillStyle = color;
+        ctx.fillText(label, x + 6, y + 1);
+        ctx.restore();
+      }
       ctx.restore();
     }
     const meta = scene.profile_projection_meta;
@@ -3104,10 +3123,29 @@ function createChartPane(root, hooks = {}) {
     if (meta && scene.profile_projection.length) {
       ctx.save();
       ctx.font = "10px ui-monospace, monospace";
-      ctx.fillStyle = "#c7b7ff";
-      const label = `SESSION FORECAST · ${(meta.bullish_share * 100).toFixed(0)}% bullish / ${((1 - meta.bullish_share) * 100).toFixed(0)}% bearish · ${(meta.confidence * 100).toFixed(0)}% confidence · ${meta.training_sessions} sessions`;
+      const bullish = meta.bullish_share > 0.5;
+      const balanced = Math.abs(meta.bullish_share - 0.5) < 0.005;
+      ctx.fillStyle = balanced ? "#c7b7ff" : bullish ? "#49d69a" : "#ff6b78";
+      const lean = balanced ? "BALANCED" : bullish ? "BUY LEAN" : "SELL LEAN";
+      const label = `SESSION FORECAST · ${lean} · ${(meta.bullish_share * 100).toFixed(1)}% above open / ${((1 - meta.bullish_share) * 100).toFixed(1)}% below · ${(meta.confidence * 100).toFixed(0)}% confidence · ${meta.training_sessions} sessions`;
       ctx.fillText(label, scene.plot.x + 5, scene.plot.y + 14, Math.max(80, scene.plot.w - 10));
       ctx.restore();
+      if (!balanced && Number.isFinite(meta.session_open_y)) {
+        const buy = bullish;
+        const color = buy ? "#49d69a" : "#ff6b78";
+        const text = `${lean} ${(Math.max(meta.bullish_share, 1 - meta.bullish_share) * 100).toFixed(1)}%`;
+        const x = Math.max(scene.plot.x + 4, scene.plot.x + scene.plot.w - 126);
+        const y = Math.max(scene.plot.y + 32, Math.min(meta.session_open_y - 6, scene.plot.y + scene.plot.h - 5));
+        ctx.save();
+        ctx.fillStyle = "rgba(8, 13, 24, 0.84)";
+        ctx.strokeStyle = color;
+        ctx.font = "bold 10px ui-monospace, monospace";
+        ctx.fillRect(x, y - 12, 122, 18);
+        ctx.strokeRect(x + 0.5, y - 11.5, 121, 17);
+        ctx.fillStyle = color;
+        ctx.fillText(text, x + 5, y + 1);
+        ctx.restore();
+      }
     }
   }
 
@@ -3124,6 +3162,75 @@ function createChartPane(root, hooks = {}) {
       ctx.font = "10px ui-monospace, monospace";
       ctx.fillText(level.kind.toUpperCase(), scene.plot.x + 4, level.y - 3);
     }
+  }
+
+  function drawVwap(ctx, scene) {
+    const points = Array.isArray(scene.vwap) ? scene.vwap : [];
+    if (!points.length) return;
+    const groups = [];
+    let group = [];
+    for (const point of points) {
+      if (point.anchor_start && group.length) {
+        groups.push(group);
+        group = [];
+      }
+      group.push(point);
+    }
+    if (group.length) groups.push(group);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(scene.plot.x, scene.plot.y, scene.plot.w, scene.plot.h);
+    ctx.clip();
+    for (const segment of groups) {
+      const band = segment.filter((point) => Number.isFinite(point.upper_y) && Number.isFinite(point.lower_y));
+      if (band.length > 1) {
+        ctx.beginPath();
+        band.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.upper_y);
+          else ctx.lineTo(point.x, point.upper_y);
+        });
+        for (let index = band.length - 1; index >= 0; index -= 1) {
+          ctx.lineTo(band[index].x, band[index].lower_y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = "rgba(237, 181, 65, 0.10)";
+        ctx.fill();
+        for (const edge of ["upper_y", "lower_y"]) {
+          ctx.beginPath();
+          band.forEach((point, index) => {
+            if (index === 0) ctx.moveTo(point.x, point[edge]);
+            else ctx.lineTo(point.x, point[edge]);
+          });
+          ctx.strokeStyle = "rgba(237, 181, 65, 0.58)";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([3, 3]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+      if (segment.length > 1) {
+        ctx.beginPath();
+        segment.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        });
+        ctx.strokeStyle = "#edb541";
+        ctx.lineWidth = 1.7;
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+
+    const proxy = String(scene.vwap_basis || "").startsWith("deriv_");
+    const anchor = String(scene.vwap_anchor || "session").toUpperCase();
+    const label = `VWAP · ${anchor}${proxy ? " · QUOTE PROXY" : ""}`;
+    ctx.save();
+    ctx.font = "10px ui-monospace, monospace";
+    ctx.textAlign = "right";
+    ctx.fillStyle = proxy ? "#ffd98a" : "#edb541";
+    ctx.fillText(label, scene.plot.x + scene.plot.w - 5, scene.plot.y + 12);
+    ctx.restore();
   }
 
   /// How close a pointer has to be to a handle to grab it, in canvas pixels.
@@ -3647,6 +3754,10 @@ function createChartPane(root, hooks = {}) {
       height: wrap.clientHeight,
       mode: el("mode").value,
       lines: ["vwap", "poc", "vah", "val"],
+      vwap_anchor: el("vwapAnchor").value || "session",
+      vwap_source: el("vwapSource").value || "typical",
+      vwap_bands: el("vwapBands").checked,
+      vwap_band_multiplier: Number(el("vwapMultiplier").value || 1),
       // Whether to detect and draw the supply/demand zones. The engine does the
       // detecting, on the candles this request already carries, so switching this
       // on costs no extra round trip.
@@ -7193,6 +7304,12 @@ function createChartPane(root, hooks = {}) {
     el("profileShowStats").addEventListener("change", render);
     el("profileShowVolumeAtLevel").addEventListener("change", render);
     el("structureProfileBins").addEventListener("change", render);
+    for (const name of ["vwapAnchor", "vwapSource", "vwapBands", "vwapMultiplier"]) {
+      el(name).addEventListener("change", () => {
+        render();
+        noteWorkspaceChange();
+      });
+    }
     el("timeframe").addEventListener("change", () => applyTimeframe(el("timeframe").value));
     el("symbol").addEventListener("change", () => applySymbol(el("symbol").value));
     el("fit").addEventListener("click", applyFit);
@@ -7440,6 +7557,10 @@ function createChartPane(root, hooks = {}) {
         symbol: el("symbol").value,
         timeframe: el("timeframe").value,
         mode: el("mode").value,
+        vwap_anchor: el("vwapAnchor").value,
+        vwap_source: el("vwapSource").value,
+        vwap_bands: el("vwapBands").checked,
+        vwap_band_multiplier: el("vwapMultiplier").value,
         profile_type: el("profileType").value,
         profile_session: el("profileSession").value,
         profile_history: el("profileHistory").value,
@@ -7473,6 +7594,10 @@ function createChartPane(root, hooks = {}) {
     applyState(saved) {
       if (!saved) return;
       if (saved.mode) el("mode").value = saved.mode;
+      if (saved.vwap_anchor) el("vwapAnchor").value = saved.vwap_anchor;
+      if (saved.vwap_source) el("vwapSource").value = saved.vwap_source;
+      if (saved.vwap_bands != null) el("vwapBands").checked = saved.vwap_bands === true;
+      if (saved.vwap_band_multiplier != null) el("vwapMultiplier").value = String(saved.vwap_band_multiplier);
       if (saved.profile_type) el("profileType").value = saved.profile_type;
       if (saved.profile_session) el("profileSession").value = saved.profile_session;
       if (saved.profile_history != null) el("profileHistory").value = String(saved.profile_history);

@@ -34,14 +34,15 @@
 //! in [`Scene::note`]. Neither path fabricates a trade ladder.
 
 use analytics_core::concepts::{detect as detect_concept, validate as validate_concept, Concept};
+use analytics_core::market_structure::{
+    detect_market_structure, BreakKind, StructureConfig, Trend,
+};
 use analytics_core::regions::{detect_zones, Region, RegionOrigin, ZoneConfig};
 use analytics_core::types::{Candle, Timeframe};
 use analytics_core::volume_profile::{
     calculate_quote_range_activity_profile, calculate_quote_tick_profile,
     calculate_session_bayesian_profile, calculate_volume_profile_from_candles, VolumeProfile,
 };
-use analytics_core::market_structure::{detect_market_structure, BreakKind, StructureConfig, Trend};
-use analytics_core::vwap::calculate_vwap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -188,6 +189,18 @@ pub struct Request {
     /// ABI check found it.
     #[serde(default = "default_lines")]
     pub lines: Vec<String>,
+    /// Reset period for the chart's cumulative VWAP line.
+    #[serde(default)]
+    pub vwap_anchor: VwapAnchor,
+    /// Candle price used by the volume-weighted approximation.
+    #[serde(default)]
+    pub vwap_source: VwapSource,
+    /// Whether to draw volume-weighted standard-deviation bands.
+    #[serde(default)]
+    pub vwap_bands: bool,
+    /// Standard-deviation band width (clamped to 0.1..=5.0).
+    #[serde(default = "default_vwap_multiplier")]
+    pub vwap_band_multiplier: f64,
     /// How the price axis maps values to pixels. Absent means linear, which
     /// keeps every pre-scale request byte-identical.
     #[serde(default)]
@@ -641,6 +654,10 @@ impl Default for Request {
             footprint: Vec::new(),
             footprint_trades: 0,
             lines: default_lines(),
+            vwap_anchor: VwapAnchor::default(),
+            vwap_source: VwapSource::default(),
+            vwap_bands: false,
+            vwap_band_multiplier: default_vwap_multiplier(),
             profile_anchor: ProfileAnchor::default(),
             profile_type: ProfileType::default(),
             profile_session: default_profile_session(),
@@ -685,14 +702,33 @@ impl Default for Request {
     }
 }
 
-fn default_profile_session() -> Timeframe { Timeframe::D1 }
-fn default_profile_history() -> usize { 8 }
-fn default_profile_heatmap() -> bool { true }
-fn default_profile_show_va() -> bool { true }
-fn default_profile_extend_poc() -> bool { true }
-fn default_profile_naked_poc() -> bool { true }
-fn default_true() -> bool { true }
-fn default_structure_profile_bins() -> usize { 20 }
+fn default_profile_session() -> Timeframe {
+    Timeframe::D1
+}
+fn default_profile_history() -> usize {
+    8
+}
+fn default_profile_heatmap() -> bool {
+    true
+}
+fn default_profile_show_va() -> bool {
+    true
+}
+fn default_profile_extend_poc() -> bool {
+    true
+}
+fn default_profile_naked_poc() -> bool {
+    true
+}
+fn default_true() -> bool {
+    true
+}
+fn default_structure_profile_bins() -> usize {
+    20
+}
+fn default_vwap_multiplier() -> f64 {
+    1.0
+}
 
 /// Selectable volume-profile calculation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -705,6 +741,48 @@ pub enum ProfileType {
     SessionBayesian,
     /// Re-anchors a profile at every confirmed BOS or CHoCH.
     StructureAnchored,
+}
+
+/// Reset boundary for session and anchored VWAP overlays.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VwapAnchor {
+    /// Disable the VWAP overlay.
+    Off,
+    /// Reset at 00:00 UTC each day (the standard 24/7-market session).
+    #[default]
+    Session,
+    /// Reset at 00:00 UTC each Monday.
+    Week,
+    /// Reset at 00:00 UTC on the first day of each calendar month.
+    Month,
+}
+
+impl VwapAnchor {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Session => "session",
+            Self::Week => "week",
+            Self::Month => "month",
+        }
+    }
+}
+
+/// Price input used for candle-volume VWAP. Deriv quote ticks use each observed
+/// quote directly, so this setting applies only to candles with real volume.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VwapSource {
+    /// HLC3, the common candle approximation.
+    #[default]
+    Typical,
+    /// Candle close.
+    Close,
+    /// Mean of candle high and low.
+    Hl2,
+    /// Mean of open, high, low, and close.
+    Ohlc4,
 }
 
 /// The levels drawn when a request does not say.
@@ -810,6 +888,189 @@ pub struct ProfileQuote {
     pub time: i64,
     /// Published quote price.
     pub price: f64,
+}
+
+/// One positioned point of the chart's VWAP line and optional deviation bands.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VwapPoint {
+    /// Horizontal chart coordinate.
+    pub x: f64,
+    /// Canvas coordinate of the VWAP value.
+    pub y: f64,
+    /// VWAP price at this candle.
+    pub value: f64,
+    /// Canvas coordinate of the upper deviation band, when enabled.
+    pub upper_y: Option<f64>,
+    /// Canvas coordinate of the lower deviation band, when enabled.
+    pub lower_y: Option<f64>,
+    /// Starts a new path after a daily, weekly, or monthly reset.
+    pub anchor_start: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RawVwapPoint {
+    index: usize,
+    value: f64,
+    upper: Option<f64>,
+    lower: Option<f64>,
+    anchor_start: bool,
+}
+
+#[derive(Default)]
+struct WeightedVwap {
+    weight: f64,
+    mean: f64,
+    squared_deviation: f64,
+}
+
+impl WeightedVwap {
+    fn update(&mut self, price: f64, weight: f64) {
+        if !price.is_finite() || !weight.is_finite() || weight <= 0.0 {
+            return;
+        }
+        let next_weight = self.weight + weight;
+        let delta = price - self.mean;
+        self.mean += delta * weight / next_weight;
+        self.squared_deviation += weight * delta * (price - self.mean);
+        self.weight = next_weight;
+    }
+
+    fn deviation(&self) -> f64 {
+        if self.weight > 0.0 {
+            (self.squared_deviation / self.weight).max(0.0).sqrt()
+        } else {
+            0.0
+        }
+    }
+}
+
+fn utc_month_key(timestamp: i64) -> i64 {
+    let z = timestamp
+        .div_euclid(86_400_000_000_000)
+        .saturating_add(719_468);
+    let era = z.div_euclid(146_097);
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    year * 12 + month - 1
+}
+
+fn vwap_anchor_key(timestamp: i64, anchor: VwapAnchor) -> Option<i64> {
+    const DAY_NS: i64 = 86_400_000_000_000;
+    match anchor {
+        VwapAnchor::Off => None,
+        VwapAnchor::Session => Some(timestamp.div_euclid(DAY_NS)),
+        VwapAnchor::Week => Some((timestamp.div_euclid(DAY_NS) + 3).div_euclid(7)),
+        VwapAnchor::Month => Some(utc_month_key(timestamp)),
+    }
+}
+
+fn vwap_source_price(candle: &Candle, source: VwapSource) -> f64 {
+    match source {
+        VwapSource::Typical => (candle.high + candle.low + candle.close) / 3.0,
+        VwapSource::Close => candle.close,
+        VwapSource::Hl2 => (candle.high + candle.low) / 2.0,
+        VwapSource::Ohlc4 => (candle.open + candle.high + candle.low + candle.close) / 4.0,
+    }
+}
+
+/// Compute the anchored line and its weighted population-deviation bands up to
+/// the visible right edge, retaining only positions that appear in the view.
+/// Deriv observations are quote prices with unit weights; candle closes with
+/// unit weights are used only when its quote tape has no ticks for a candle.
+fn compute_vwap_points(
+    candles: &[Candle],
+    first_visible: usize,
+    anchor: VwapAnchor,
+    source: VwapSource,
+    bands: bool,
+    multiplier: f64,
+    quotes: &[ProfileQuote],
+    quote_only_venue: bool,
+) -> (Vec<RawVwapPoint>, Option<String>) {
+    if anchor == VwapAnchor::Off || candles.is_empty() {
+        return (Vec::new(), None);
+    }
+    let mut ordered_quotes: Vec<_> = quotes
+        .iter()
+        .filter(|quote| quote.time >= 0 && quote.price.is_finite())
+        .collect();
+    ordered_quotes.sort_by_key(|quote| quote.time);
+    let mut quote_cursor = 0usize;
+    let mut previous_key = None;
+    let mut accumulator = WeightedVwap::default();
+    let mut pending_anchor_start = true;
+    let multiplier = if multiplier.is_finite() {
+        multiplier.clamp(0.1, 5.0)
+    } else {
+        1.0
+    };
+    let mut output = Vec::new();
+    let mut used_quotes = 0usize;
+    let mut used_close_proxy = false;
+
+    for (index, candle) in candles.iter().enumerate() {
+        let Some(key) = vwap_anchor_key(candle.open_time, anchor) else {
+            continue;
+        };
+        let anchor_start = previous_key != Some(key);
+        if anchor_start {
+            accumulator = WeightedVwap::default();
+            pending_anchor_start = true;
+        }
+        previous_key = Some(key);
+
+        if quote_only_venue {
+            let from = candle.open_time;
+            let to = from.saturating_add(candle.timeframe.nanos());
+            while quote_cursor < ordered_quotes.len() && ordered_quotes[quote_cursor].time < from {
+                quote_cursor += 1;
+            }
+            let start_cursor = quote_cursor;
+            while quote_cursor < ordered_quotes.len() && ordered_quotes[quote_cursor].time < to {
+                accumulator.update(ordered_quotes[quote_cursor].price, 1.0);
+                quote_cursor += 1;
+            }
+            used_quotes += quote_cursor - start_cursor;
+            if quote_cursor == start_cursor {
+                accumulator.update(candle.close, 1.0);
+                used_close_proxy = true;
+            }
+        } else {
+            accumulator.update(vwap_source_price(candle, source), candle.volume);
+        }
+
+        if accumulator.weight > 0.0 {
+            if index >= first_visible {
+                let deviation = bands.then(|| accumulator.deviation() * multiplier);
+                output.push(RawVwapPoint {
+                    index,
+                    value: accumulator.mean,
+                    upper: deviation.map(|d| accumulator.mean + d),
+                    lower: deviation.map(|d| accumulator.mean - d),
+                    anchor_start: pending_anchor_start,
+                });
+            }
+            pending_anchor_start = false;
+        }
+    }
+    let basis = if !quote_only_venue {
+        Some("traded_volume".to_string())
+    } else if used_quotes > 0 && used_close_proxy {
+        Some("deriv_quote_ticks_with_close_fallback".to_string())
+    } else if used_quotes > 0 {
+        Some("deriv_quote_ticks".to_string())
+    } else {
+        Some("deriv_close_proxy".to_string())
+    };
+    (output, basis)
 }
 
 /// A horizontal level.
@@ -1170,6 +1431,15 @@ pub struct Scene {
     pub line: Vec<Point>,
     /// Volume-profile bars, cheapest first.
     pub profile: Vec<ProfileBar>,
+    /// Session-reset VWAP line and optional standard-deviation bands.
+    #[serde(default)]
+    pub vwap: Vec<VwapPoint>,
+    /// `traded_volume`, `deriv_quote_ticks`, or `deriv_close_proxy`.
+    #[serde(default)]
+    pub vwap_basis: Option<String>,
+    /// Reset period echoed for the chart legend.
+    #[serde(default)]
+    pub vwap_anchor: String,
     /// Predicted density mirrored from the current session boundary opposite the observed profile.
     #[serde(default)]
     pub profile_projection: Vec<ProfileBar>,
@@ -1188,6 +1458,9 @@ pub struct Scene {
     /// BOS/CHoCH break lines and labels for the structure-anchored profile.
     #[serde(default)]
     pub structure_events: Vec<ProfileStructureEvent>,
+    /// Profile-based candidate retest cues, distinct from BOS/CHoCH events.
+    #[serde(default)]
+    pub profile_entry_signals: Vec<ProfileEntrySignal>,
     /// Overlay levels.
     pub levels: Vec<Level>,
     /// Supply/demand zones, when the request asked for them.
@@ -1384,6 +1657,21 @@ pub struct ProfileStructureEvent {
     pub signal: String,
     /// Whether this event kind is enabled in the chart settings.
     pub visible: bool,
+}
+
+/// A profile-level retest/reclaim cue. This is chart context, never an order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileEntrySignal {
+    /// Chart x-coordinate of the candle confirming the retest.
+    pub x: f64,
+    /// Chart y-coordinate at the profile POC.
+    pub y: f64,
+    /// `buy` or `sell`, following the active structure regime.
+    pub side: String,
+    /// POC used as the retest reference.
+    pub reference_price: f64,
+    /// Human-readable setup label.
+    pub label: String,
 }
 
 /// One sub-pane laid out and filled in: an oscillator with its own y-scale
@@ -1774,8 +2062,9 @@ pub(crate) fn price_from_y(
         // tag reads a price even while the axis reads percentages.
         ScaleMap::Percent(reference) => {
             let percent = 100.0 * (price_max - reference) / reference
-                - fraction * (100.0 * (price_max - reference) / reference
-                    - 100.0 * (price_min - reference) / reference);
+                - fraction
+                    * (100.0 * (price_max - reference) / reference
+                        - 100.0 * (price_min - reference) / reference);
             reference * (1.0 + percent / 100.0)
         }
         _ => price_max - fraction * (price_max - price_min),
@@ -1822,6 +2111,11 @@ fn fitted_range(candles: &[Candle]) -> crate::viewport::PriceRange {
 pub fn build(request: &Request) -> Scene {
     let width = request.width.max(1.0);
     let height = request.height.max(1.0);
+    let vwap_anchor = if request.lines.iter().any(|line| line == "vwap") {
+        request.vwap_anchor
+    } else {
+        VwapAnchor::Off
+    };
     // Each sub-pane takes a fixed slice off the bottom of the canvas, and the
     // price plot keeps what is left. The divider is part of the pane's own
     // space, so the price plot's bottom edge and the pane's top edge never
@@ -1836,20 +2130,30 @@ pub fn build(request: &Request) -> Scene {
         .iter()
         .map(|spec| pine_lite::vet(&spec.source).ok().map(|(h, _)| h))
         .collect();
-    let script_pane_count = vetted.iter().filter(|h| h.as_ref().is_some_and(|h| !h.overlay)).count()
-        + vetted.iter().filter(|h| h.as_ref().is_some_and(|h| h.strategy.is_some())).count();
+    let script_pane_count = vetted
+        .iter()
+        .filter(|h| h.as_ref().is_some_and(|h| !h.overlay))
+        .count()
+        + vetted
+            .iter()
+            .filter(|h| h.as_ref().is_some_and(|h| h.strategy.is_some()))
+            .count();
     let mut pane_specs = request.sub_panes.clone();
     if request.profile_type == ProfileType::StructureAnchored
-        && !pane_specs.iter().any(|spec| matches!(spec, SubPaneSpec::Cvd { .. }))
+        && !pane_specs
+            .iter()
+            .any(|spec| matches!(spec, SubPaneSpec::Cvd { .. }))
     {
-        pane_specs.push(SubPaneSpec::Cvd { reset: request.profile_cvd_reset });
+        pane_specs.push(SubPaneSpec::Cvd {
+            reset: request.profile_cvd_reset,
+        });
     }
     let sub_height = sub_pane_heights(&pane_specs, script_pane_count);
     // A gap before every pane -- including the first -- so the last pane's
     // bottom edge lands exactly on the bottom padding line, never inside the
     // time-axis strip.
-    let sub_total_full: f64 = sub_height.iter().copied().sum::<f64>()
-        + SUB_PANE_GAP * sub_height.len() as f64;
+    let sub_total_full: f64 =
+        sub_height.iter().copied().sum::<f64>() + SUB_PANE_GAP * sub_height.len() as f64;
     // Footprint mode's bottom pad carries the per-column stats band *and* the
     // time labels under it; the other modes just need the time-axis strip. A
     // fixed pad clipped the band at two of its four rows -- visible as a
@@ -1896,12 +2200,16 @@ pub fn build(request: &Request) -> Scene {
         candles: Vec::new(),
         line: Vec::new(),
         profile: Vec::new(),
+        vwap: Vec::new(),
+        vwap_basis: None,
+        vwap_anchor: vwap_anchor.label().into(),
         profile_projection: Vec::new(),
         profile_heatmap: Vec::new(),
         profile_projection_lines: Vec::new(),
         profile_projection_meta: None,
         structure_profiles: Vec::new(),
         structure_events: Vec::new(),
+        profile_entry_signals: Vec::new(),
         levels: Vec::new(),
         regions: Vec::new(),
         ticks: Vec::new(),
@@ -2040,10 +2348,42 @@ pub fn build(request: &Request) -> Scene {
     // values count -- a 200-bar average from before the window must not
     // stretch the scale for candles that are not drawn.
     for spec in &request.overlay_series {
-        for v in spec.values.iter().skip(window.from).take(visible.len()).flatten() {
+        for v in spec
+            .values
+            .iter()
+            .skip(window.from)
+            .take(visible.len())
+            .flatten()
+        {
             if v.is_finite() {
                 visible_fit.min = visible_fit.min.min(*v);
                 visible_fit.max = visible_fit.max.max(*v);
+            }
+        }
+    }
+    let history_end = window.end().min(request.candles.len());
+    let vwap_history = &request.candles[..history_end];
+    let deriv_vwap = vwap_history.first().is_some_and(|candle| {
+        market_data::broker::VenueSymbol::parse(&candle.symbol).broker == "deriv"
+    });
+    let (raw_vwap, vwap_basis) = compute_vwap_points(
+        vwap_history,
+        window.from,
+        vwap_anchor,
+        request.vwap_source,
+        request.vwap_bands,
+        request.vwap_band_multiplier,
+        &request.profile_quotes,
+        deriv_vwap,
+    );
+    for point in &raw_vwap {
+        for price in [Some(point.value), point.upper, point.lower]
+            .into_iter()
+            .flatten()
+        {
+            if price.is_finite() {
+                visible_fit.min = visible_fit.min.min(price);
+                visible_fit.max = visible_fit.max.max(price);
             }
         }
     }
@@ -2088,11 +2428,47 @@ pub fn build(request: &Request) -> Scene {
     // slice would stretch the remaining candles to fill the plot, which is
     // the margin vanishing at exactly the moment it was asked for.
     let slot = plot.w / (window.count + future_slots) as f64;
+    scene.vwap = raw_vwap
+        .iter()
+        .map(|point| VwapPoint {
+            x: plot.x + slot * (point.index.saturating_sub(window.from) as f64 + 0.5),
+            y: price_to_y(
+                point.value,
+                scene.price_min,
+                scene.price_max,
+                &plot,
+                scale_map,
+            ),
+            value: point.value,
+            upper_y: point
+                .upper
+                .map(|price| price_to_y(price, scene.price_min, scene.price_max, &plot, scale_map)),
+            lower_y: point
+                .lower
+                .map(|price| price_to_y(price, scene.price_min, scene.price_max, &plot, scale_map)),
+            anchor_start: point.anchor_start,
+        })
+        .collect();
+    scene.vwap_basis = vwap_basis;
     if request.mode.draws_bars() {
-        scene.candles = candle_bars(visible, slot, &plot, scene.price_min, scene.price_max, scale_map);
+        scene.candles = candle_bars(
+            visible,
+            slot,
+            &plot,
+            scene.price_min,
+            scene.price_max,
+            scale_map,
+        );
     }
     if matches!(request.mode, Mode::Line | Mode::Area) {
-        scene.line = close_path(visible, slot, &plot, scene.price_min, scene.price_max, scale_map);
+        scene.line = close_path(
+            visible,
+            slot,
+            &plot,
+            scene.price_min,
+            scene.price_max,
+            scale_map,
+        );
     }
 
     // The profile and the levels describe **what is on screen**, so they follow
@@ -2113,7 +2489,7 @@ pub fn build(request: &Request) -> Scene {
     // are averages -- prices nobody traded at. The profile would still look
     // plausible, which is exactly why it is worth being explicit: the note for
     // that mode promises the real series, and this is where that promise is
-    // kept. `levels()` is handed the same slice for the same reason.
+    // kept. Profile level calculations use the same visible slice.
     let quote_only_venue = visible_real.first().is_some_and(|candle| {
         market_data::broker::VenueSymbol::parse(&candle.symbol).broker == "deriv"
     });
@@ -2170,9 +2546,14 @@ pub fn build(request: &Request) -> Scene {
             .collect();
         learned_session_start = Some(session_start);
         if let Some(model) = calculate_session_bayesian_profile(
-            profile_history, bucket_size, session_nanos, request.profile_history,
+            profile_history,
+            bucket_size,
+            session_nanos,
+            request.profile_history,
         ) {
-            let session_first_index = visible_real.iter().position(|c| c.open_time >= model.session_start)
+            let session_first_index = visible_real
+                .iter()
+                .position(|c| c.open_time >= model.session_start)
                 .unwrap_or(0);
             let boundary_index = visible_real.len().saturating_sub(1);
             learned_session_start = Some(model.session_start);
@@ -2180,33 +2561,65 @@ pub fn build(request: &Request) -> Scene {
             let session_first_x = plot.x + slot * (session_first_index as f64 + 0.5);
             profile = if quote_only_venue {
                 calculate_quote_range_activity_profile(&session_candles, bucket_size)
-            } else { model.observed.clone() };
+            } else {
+                model.observed.clone()
+            };
 
             let mut forecast_profile = VolumeProfile::empty(bucket_size);
             forecast_profile.histogram = model.forecast.clone();
             forecast_profile.total_volume = model.forecast.iter().map(|node| node.volume).sum();
-            forecast_profile.poc = model.forecast.iter().max_by(|a, b| a.volume.total_cmp(&b.volume))
+            forecast_profile.poc = model
+                .forecast
+                .iter()
+                .max_by(|a, b| a.volume.total_cmp(&b.volume))
                 .map_or(0.0, |node| node.price_level);
             forecast_profile.val = model.session_open;
-            forecast_profile.vah = model.forecast.last().map_or(model.session_open, |node| node.price_level);
+            forecast_profile.vah = model
+                .forecast
+                .last()
+                .map_or(model.session_open, |node| node.price_level);
             scene.profile_projection = profile_bars_at(
-                &forecast_profile, &plot, scene.price_min, scene.price_max, boundary_x, true, scale_map,
+                &forecast_profile,
+                &plot,
+                scene.price_min,
+                scene.price_max,
+                boundary_x,
+                true,
+                scale_map,
             );
 
-            let peak = model.forecast.iter().map(|node| node.volume).fold(0.0, f64::max);
+            let peak = model
+                .forecast
+                .iter()
+                .map(|node| node.volume)
+                .fold(0.0, f64::max);
             let row_height = (plot.h / PROFILE_ROWS).max(1.0);
             if request.profile_heatmap && peak > 0.0 {
-                scene.profile_heatmap = model.forecast.iter()
-                    .filter(|node| node.price_level >= scene.price_min && node.price_level <= scene.price_max)
+                scene.profile_heatmap = model
+                    .forecast
+                    .iter()
+                    .filter(|node| {
+                        node.price_level >= scene.price_min && node.price_level <= scene.price_max
+                    })
                     .map(|node| {
-                        let y = price_to_y(node.price_level, scene.price_min, scene.price_max, &plot, scale_map);
+                        let y = price_to_y(
+                            node.price_level,
+                            scene.price_min,
+                            scene.price_max,
+                            &plot,
+                            scale_map,
+                        );
                         ProfileBar {
-                            x: session_first_x, y: y - row_height / 2.0,
-                            w: (boundary_x - session_first_x).max(0.0), h: row_height,
-                            volume: node.volume / peak, buy_ratio: model.bullish_share,
+                            x: session_first_x,
+                            y: y - row_height / 2.0,
+                            w: (boundary_x - session_first_x).max(0.0),
+                            h: row_height,
+                            volume: node.volume / peak,
+                            buy_ratio: model.bullish_share,
                             in_value_area: node.price_level >= model.session_open,
                         }
-                    }).collect();
+                    })
+                    .collect();
             }
             let weighted_mean = |above_open: bool| {
                 let mut mass = 0.0;
@@ -2224,24 +2637,35 @@ pub fn build(request: &Request) -> Scene {
                 ("session_open", Some(model.session_open)),
                 ("lower_mean", weighted_mean(false)),
             ] {
-                if let Some(price) = price.filter(|p| *p >= scene.price_min && *p <= scene.price_max) {
+                if let Some(price) =
+                    price.filter(|p| *p >= scene.price_min && *p <= scene.price_max)
+                {
                     scene.profile_projection_lines.push(ProfileProjectionLine {
-                        x1: session_first_x, x2: boundary_x,
+                        x1: session_first_x,
+                        x2: boundary_x,
                         y: price_to_y(price, scene.price_min, scene.price_max, &plot, scale_map),
                         kind: kind.into(),
                     });
                 }
             }
             scene.profile_projection_meta = Some(ProfileProjectionMeta {
-                confidence: model.confidence, bullish_share: model.bullish_share,
-                training_sessions: model.training_sessions, forecast_center: model.forecast_center,
+                confidence: model.confidence,
+                bullish_share: model.bullish_share,
+                training_sessions: model.training_sessions,
+                forecast_center: model.forecast_center,
                 session_open: model.session_open,
-                session_open_y: price_to_y(model.session_open, scene.price_min, scene.price_max, &plot, scale_map),
+                session_open_y: price_to_y(
+                    model.session_open,
+                    scene.price_min,
+                    scene.price_max,
+                    &plot,
+                    scale_map,
+                ),
             });
             scene.note = Some(if quote_only_venue {
-                "Session forecast: Deriv quote/candle activity proxy learned from prior UTC sessions; it is not traded volume-at-price.".into()
+                "Session forecast: Deriv quote/candle activity proxy learned from prior UTC sessions; BUY/SELL LEAN reports forecast share above/below the open, not an entry or traded volume-at-price.".into()
             } else {
-                "Session forecast (blue above open, magenta below) versus realized candle-range allocation (gray). Learned from prior UTC sessions. OHLCV cannot reveal true intrabar volume-at-price; forecast is an estimate, not a guarantee.".into()
+                "Session forecast (blue above open, magenta below) versus realized candle-range allocation (gray). BUY/SELL LEAN reports forecast share above/below the open; it is not an entry. OHLCV cannot reveal true intrabar volume-at-price; forecast is an estimate, not a guarantee.".into()
             });
         } else {
             // Type 1 remains a session profile even when the history window
@@ -2262,7 +2686,7 @@ pub fn build(request: &Request) -> Scene {
     }
 
     if request.profile_type == ProfileType::StructureAnchored {
-        let (profiles, events, active_profile) = structure_profile_layers(
+        let (profiles, events, active_profile, entry_signal) = structure_profile_layers(
             visible_real,
             &request.profile_quotes,
             quote_only_venue,
@@ -2284,13 +2708,22 @@ pub fn build(request: &Request) -> Scene {
         );
         scene.structure_profiles = profiles;
         scene.structure_events = events;
+        scene.profile_entry_signals = entry_signal.into_iter().collect();
         if request.profile_color_candles {
             let structure = detect_market_structure(visible_real, StructureConfig::default());
             let mut direction = Trend::Ranging;
             let mut next_break = 0usize;
             for (index, bar) in scene.candles.iter_mut().enumerate() {
-                while next_break < structure.breaks.len() && structure.breaks[next_break].index <= index {
-                    direction = if structure.breaks[next_break].direction == analytics_core::types::Side::Buy { Trend::Bullish } else { Trend::Bearish };
+                while next_break < structure.breaks.len()
+                    && structure.breaks[next_break].index <= index
+                {
+                    direction = if structure.breaks[next_break].direction
+                        == analytics_core::types::Side::Buy
+                    {
+                        Trend::Bullish
+                    } else {
+                        Trend::Bearish
+                    };
                     next_break += 1;
                 }
                 bar.color = Some(match direction {
@@ -2304,9 +2737,9 @@ pub fn build(request: &Request) -> Scene {
             profile = active;
         }
         scene.note = Some(if quote_only_venue {
-            "Structure profiles use observed Deriv quote activity (or candle-range activity when quotes are unavailable), not traded volume. BUY/SELL marks label confirmed BOS/CHoCH direction as chart signals; they do not place trades.".into()
+            "Structure profiles use observed Deriv quote activity (or candle-range activity when quotes are unavailable), not traded volume. BOS/CHoCH labels show regime direction; a BUY/SELL POC RETEST cue requires a retest and close back in that regime's direction. Chart context only; no trades are placed.".into()
         } else {
-            "Structure profiles use candle-range volume estimates, not tick-level volume-at-price. BUY/SELL marks label confirmed BOS/CHoCH direction as chart signals; they do not place trades.".into()
+            "Structure profiles use candle-range volume estimates, not tick-level volume-at-price. BOS/CHoCH labels show regime direction; a BUY/SELL POC RETEST cue requires a retest and close back in that regime's direction. Chart context only; no trades are placed.".into()
         });
     }
 
@@ -2322,18 +2755,38 @@ pub fn build(request: &Request) -> Scene {
         if !scene.profile_projection.is_empty() {
             if let Some(start) = learned_session_start {
                 if let Some(index) = visible_real.iter().position(|c| c.open_time >= start) {
-                    let boundary_x = plot.x + slot * ((visible_real.len().saturating_sub(1)) as f64 + 0.5);
+                    let boundary_x =
+                        plot.x + slot * ((visible_real.len().saturating_sub(1)) as f64 + 0.5);
                     let current = if quote_only_venue {
                         let from = visible_real[index].open_time;
-                        let to = visible_real.last().map_or(from, |c| c.open_time.saturating_add(c.timeframe.nanos()));
-                        let prices: Vec<f64> = request.profile_quotes.iter()
+                        let to = visible_real
+                            .last()
+                            .map_or(from, |c| c.open_time.saturating_add(c.timeframe.nanos()));
+                        let prices: Vec<f64> = request
+                            .profile_quotes
+                            .iter()
                             .filter(|q| q.time >= from && q.time < to && q.price.is_finite())
-                            .map(|q| q.price).collect();
-                        if prices.is_empty() { calculate_quote_range_activity_profile(&visible_real[index..], bucket_size) }
-                        else { calculate_quote_tick_profile(&prices, bucket_size) }
-                    } else { calculate_volume_profile_from_candles(&visible_real[index..], bucket_size) };
+                            .map(|q| q.price)
+                            .collect();
+                        if prices.is_empty() {
+                            calculate_quote_range_activity_profile(
+                                &visible_real[index..],
+                                bucket_size,
+                            )
+                        } else {
+                            calculate_quote_tick_profile(&prices, bucket_size)
+                        }
+                    } else {
+                        calculate_volume_profile_from_candles(&visible_real[index..], bucket_size)
+                    };
                     scene.profile = profile_bars_at(
-                        &current, &plot, scene.price_min, scene.price_max, boundary_x, false, scale_map,
+                        &current,
+                        &plot,
+                        scene.price_min,
+                        scene.price_max,
+                        boundary_x,
+                        false,
+                        scale_map,
                     );
                 }
             }
@@ -2398,15 +2851,12 @@ pub fn build(request: &Request) -> Scene {
                 // The stats then describe what is on screen -- the shell's
                 // footer reads them, and a footer citing trades the user cannot
                 // see is the disagreement this slice removes.
-                let footprint_window = &request.footprint
-                    [window.from.min(request.footprint.len())..window.end().min(request.footprint.len())];
+                let footprint_window = &request.footprint[window.from.min(request.footprint.len())
+                    ..window.end().min(request.footprint.len())];
                 // The drawn price range decides which rows exist, the same
                 // range the candle chart draws against: zooming the price axis
                 // (shift+wheel) scales the ladder instead of being refused.
-                let price_bounds = (
-                    scene.price_min,
-                    scene.price_max,
-                );
+                let price_bounds = (scene.price_min, scene.price_max);
                 scene.footprint = crate::footprint::layout(
                     footprint_window,
                     plot,
@@ -2474,7 +2924,6 @@ pub fn build(request: &Request) -> Scene {
 
     scene.levels = levels(
         request,
-        visible_real,
         &profile,
         &plot,
         scene.price_min,
@@ -2509,27 +2958,36 @@ pub fn build(request: &Request) -> Scene {
     // The cone, positioned through the same frame as everything else
     // (docs/35). The anchor point is the last close at the last bar's
     // center, so the bands grow out of the price line instead of floating.
-    scene.forecast = forecast.map(|cone| {
-        let anchor = crate::scene::Point {
-            x: frame.x_at_nanos(last.open_time) + slot / 2.0,
-            y: frame.y_at(cone.start),
-        };
-        let bands = analytics_core::forecast::FORECAST_QUANTILES
-            .iter()
-            .enumerate()
-            .map(|(q, quantile)| ForecastBand {
-                quantile: *quantile,
-                points: std::iter::once(anchor)
-                    .chain(cone.steps.iter().enumerate().map(|(k, step)| crate::scene::Point {
-                        x: frame.x_at_nanos(last.open_time + (k as i64 + 1) * frame.bar_nanos)
-                            + slot / 2.0,
-                        y: frame.y_at(step[q]),
-                    }))
-                    .collect(),
-            })
-            .collect();
-        SceneForecast { bands, paths: cone.paths, steps: cone.steps.len() }
-    });
+    scene.forecast =
+        forecast.map(|cone| {
+            let anchor = crate::scene::Point {
+                x: frame.x_at_nanos(last.open_time) + slot / 2.0,
+                y: frame.y_at(cone.start),
+            };
+            let bands =
+                analytics_core::forecast::FORECAST_QUANTILES
+                    .iter()
+                    .enumerate()
+                    .map(|(q, quantile)| ForecastBand {
+                        quantile: *quantile,
+                        points: std::iter::once(anchor)
+                            .chain(cone.steps.iter().enumerate().map(|(k, step)| {
+                                crate::scene::Point {
+                                    x: frame.x_at_nanos(
+                                        last.open_time + (k as i64 + 1) * frame.bar_nanos,
+                                    ) + slot / 2.0,
+                                    y: frame.y_at(step[q]),
+                                }
+                            }))
+                            .collect(),
+                    })
+                    .collect();
+            SceneForecast {
+                bands,
+                paths: cone.paths,
+                steps: cone.steps.len(),
+            }
+        });
 
     // The magnet's candidates, when the request asked. Built from the visible
     // **real** candles -- the same slice everything measured on screen uses --
@@ -2548,8 +3006,13 @@ pub fn build(request: &Request) -> Scene {
     // and the whole price range -- a trendline drawn last week is still a
     // trendline when the window has moved past it, so the anchors are mapped
     // absolutely and the canvas clips, exactly as a zone's band is.
-    let (drawings, unplaceable) =
-        drawing_parts(&request.drawings, &frame, plot, &snap_points, &request.candles);
+    let (drawings, unplaceable) = drawing_parts(
+        &request.drawings,
+        &frame,
+        plot,
+        &snap_points,
+        &request.candles,
+    );
     scene.drawings = drawings;
 
     // The answer's levels, between the derived geometry and the user's own
@@ -2823,18 +3286,19 @@ pub fn build(request: &Request) -> Scene {
         };
         let mut run_upper: Vec<Point> = Vec::new();
         let mut run_lower: Vec<Point> = Vec::new();
-        let mut flush = |scene: &mut Scene, run_upper: &mut Vec<Point>, run_lower: &mut Vec<Point>| {
-            if run_upper.len() > 1 {
-                scene.overlay_fills.push(crate::script::ScriptDraw::Band {
-                    upper: run_upper.iter().map(|p| (p.x, p.y)).collect(),
-                    lower: run_lower.iter().map(|p| (p.x, p.y)).collect(),
-                    color: fill.color,
-                    fill_alpha: 0.16,
-                });
-            }
-            run_upper.clear();
-            run_lower.clear();
-        };
+        let mut flush =
+            |scene: &mut Scene, run_upper: &mut Vec<Point>, run_lower: &mut Vec<Point>| {
+                if run_upper.len() > 1 {
+                    scene.overlay_fills.push(crate::script::ScriptDraw::Band {
+                        upper: run_upper.iter().map(|p| (p.x, p.y)).collect(),
+                        lower: run_lower.iter().map(|p| (p.x, p.y)).collect(),
+                        color: fill.color,
+                        fill_alpha: 0.16,
+                    });
+                }
+                run_upper.clear();
+                run_lower.clear();
+            };
         for index in 0..visible_real.len() {
             match (point_at(&fill.upper, index), point_at(&fill.lower, index)) {
                 (Some(u), Some(l)) => {
@@ -2854,10 +3318,21 @@ pub fn build(request: &Request) -> Scene {
     // An overlay script's plots join the price pane instead, mapped through
     // the frame the candles already use.
     let script_heights = &sub_height[pane_specs.len()..];
-    for (script_index, (spec, height)) in request.scripts.iter().zip(script_heights.iter().copied().chain(
-        std::iter::repeat(SUB_PANE_HEIGHT),
-    )).enumerate() {
-        let header_overlay = vetted[script_index].as_ref().map(|h| h.overlay).unwrap_or(false);
+    for (script_index, (spec, height)) in request
+        .scripts
+        .iter()
+        .zip(
+            script_heights
+                .iter()
+                .copied()
+                .chain(std::iter::repeat(SUB_PANE_HEIGHT)),
+        )
+        .enumerate()
+    {
+        let header_overlay = vetted[script_index]
+            .as_ref()
+            .map(|h| h.overlay)
+            .unwrap_or(false);
         if header_overlay {
             // Overlay: plots map through the price pane's own scale. Vet
             // errors cost the note, not the frame.
@@ -2882,7 +3357,10 @@ pub fn build(request: &Request) -> Scene {
                 visible_real,
                 &crate::script::inputs_from_spec(
                     spec,
-                    visible_real.first().map(|c| c.symbol.as_str()).unwrap_or(""),
+                    visible_real
+                        .first()
+                        .map(|c| c.symbol.as_str())
+                        .unwrap_or(""),
                 ),
             ) {
                 Ok(output) => {
@@ -2892,13 +3370,18 @@ pub fn build(request: &Request) -> Scene {
                     objects.extend(crate::script::scene_overlay_candles(&output, slot, &frame));
                     objects.extend(crate::script::scene_overlay_tints(&output, slot, &frame));
                     objects.extend(crate::script::scene_overlay_tables(&output, &frame));
-                    objects.extend(crate::script::scene_overlay_linefills(&output, slot, &frame));
-                    objects.extend(crate::script::scene_overlay_polylines(&output, slot, &frame));
+                    objects.extend(crate::script::scene_overlay_linefills(
+                        &output, slot, &frame,
+                    ));
+                    objects.extend(crate::script::scene_overlay_polylines(
+                        &output, slot, &frame,
+                    ));
                     // barcolor(...) recolors the MAIN candles: last finite
                     // write wins, indexed like the visible window.
-                    for (bar, color) in crate::script::overlay_barcolors(&output, scene.candles.len())
-                        .into_iter()
-                        .enumerate()
+                    for (bar, color) in
+                        crate::script::overlay_barcolors(&output, scene.candles.len())
+                            .into_iter()
+                            .enumerate()
                     {
                         if let (Some(b), Some(c)) = (scene.candles.get_mut(bar), color) {
                             b.color = Some(c);
@@ -2931,11 +3414,35 @@ pub fn build(request: &Request) -> Scene {
         }
         // A strategy's equity pane takes the NEXT slice (docs/24 S2): its
         // scale is account capital, which no price pane should have to share.
-        let is_strategy = vetted[script_index].as_ref().map(|h| h.strategy.is_some()).unwrap_or(false);
-        let (pane_height, equity_height) = if is_strategy { (height * 0.5, height * 0.5) } else { (height, 0.0) };
-        let pane_plot = Plot { x: plot.x, y: pane_top, w: plot.w, h: pane_height };
-        let equity_plot = Plot { x: plot.x, y: pane_top + pane_height + SUB_PANE_GAP, w: plot.w, h: equity_height };
-        match crate::script::script_pane_full(spec, visible_real, slot, &pane_plot, &equity_plot, &frame) {
+        let is_strategy = vetted[script_index]
+            .as_ref()
+            .map(|h| h.strategy.is_some())
+            .unwrap_or(false);
+        let (pane_height, equity_height) = if is_strategy {
+            (height * 0.5, height * 0.5)
+        } else {
+            (height, 0.0)
+        };
+        let pane_plot = Plot {
+            x: plot.x,
+            y: pane_top,
+            w: plot.w,
+            h: pane_height,
+        };
+        let equity_plot = Plot {
+            x: plot.x,
+            y: pane_top + pane_height + SUB_PANE_GAP,
+            w: plot.w,
+            h: equity_height,
+        };
+        match crate::script::script_pane_full(
+            spec,
+            visible_real,
+            slot,
+            &pane_plot,
+            &equity_plot,
+            &frame,
+        ) {
             Ok((pane, layer, equity)) => {
                 scene.script_panes.push(pane);
                 if let Some(layer) = layer {
@@ -2953,6 +3460,14 @@ pub fn build(request: &Request) -> Scene {
         pane_top += height + SUB_PANE_GAP;
     }
 
+    if deriv_vwap && !scene.vwap.is_empty() {
+        let message = match scene.vwap_basis.as_deref() {
+            Some("deriv_quote_ticks") => "VWAP line is a Deriv quote-tick weighted-price proxy, not traded-volume VWAP.",
+            Some("deriv_quote_ticks_with_close_fallback") => "VWAP line uses Deriv quote ticks where available and equal-weight candle closes otherwise; it is a price proxy, not traded-volume VWAP.",
+            _ => "VWAP line is an equal-weight Deriv candle-close price proxy because no quote ticks are available; it is not traded-volume VWAP.",
+        };
+        add_note(&mut scene.note, message.into());
+    }
     scene
 }
 
@@ -2978,7 +3493,13 @@ fn sub_pane_heights(panes: &[SubPaneSpec], script_pane_count: usize) -> Vec<f64>
 }
 
 /// Build one sub-pane, or `None` when the measurement has nothing to show.
-fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], value_offset: usize, slot: f64, plot: &Plot) -> Option<ScenePane> {
+fn sub_pane(
+    spec: &SubPaneSpec,
+    candles: &[Candle],
+    value_offset: usize,
+    slot: f64,
+    plot: &Plot,
+) -> Option<ScenePane> {
     match spec {
         SubPaneSpec::Rsi {
             period,
@@ -2995,15 +3516,36 @@ fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], value_offset: usize, slot: f
             bars,
             segments,
             markers,
-        } => series_pane(candles, value_offset, slot, plot, label, *scale, levels, lines, fills, bars.as_ref(), segments, markers),
+        } => series_pane(
+            candles,
+            value_offset,
+            slot,
+            plot,
+            label,
+            *scale,
+            levels,
+            lines,
+            fills,
+            bars.as_ref(),
+            segments,
+            markers,
+        ),
     }
 }
 
 fn cvd_pane(candles: &[Candle], slot: f64, plot: &Plot, reset: CvdReset) -> Option<ScenePane> {
-    if candles.is_empty() { return None; }
-    let quote_only = candles.first().is_some_and(|c| market_data::broker::VenueSymbol::parse(&c.symbol).broker == "deriv");
+    if candles.is_empty() {
+        return None;
+    }
+    let quote_only = candles
+        .first()
+        .is_some_and(|c| market_data::broker::VenueSymbol::parse(&c.symbol).broker == "deriv");
     let structure = detect_market_structure(candles, StructureConfig::default());
-    let breaks: BTreeMap<usize, BreakKind> = structure.breaks.iter().map(|event| (event.index, event.kind)).collect();
+    let breaks: BTreeMap<usize, BreakKind> = structure
+        .breaks
+        .iter()
+        .map(|event| (event.index, event.kind))
+        .collect();
     let mut value = 0.0;
     let mut values = Vec::with_capacity(candles.len());
     let mut previous_bucket = None;
@@ -3019,9 +3561,14 @@ fn cvd_pane(candles: &[Candle], slot: f64, plot: &Plot, reset: CvdReset) -> Opti
             CvdReset::BosAndChoch => true,
             CvdReset::Day | CvdReset::Week => false,
         });
-        if time_reset || structure_reset { value = 0.0; }
+        if time_reset || structure_reset {
+            value = 0.0;
+        }
         let delta = if quote_only {
-            let previous = index.checked_sub(1).and_then(|i| candles.get(i)).map_or(candle.open, |prior| prior.close);
+            let previous = index
+                .checked_sub(1)
+                .and_then(|i| candles.get(i))
+                .map_or(candle.open, |prior| prior.close);
             (candle.close - previous).signum() * candle.volume.max(1.0)
         } else {
             candle.buy_volume - candle.sell_volume
@@ -3040,10 +3587,24 @@ fn cvd_pane(candles: &[Candle], slot: f64, plot: &Plot, reset: CvdReset) -> Opti
         CvdReset::Day => "CVD · daily reset",
         CvdReset::Week => "CVD · weekly reset",
     };
-    let line = SeriesLine { name: "CVD".into(), color: 0x8c63ef, values };
+    let line = SeriesLine {
+        name: "CVD".into(),
+        color: 0x8c63ef,
+        values,
+    };
     series_pane(
-        candles, 0, slot, plot, label,
-        SeriesScale::Auto, &[0.0], &[line], &[], None, &[], &[],
+        candles,
+        0,
+        slot,
+        plot,
+        label,
+        SeriesScale::Auto,
+        &[0.0],
+        &[line],
+        &[],
+        None,
+        &[],
+        &[],
     )
 }
 
@@ -3208,7 +3769,10 @@ fn series_pane(
     let positioned_levels: Vec<PaneLevel> = levels
         .iter()
         .filter(|v| v.is_finite() && **v >= vmin && **v <= vmax)
-        .map(|&value| PaneLevel { y: y_at(value), value })
+        .map(|&value| PaneLevel {
+            y: y_at(value),
+            value,
+        })
         .collect();
     // Segments and markers index the FULL request candles (the shell's
     // array): inside the window they shift by the offset, outside it they
@@ -3248,7 +3812,10 @@ fn series_pane(
     let ticks: Vec<PaneTick> = tick_values
         .into_iter()
         .filter(|v| v.is_finite() && *v >= vmin && *v <= vmax)
-        .map(|value| PaneTick { y: y_at(value), value })
+        .map(|value| PaneTick {
+            y: y_at(value),
+            value,
+        })
         .collect();
 
     Some(ScenePane {
@@ -3285,9 +3852,7 @@ fn rsi_pane(
         // not drawn, and the caller's note says why.
         return None;
     }
-    let y_at = |value: f64| {
-        plot.y + plot.h - (value - PANE_MIN) / (PANE_MAX - PANE_MIN) * plot.h
-    };
+    let y_at = |value: f64| plot.y + plot.h - (value - PANE_MIN) / (PANE_MAX - PANE_MIN) * plot.h;
 
     let config = analytics_core::rsi_divergence::RsiDivergenceConfig {
         period,
@@ -3775,13 +4340,24 @@ pub enum ConceptShape {
 /// strokes (the script overlay's own Line/Label/Box).
 fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::script::ScriptDraw> {
     let x_at = |ns: i64| frame.x_at_nanos(ns);
-    let bar_w = ((frame.plot.w) / ((frame.to - frame.from) / frame.bar_nanos.max(1)).max(1) as f64).max(1e-9);
+    let bar_w = ((frame.plot.w) / ((frame.to - frame.from) / frame.bar_nanos.max(1)).max(1) as f64)
+        .max(1e-9);
     match shape {
-        ConceptShape::Zone { from_ns, to_ns, low, high, label, color } => {
+        ConceptShape::Zone {
+            from_ns,
+            to_ns,
+            low,
+            high,
+            label,
+            color,
+        } => {
             if !low.is_finite() || !high.is_finite() {
                 return Vec::new();
             }
-            let (x1, x2) = (x_at(*from_ns), x_at(*to_ns).max(x_at(*from_ns) + bar_w * 0.6));
+            let (x1, x2) = (
+                x_at(*from_ns),
+                x_at(*to_ns).max(x_at(*from_ns) + bar_w * 0.6),
+            );
             let (y1, y2) = (frame.y_at(*high), frame.y_at(*low));
             vec![
                 // The fill is a WASH (0.08): candles stay readable through
@@ -3808,11 +4384,20 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 },
             ]
         }
-        ConceptShape::Segment { from_ns, to_ns, price, label, color } => {
+        ConceptShape::Segment {
+            from_ns,
+            to_ns,
+            price,
+            label,
+            color,
+        } => {
             if !price.is_finite() {
                 return Vec::new();
             }
-            let (x1, x2) = (x_at(*from_ns), x_at(*to_ns).max(x_at(*from_ns) + bar_w * 0.6));
+            let (x1, x2) = (
+                x_at(*from_ns),
+                x_at(*to_ns).max(x_at(*from_ns) + bar_w * 0.6),
+            );
             let y = frame.y_at(*price);
             vec![
                 crate::script::ScriptDraw::Line {
@@ -3835,7 +4420,13 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 },
             ]
         }
-        ConceptShape::CandleMark { at_ns, price, below, label, color } => {
+        ConceptShape::CandleMark {
+            at_ns,
+            price,
+            below,
+            label,
+            color,
+        } => {
             if !price.is_finite() {
                 return Vec::new();
             }
@@ -3854,7 +4445,11 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 color: *color,
             }]
         }
-        ConceptShape::TimeLine { at_ns, label, color } => {
+        ConceptShape::TimeLine {
+            at_ns,
+            label,
+            color,
+        } => {
             // A full-height rule at the instant: geometry, not a price. An
             // instant outside the visible window draws nothing.
             let x = x_at(*at_ns);
@@ -3881,7 +4476,13 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 },
             ]
         }
-        ConceptShape::BarMarker { at_ns, price, below, glyph, color } => {
+        ConceptShape::BarMarker {
+            at_ns,
+            price,
+            below,
+            glyph,
+            color,
+        } => {
             if !price.is_finite() {
                 return Vec::new();
             }
@@ -3900,7 +4501,13 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 color: *color,
             }]
         }
-        ConceptShape::LevelRun { from_ns, until_ns, price, label, color } => {
+        ConceptShape::LevelRun {
+            from_ns,
+            until_ns,
+            price,
+            label,
+            color,
+        } => {
             if !price.is_finite() {
                 return Vec::new();
             }
@@ -3942,7 +4549,15 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 },
             ]
         }
-        ConceptShape::LifecycleBox { from_ns, to_ns, low, high, label, color, state } => {
+        ConceptShape::LifecycleBox {
+            from_ns,
+            to_ns,
+            low,
+            high,
+            label,
+            color,
+            state,
+        } => {
             if !low.is_finite() || !high.is_finite() {
                 return Vec::new();
             }
@@ -3981,7 +4596,14 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 },
             ]
         }
-        ConceptShape::TimeBox { from_ns, to_ns, low, high, label, color } => {
+        ConceptShape::TimeBox {
+            from_ns,
+            to_ns,
+            low,
+            high,
+            label,
+            color,
+        } => {
             let plot = frame.plot;
             let right = plot.x + plot.w;
             let x1 = x_at(*from_ns).clamp(plot.x, right);
@@ -4036,7 +4658,13 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 ],
             }
         }
-        ConceptShape::PriceBand { at_ns: _, low, high, label, color } => {
+        ConceptShape::PriceBand {
+            at_ns: _,
+            low,
+            high,
+            label,
+            color,
+        } => {
             // The profile's window IS the visible window: the band spans the
             // plot and its label rides the right edge, the VPVR reading.
             if !low.is_finite() || !high.is_finite() {
@@ -4065,7 +4693,12 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 },
             ]
         }
-        ConceptShape::Readout { at_ns, price, text, color } => {
+        ConceptShape::Readout {
+            at_ns,
+            price,
+            text,
+            color,
+        } => {
             let plot = frame.plot;
             let x = x_at(*at_ns);
             if x < plot.x || x > plot.x + plot.w {
@@ -4085,7 +4718,16 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 color: *color,
             }]
         }
-        ConceptShape::Polyline { points, closed, label, color, neck, target, band_low, band_high } => {
+        ConceptShape::Polyline {
+            points,
+            closed,
+            label,
+            color,
+            neck,
+            target,
+            band_low,
+            band_high,
+        } => {
             let plot = frame.plot;
             let right = plot.x + plot.w;
             let pts: Vec<(f64, f64)> = points
@@ -4171,7 +4813,16 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
             });
             draws
         }
-        ConceptShape::Ladder { from_ns, to_ns, rungs, label, color, anchors, pocket_low, pocket_high } => {
+        ConceptShape::Ladder {
+            from_ns,
+            to_ns,
+            rungs,
+            label,
+            color,
+            anchors,
+            pocket_low,
+            pocket_high,
+        } => {
             let plot = frame.plot;
             let right = plot.x + plot.w;
             let x1 = x_at(*from_ns).clamp(plot.x, right);
@@ -4252,7 +4903,15 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
             }
             draws
         }
-        ConceptShape::PairLink { from_ns, to_ns, from_price, to_price, label, color, pair } => {
+        ConceptShape::PairLink {
+            from_ns,
+            to_ns,
+            from_price,
+            to_price,
+            label,
+            color,
+            pair,
+        } => {
             if !from_price.is_finite() || !to_price.is_finite() {
                 return Vec::new();
             }
@@ -4515,9 +5174,14 @@ fn structure_profile_layers(
     profile_bins: usize,
     show_stats: bool,
     show_volume_at_level: bool,
-) -> (Vec<StructureProfile>, Vec<ProfileStructureEvent>, Option<VolumeProfile>) {
+) -> (
+    Vec<StructureProfile>,
+    Vec<ProfileStructureEvent>,
+    Option<VolumeProfile>,
+    Option<ProfileEntrySignal>,
+) {
     if candles.is_empty() {
-        return (Vec::new(), Vec::new(), None);
+        return (Vec::new(), Vec::new(), None, None);
     }
     let structure = detect_market_structure(candles, StructureConfig::default());
     let mut segments: Vec<(usize, usize, String, String, bool)> = Vec::new();
@@ -4526,25 +5190,49 @@ fn structure_profile_layers(
     for event in &structure.breaks {
         let end = event.index.min(candles.len());
         if end > start {
-            let kind = match event.kind { BreakKind::Bos => "bos", BreakKind::Choch => "choch" };
-            let direction = if event.direction == analytics_core::types::Side::Buy { "up" } else { "down" };
+            let kind = match event.kind {
+                BreakKind::Bos => "bos",
+                BreakKind::Choch => "choch",
+            };
+            let direction = if event.direction == analytics_core::types::Side::Buy {
+                "up"
+            } else {
+                "down"
+            };
             segments.push((start, end, kind.into(), direction.into(), false));
         }
-        let swing_index = structure.points.iter()
-            .filter(|point| point.index < event.index && (point.price - event.level).abs() <= f64::EPSILON.max(event.level.abs() * 1e-12))
+        let swing_index = structure
+            .points
+            .iter()
+            .filter(|point| {
+                point.index < event.index
+                    && (point.price - event.level).abs()
+                        <= f64::EPSILON.max(event.level.abs() * 1e-12)
+            })
             .max_by_key(|point| point.index)
             .map_or(event.index.saturating_sub(1), |point| point.index);
-        let direction = if event.direction == analytics_core::types::Side::Buy { "up" } else { "down" };
+        let direction = if event.direction == analytics_core::types::Side::Buy {
+            "up"
+        } else {
+            "down"
+        };
         let event_x = plot.x + slot * (event.index as f64 + 0.5);
         let swing_x = plot.x + slot * (swing_index as f64 + 0.5);
         events.push(ProfileStructureEvent {
             x1: swing_x,
             x2: event_x,
             y: price_to_y(event.level, price_min, price_max, plot, scale),
-            kind: match event.kind { BreakKind::Bos => "bos", BreakKind::Choch => "choch" }.into(),
+            kind: match event.kind {
+                BreakKind::Bos => "bos",
+                BreakKind::Choch => "choch",
+            }
+            .into(),
             direction: direction.into(),
             signal: if direction == "up" { "buy" } else { "sell" }.into(),
-            visible: match event.kind { BreakKind::Bos => show_bos, BreakKind::Choch => show_choch },
+            visible: match event.kind {
+                BreakKind::Bos => show_bos,
+                BreakKind::Choch => show_choch,
+            },
         });
         start = end;
     }
@@ -4562,35 +5250,109 @@ fn structure_profile_layers(
     let skip = segments.len().saturating_sub(12);
     let mut profiles = Vec::new();
     let mut active_profile = None;
+    let mut entry_signal = None;
     for (from, to, kind, direction, active) in segments.into_iter().skip(skip) {
-        let Some(segment) = candles.get(from..to).filter(|segment| !segment.is_empty()) else { continue };
-        let (low, high) = segment.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |acc, candle| {
-            (acc.0.min(candle.low), acc.1.max(candle.high))
-        });
-        let mini_bucket = analytics_core::volume_profile::round_bucket(high - low, profile_bins).max(bucket_size * 0.25);
+        let Some(segment) = candles.get(from..to).filter(|segment| !segment.is_empty()) else {
+            continue;
+        };
+        let (low, high) = segment
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |acc, candle| {
+                (acc.0.min(candle.low), acc.1.max(candle.high))
+            });
+        let mini_bucket = analytics_core::volume_profile::round_bucket(high - low, profile_bins)
+            .max(bucket_size * 0.25);
         let profile = if quote_only_venue {
             let first = segment.first().map_or(0, |c| c.open_time);
-            let last = segment.last().map_or(first, |c| c.open_time.saturating_add(c.timeframe.nanos()));
-            let prices: Vec<_> = quotes.iter().filter(|q| q.time >= first && q.time < last && q.price.is_finite()).map(|q| q.price).collect();
-            if prices.is_empty() { calculate_quote_range_activity_profile(segment, mini_bucket) }
-            else { calculate_quote_tick_profile(&prices, mini_bucket) }
+            let last = segment
+                .last()
+                .map_or(first, |c| c.open_time.saturating_add(c.timeframe.nanos()));
+            let prices: Vec<_> = quotes
+                .iter()
+                .filter(|q| q.time >= first && q.time < last && q.price.is_finite())
+                .map(|q| q.price)
+                .collect();
+            if prices.is_empty() {
+                calculate_quote_range_activity_profile(segment, mini_bucket)
+            } else {
+                calculate_quote_tick_profile(&prices, mini_bucket)
+            }
         } else {
             calculate_volume_profile_from_candles(segment, mini_bucket)
         };
-        if profile.is_empty() { continue; }
-        if active { active_profile = Some(profile.clone()); }
+        if profile.is_empty() {
+            continue;
+        }
+        if active {
+            active_profile = Some(profile.clone());
+            // Compare the latest candle with a POC calculated before that
+            // candle began. A cue needs a settled regime plus a clear retest
+            // and reclaim/rejection; the BOS/CHoCH itself is not the entry cue.
+            if segment.len() >= 3 && matches!(direction.as_str(), "up" | "down") {
+                let reference_candles = &segment[..segment.len() - 1];
+                let reference_profile = if quote_only_venue {
+                    let first = reference_candles.first().map_or(0, |c| c.open_time);
+                    let last = reference_candles.last().map_or(first, |c| {
+                        c.open_time.saturating_add(c.timeframe.nanos())
+                    });
+                    let prices: Vec<_> = quotes
+                        .iter()
+                        .filter(|q| q.time >= first && q.time < last && q.price.is_finite())
+                        .map(|q| q.price)
+                        .collect();
+                    if prices.is_empty() {
+                        calculate_quote_range_activity_profile(reference_candles, mini_bucket)
+                    } else {
+                        calculate_quote_tick_profile(&prices, mini_bucket)
+                    }
+                } else {
+                    calculate_volume_profile_from_candles(reference_candles, mini_bucket)
+                };
+                if !reference_profile.is_empty() {
+                    let previous = &segment[segment.len() - 2];
+                    let latest = segment.last().expect("active segment is non-empty");
+                    let poc = reference_profile.poc;
+                    if let Some(side) = profile_retest_side(
+                        &direction,
+                        previous.close,
+                        latest.low,
+                        latest.high,
+                        latest.close,
+                        poc,
+                    ) {
+                        entry_signal = Some(ProfileEntrySignal {
+                            x: plot.x + slot * (to.saturating_sub(1) as f64 + 0.5),
+                            y: price_to_y(poc, price_min, price_max, plot, scale),
+                            side: side.into(),
+                            reference_price: poc,
+                            label: format!("{} POC RETEST", side.to_uppercase()),
+                        });
+                    }
+                }
+            }
+        }
         let x_start = plot.x + slot * (from as f64 + 0.5);
         let end_index = to.saturating_sub(1);
         let x_end = plot.x + slot * (end_index as f64 + 0.5);
         let center_x = (x_start + x_end) * 0.5;
         let bars = profile_bars_at(&profile, plot, price_min, price_max, center_x, true, scale);
-        let poc_naked = !candles[to..].iter().any(|c| c.low <= profile.poc && c.high >= profile.poc);
-        let first_touch = candles[to..].iter().position(|c| c.low <= profile.poc && c.high >= profile.poc)
+        let poc_naked = !candles[to..]
+            .iter()
+            .any(|c| c.low <= profile.poc && c.high >= profile.poc);
+        let first_touch = candles[to..]
+            .iter()
+            .position(|c| c.low <= profile.poc && c.high >= profile.poc)
             .map(|offset| to + offset);
         let mut poc_x2 = if extend_poc {
-            first_touch.map_or(plot.x + slot * (candles.len() as f64 - 0.5), |index| plot.x + slot * (index as f64 + 0.5))
-        } else { x_end };
-        if !show_poc || (naked_poc_only && !poc_naked) { poc_x2 = -1.0; }
+            first_touch.map_or(plot.x + slot * (candles.len() as f64 - 0.5), |index| {
+                plot.x + slot * (index as f64 + 0.5)
+            })
+        } else {
+            x_end
+        };
+        if !show_poc || (naked_poc_only && !poc_naked) {
+            poc_x2 = -1.0;
+        }
         profiles.push(StructureProfile {
             kind,
             direction,
@@ -4601,33 +5363,58 @@ fn structure_profile_layers(
             poc_y: price_to_y(profile.poc, price_min, price_max, plot, scale),
             poc_x2,
             poc_naked,
-            vah_y: if show_va { price_to_y(profile.vah, price_min, price_max, plot, scale) } else { -1.0 },
-            val_y: if show_va { price_to_y(profile.val, price_min, price_max, plot, scale) } else { -1.0 },
+            vah_y: if show_va {
+                price_to_y(profile.vah, price_min, price_max, plot, scale)
+            } else {
+                -1.0
+            },
+            val_y: if show_va {
+                price_to_y(profile.val, price_min, price_max, plot, scale)
+            } else {
+                -1.0
+            },
             bars,
             high,
             low,
             buy_volume: segment.iter().map(|c| c.buy_volume).sum(),
             sell_volume: segment.iter().map(|c| c.sell_volume).sum(),
             return_pct: if segment[0].open.abs() > f64::EPSILON {
-                (segment.last().map_or(segment[0].close, |c| c.close) / segment[0].open - 1.0) * 100.0
-            } else { 0.0 },
+                (segment.last().map_or(segment[0].close, |c| c.close) / segment[0].open - 1.0)
+                    * 100.0
+            } else {
+                0.0
+            },
             show_volume_at_level,
             show_stats,
         });
     }
-    (profiles, events, active_profile)
+    (profiles, events, active_profile, entry_signal)
 }
 
-/// The overlay levels, measured over the **visible window**.
-///
-/// `candles` is the visible slice of the real series, so the VWAP is the window's
-/// VWAP. That matters more than it looks: VWAP is period-dependent, so a line
-/// computed over the whole series and drawn across a tenth of it marks a price
-/// nobody in the window traded at. It still looks like a VWAP, which is why the
-/// wrong version survives review -- the same trap the profile has.
+fn profile_retest_side(
+    direction: &str,
+    previous_close: f64,
+    latest_low: f64,
+    latest_high: f64,
+    latest_close: f64,
+    poc: f64,
+) -> Option<&'static str> {
+    if ![previous_close, latest_low, latest_high, latest_close, poc]
+        .iter()
+        .all(|price| price.is_finite())
+    {
+        return None;
+    }
+    match direction {
+        "up" if previous_close > poc && latest_low <= poc && latest_close > poc => Some("buy"),
+        "down" if previous_close < poc && latest_high >= poc && latest_close < poc => Some("sell"),
+        _ => None,
+    }
+}
+
+/// Profile reference levels measured over the **visible window**.
 fn levels(
     request: &Request,
-    candles: &[Candle],
     profile: &VolumeProfile,
     plot: &Plot,
     price_min: f64,
@@ -4637,15 +5424,6 @@ fn levels(
     let mut out = Vec::new();
     let wanted = |name: &str| request.lines.iter().any(|line| line == name);
 
-    if wanted("vwap") {
-        if let Some(vwap) = calculate_vwap(candles) {
-            out.push(Level {
-                y: price_to_y(vwap, price_min, price_max, plot, scale),
-                price: vwap,
-                kind: "vwap".into(),
-            });
-        }
-    }
     if !profile.is_empty() {
         for (name, price) in [
             ("poc", profile.poc),
@@ -4724,7 +5502,13 @@ impl Frame {
     /// `pub(crate)` for `draw/`: a group function gets resolved points and the
     /// frame, and the mapping is the one thing it must not re-derive.
     pub(crate) fn y_at(&self, price: f64) -> f64 {
-        price_to_y(price, self.price_min, self.price_max, &self.plot, self.scale)
+        price_to_y(
+            price,
+            self.price_min,
+            self.price_max,
+            &self.plot,
+            self.scale,
+        )
     }
 
     /// A timestamp's canvas x, in **nanoseconds** -- what a candle or a region
@@ -5100,7 +5884,13 @@ fn percent_ticks(plot: &Plot, price_min: f64, price_max: f64, reference: f64) ->
             let percent = lo + step * i as f64;
             let price = reference * (1.0 + percent / 100.0);
             Tick {
-                y: price_to_y(price, price_min, price_max, plot, ScaleMap::Percent(reference)),
+                y: price_to_y(
+                    price,
+                    price_min,
+                    price_max,
+                    plot,
+                    ScaleMap::Percent(reference),
+                ),
                 price: percent,
             }
         })
@@ -5119,7 +5909,12 @@ mod concept_shape_tests {
 
     fn frame_fixture() -> Frame {
         Frame {
-            plot: Plot { x: 0.0, y: 0.0, w: 1000.0, h: 400.0 },
+            plot: Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 1000.0,
+                h: 400.0,
+            },
             from: 0,
             to: 10_000_000_000_000,
             bar_nanos: 1_000_000_000_000,
@@ -5143,15 +5938,35 @@ mod concept_shape_tests {
             },
             &frame,
         );
-        let zone = zone.into_iter().find(|d| matches!(d, crate::script::ScriptDraw::Box { .. }))
+        let zone = zone
+            .into_iter()
+            .find(|d| matches!(d, crate::script::ScriptDraw::Box { .. }))
             .expect("zone positions a box");
-        let crate::script::ScriptDraw::Box { x1, x2, y1, y2, fill_alpha, .. } = zone else {
+        let crate::script::ScriptDraw::Box {
+            x1,
+            x2,
+            y1,
+            y2,
+            fill_alpha,
+            ..
+        } = zone
+        else {
             panic!("a zone draws as a box");
         };
-        assert!(x1 > frame.plot.x, "starts at the origin bar, not the chart's left edge");
-        assert!(x2 < frame.plot.x + frame.plot.w, "ends at its end bar, not the chart's right edge");
+        assert!(
+            x1 > frame.plot.x,
+            "starts at the origin bar, not the chart's left edge"
+        );
+        assert!(
+            x2 < frame.plot.x + frame.plot.w,
+            "ends at its end bar, not the chart's right edge"
+        );
         assert!(y1 < y2, "the band has height");
-        assert_eq!(fill_alpha, Some(0.08), "zones WASH, they do not flood -- price stays readable");
+        assert_eq!(
+            fill_alpha,
+            Some(0.08),
+            "zones WASH, they do not flood -- price stays readable"
+        );
     }
 
     #[test]
@@ -5172,7 +5987,11 @@ mod concept_shape_tests {
             crate::script::ScriptDraw::Label { text, .. } => Some(text.clone()),
             _ => None,
         });
-        assert_eq!(label.expect("a zone is labelled"), "order_block", "the zone says what it is");
+        assert_eq!(
+            label.expect("a zone is labelled"),
+            "order_block",
+            "the zone says what it is"
+        );
     }
 
     #[test]
@@ -5188,7 +6007,12 @@ mod concept_shape_tests {
             },
             &frame,
         );
-        assert!(draws.iter().any(|d| matches!(d, crate::script::ScriptDraw::Line { .. })), "the line");
+        assert!(
+            draws
+                .iter()
+                .any(|d| matches!(d, crate::script::ScriptDraw::Line { .. })),
+            "the line"
+        );
         let label = draws.iter().find_map(|d| match d {
             crate::script::ScriptDraw::Label { text, .. } => Some(text.clone()),
             _ => None,
@@ -5209,7 +6033,9 @@ mod concept_shape_tests {
             },
             &frame,
         )
-        .into_iter().next().expect("mark");
+        .into_iter()
+        .next()
+        .expect("mark");
         let above = position_concept_shape(
             &ConceptShape::CandleMark {
                 at_ns: 5_000_000_000_000,
@@ -5220,13 +6046,25 @@ mod concept_shape_tests {
             },
             &frame,
         )
-        .into_iter().next().expect("mark");
-        let crate::script::ScriptDraw::Label { y: y_below, .. } = below else { panic!("label") };
-        let crate::script::ScriptDraw::Label { y: y_above, .. } = above else { panic!("label") };
+        .into_iter()
+        .next()
+        .expect("mark");
+        let crate::script::ScriptDraw::Label { y: y_below, .. } = below else {
+            panic!("label")
+        };
+        let crate::script::ScriptDraw::Label { y: y_above, .. } = above else {
+            panic!("label")
+        };
         // Canvas y grows downward: below the candle means a LARGER y than the
         // price's own position, above means smaller.
-        assert!(y_below > frame.y_at(95.0), "the label clears the wick below");
-        assert!(y_above < frame.y_at(105.0), "the label clears the wick above");
+        assert!(
+            y_below > frame.y_at(95.0),
+            "the label clears the wick below"
+        );
+        assert!(
+            y_above < frame.y_at(105.0),
+            "the label clears the wick above"
+        );
     }
 
     #[test]
@@ -5242,9 +6080,20 @@ mod concept_shape_tests {
             },
             &frame,
         );
-        let segment = segment.into_iter().find(|d| matches!(d, crate::script::ScriptDraw::Line { .. }))
+        let segment = segment
+            .into_iter()
+            .find(|d| matches!(d, crate::script::ScriptDraw::Line { .. }))
             .expect("segment positions a line");
-        let crate::script::ScriptDraw::Line { x1, x2, y1, y2, style, extend, .. } = segment else {
+        let crate::script::ScriptDraw::Line {
+            x1,
+            x2,
+            y1,
+            y2,
+            style,
+            extend,
+            ..
+        } = segment
+        else {
             panic!("a segment draws as a line");
         };
         assert!(x2 > x1, "the segment spans its bars");
@@ -5275,9 +6124,14 @@ mod concept_shape_tests {
             })
         };
         let (x1, x2) = level(0).expect("a live level draws");
-        assert_eq!(x1, frame.x_at_nanos(3_000_000_000_000), "it starts where it was set");
+        assert_eq!(
+            x1,
+            frame.x_at_nanos(3_000_000_000_000),
+            "it starts where it was set"
+        );
         assert_eq!(x2, right, "a level with no break runs to the edge");
-        let (_, broken_x2) = level(7_000_000_000_000).expect("a broken level still records its run");
+        let (_, broken_x2) =
+            level(7_000_000_000_000).expect("a broken level still records its run");
         assert!(broken_x2 < right, "the break is where it stops");
     }
 
@@ -5300,15 +6154,27 @@ mod concept_shape_tests {
             )
             .into_iter()
             .find_map(|d| match d {
-                crate::script::ScriptDraw::Box { x1, x2, border_style, .. } => Some((x1, x2, border_style)),
+                crate::script::ScriptDraw::Box {
+                    x1,
+                    x2,
+                    border_style,
+                    ..
+                } => Some((x1, x2, border_style)),
                 _ => None,
             })
         };
         let (_, forming_x2, forming_border) = lifecycle("forming").expect("forming draws");
-        assert_eq!(forming_x2, right, "forming reaches forward -- it is still happening");
+        assert_eq!(
+            forming_x2, right,
+            "forming reaches forward -- it is still happening"
+        );
         assert_eq!(forming_border, "dashed", "a dashed border says undecided");
         let (_, mitigated_x2, mitigated_border) = lifecycle("mitigated").expect("mitigated draws");
-        assert_eq!(mitigated_x2, frame.x_at_nanos(6_000_000_000_000), "a closed box stops at its closing bar");
+        assert_eq!(
+            mitigated_x2,
+            frame.x_at_nanos(6_000_000_000_000),
+            "a closed box stops at its closing bar"
+        );
         assert_eq!(mitigated_border, "solid", "a closed box is decided");
     }
 
@@ -5326,13 +6192,27 @@ mod concept_shape_tests {
             },
             &frame,
         );
-        let crate::script::ScriptDraw::Box { y1, y2, border_style, .. } =
-            clock.into_iter().find(|d| matches!(d, crate::script::ScriptDraw::Box { .. })).expect("box")
+        let crate::script::ScriptDraw::Box {
+            y1,
+            y2,
+            border_style,
+            ..
+        } = clock
+            .into_iter()
+            .find(|d| matches!(d, crate::script::ScriptDraw::Box { .. }))
+            .expect("box")
         else {
             panic!("a time box draws as a box");
         };
-        assert_eq!((y1, y2), (frame.plot.y, frame.plot.y + frame.plot.h), "a clock claims no price, so it spans the plot");
-        assert_eq!(border_style, "dotted", "a clock's box is not a price claim's border");
+        assert_eq!(
+            (y1, y2),
+            (frame.plot.y, frame.plot.y + frame.plot.h),
+            "a clock claims no price, so it spans the plot"
+        );
+        assert_eq!(
+            border_style, "dotted",
+            "a clock's box is not a price claim's border"
+        );
 
         let banded = position_concept_shape(
             &ConceptShape::TimeBox {
@@ -5345,13 +6225,22 @@ mod concept_shape_tests {
             },
             &frame,
         );
-        let crate::script::ScriptDraw::Box { y1, y2, .. } =
-            banded.into_iter().find(|d| matches!(d, crate::script::ScriptDraw::Box { .. })).expect("box")
+        let crate::script::ScriptDraw::Box { y1, y2, .. } = banded
+            .into_iter()
+            .find(|d| matches!(d, crate::script::ScriptDraw::Box { .. }))
+            .expect("box")
         else {
             panic!("a banded time box draws as a box");
         };
-        assert!(y1 > frame.plot.y && y2 < frame.plot.y + frame.plot.h, "the measured extent, not the plot");
-        assert_eq!((y1, y2), (frame.y_at(105.0), frame.y_at(95.0)), "top and bottom are the measured prices");
+        assert!(
+            y1 > frame.plot.y && y2 < frame.plot.y + frame.plot.h,
+            "the measured extent, not the plot"
+        );
+        assert_eq!(
+            (y1, y2),
+            (frame.y_at(105.0), frame.y_at(95.0)),
+            "top and bottom are the measured prices"
+        );
     }
 
     #[test]
@@ -5367,7 +6256,10 @@ mod concept_shape_tests {
             },
             &frame,
         );
-        assert!(outside.is_empty(), "a mark on a bar outside the window has nowhere to land");
+        assert!(
+            outside.is_empty(),
+            "a mark on a bar outside the window has nowhere to land"
+        );
         let inside = position_concept_shape(
             &ConceptShape::BarMarker {
                 at_ns: 5_000_000_000_000,
@@ -5394,12 +6286,24 @@ mod concept_shape_tests {
             },
             &frame,
         );
-        let crate::script::ScriptDraw::Box { x1, x2, y1, y2, fill_alpha, .. } =
-            band.into_iter().find(|d| matches!(d, crate::script::ScriptDraw::Box { .. })).expect("box")
+        let crate::script::ScriptDraw::Box {
+            x1,
+            x2,
+            y1,
+            y2,
+            fill_alpha,
+            ..
+        } = band
+            .into_iter()
+            .find(|d| matches!(d, crate::script::ScriptDraw::Box { .. }))
+            .expect("box")
         else {
             panic!("a price band draws as a box");
         };
-        assert_eq!(x1, frame.plot.x, "the profile's window is the visible window");
+        assert_eq!(
+            x1, frame.plot.x,
+            "the profile's window is the visible window"
+        );
         assert_eq!(x2, frame.plot.x + frame.plot.w);
         assert_eq!((y1, y2), (frame.y_at(104.0), frame.y_at(96.0)));
         assert_eq!(fill_alpha, Some(0.10), "a band tint reads over the candles");
@@ -5417,9 +6321,17 @@ mod concept_shape_tests {
             },
             &frame,
         )
-        .into_iter().next().expect("readout");
-        let crate::script::ScriptDraw::Label { x, y, .. } = anchored else { panic!("label") };
-        assert_eq!(x, frame.x_at_nanos(5_000_000_000_000), "it rides its host bar");
+        .into_iter()
+        .next()
+        .expect("readout");
+        let crate::script::ScriptDraw::Label { x, y, .. } = anchored else {
+            panic!("label")
+        };
+        assert_eq!(
+            x,
+            frame.x_at_nanos(5_000_000_000_000),
+            "it rides its host bar"
+        );
         assert_eq!(y, frame.y_at(100.0) - 4.0, "just above its host price");
 
         let floating = position_concept_shape(
@@ -5431,9 +6343,17 @@ mod concept_shape_tests {
             },
             &frame,
         )
-        .into_iter().next().expect("readout");
-        let crate::script::ScriptDraw::Label { y, .. } = floating else { panic!("label") };
-        assert_eq!(y, frame.plot.y + 10.0, "a hostless readout sits at the plot's top");
+        .into_iter()
+        .next()
+        .expect("readout");
+        let crate::script::ScriptDraw::Label { y, .. } = floating else {
+            panic!("label")
+        };
+        assert_eq!(
+            y,
+            frame.plot.y + 10.0,
+            "a hostless readout sits at the plot's top"
+        );
     }
 
     #[test]
@@ -5443,9 +6363,18 @@ mod concept_shape_tests {
         let draws = position_concept_shape(
             &ConceptShape::Polyline {
                 points: vec![
-                    ShapePoint { at_ns: 2_000_000_000_000, price: 100.0 },
-                    ShapePoint { at_ns: 4_000_000_000_000, price: 104.0 },
-                    ShapePoint { at_ns: 6_000_000_000_000, price: 98.0 },
+                    ShapePoint {
+                        at_ns: 2_000_000_000_000,
+                        price: 100.0,
+                    },
+                    ShapePoint {
+                        at_ns: 4_000_000_000_000,
+                        price: 104.0,
+                    },
+                    ShapePoint {
+                        at_ns: 6_000_000_000_000,
+                        price: 98.0,
+                    },
                 ],
                 closed: false,
                 label: "double top".to_string(),
@@ -5458,25 +6387,47 @@ mod concept_shape_tests {
             &frame,
         );
         // The pivots themselves are one stroked path.
-        let path = draws.iter().find_map(|d| match d {
-            ScriptDraw::Polyline { points, closed, .. } => Some((points.clone(), *closed)),
-            _ => None,
-        }).expect("a polyline");
+        let path = draws
+            .iter()
+            .find_map(|d| match d {
+                ScriptDraw::Polyline { points, closed, .. } => Some((points.clone(), *closed)),
+                _ => None,
+            })
+            .expect("a polyline");
         assert_eq!(path.0.len(), 3, "every detector vertex is a vertex");
         assert!(!path.1, "a chart pattern's pivot path is open");
         // Two dashed rigs: the neckline at the pattern's base, the target
         // projected right from its last pivot.
-        let dashed: Vec<_> = draws.iter().filter_map(|d| match d {
-            ScriptDraw::Line { y1, style, .. } if style == "dashed" => Some(*y1),
-            _ => None,
-        }).collect();
-        assert!(dashed.contains(&frame.y_at(100.0)), "the neck at its price: {dashed:?}");
-        assert!(dashed.contains(&frame.y_at(94.0)), "the projected target at its price");
+        let dashed: Vec<_> = draws
+            .iter()
+            .filter_map(|d| match d {
+                ScriptDraw::Line { y1, style, .. } if style == "dashed" => Some(*y1),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            dashed.contains(&frame.y_at(100.0)),
+            "the neck at its price: {dashed:?}"
+        );
+        assert!(
+            dashed.contains(&frame.y_at(94.0)),
+            "the projected target at its price"
+        );
         // The PRZ is the band from the last pivot to the right edge.
-        let band = draws.iter().find_map(|d| match d {
-            ScriptDraw::Box { x1, x2, y1, y2, fill_alpha: Some(a), .. } => Some((*x1, *x2, *y1, *y2, *a)),
-            _ => None,
-        }).expect("a PRZ band");
+        let band = draws
+            .iter()
+            .find_map(|d| match d {
+                ScriptDraw::Box {
+                    x1,
+                    x2,
+                    y1,
+                    y2,
+                    fill_alpha: Some(a),
+                    ..
+                } => Some((*x1, *x2, *y1, *y2, *a)),
+                _ => None,
+            })
+            .expect("a PRZ band");
         assert_eq!(band.0, frame.x_at_nanos(6_000_000_000_000));
         assert_eq!(band.1, frame.plot.x + frame.plot.w);
         assert_eq!((band.2, band.3), (frame.y_at(98.5), frame.y_at(97.5)));
@@ -5492,9 +6443,18 @@ mod concept_shape_tests {
                 from_ns: 2_000_000_000_000,
                 to_ns: 10_000_000_000_000,
                 rungs: vec![
-                    LadderRung { ratio: 0.5, price: 101.0 },
-                    LadderRung { ratio: 0.618, price: 99.5 },
-                    LadderRung { ratio: 0.65, price: 99.0 },
+                    LadderRung {
+                        ratio: 0.5,
+                        price: 101.0,
+                    },
+                    LadderRung {
+                        ratio: 0.618,
+                        price: 99.5,
+                    },
+                    LadderRung {
+                        ratio: 0.65,
+                        price: 99.0,
+                    },
                 ],
                 label: "retracement".to_string(),
                 color: 0xcc26a69a,
@@ -5504,10 +6464,13 @@ mod concept_shape_tests {
             },
             &frame,
         );
-        let lines: Vec<_> = draws.iter().filter_map(|d| match d {
-            ScriptDraw::Line { y1, y2, x1, x2, .. } => Some((*x1, *x2, *y1, *y2)),
-            _ => None,
-        }).collect();
+        let lines: Vec<_> = draws
+            .iter()
+            .filter_map(|d| match d {
+                ScriptDraw::Line { y1, y2, x1, x2, .. } => Some((*x1, *x2, *y1, *y2)),
+                _ => None,
+            })
+            .collect();
         assert_eq!(lines.len(), 4, "three rungs plus the anchor pair");
         let (x1, x2, _, _) = lines
             .iter()
@@ -5516,21 +6479,40 @@ mod concept_shape_tests {
             .expect("a horizontal rung");
         assert_eq!(x1, frame.x_at_nanos(2_000_000_000_000));
         assert_eq!(x2, frame.x_at_nanos(10_000_000_000_000));
-        assert!(lines.iter().any(|(_, _, y1, y2)| {
-            (*y1 - frame.y_at(102.0)).abs() < 1e-9 && (*y2 - frame.y_at(100.0)).abs() < 1e-9
-        }), "the swing's two anchors are joined");
-        let pocket = draws.iter().find_map(|d| match d {
-            ScriptDraw::Box { y1, y2, fill_alpha: Some(a), .. } => Some((*y1, *y2, *a)),
-            _ => None,
-        }).expect("the pocket slice");
+        assert!(
+            lines.iter().any(|(_, _, y1, y2)| {
+                (*y1 - frame.y_at(102.0)).abs() < 1e-9 && (*y2 - frame.y_at(100.0)).abs() < 1e-9
+            }),
+            "the swing's two anchors are joined"
+        );
+        let pocket = draws
+            .iter()
+            .find_map(|d| match d {
+                ScriptDraw::Box {
+                    y1,
+                    y2,
+                    fill_alpha: Some(a),
+                    ..
+                } => Some((*y1, *y2, *a)),
+                _ => None,
+            })
+            .expect("the pocket slice");
         assert_eq!((pocket.0, pocket.1), (frame.y_at(99.5), frame.y_at(99.0)));
         assert_eq!(pocket.2, 0.10);
-        let labels: Vec<_> = draws.iter().filter_map(|d| match d {
-            ScriptDraw::Label { text, .. } => Some(text.clone()),
-            _ => None,
-        }).collect();
+        let labels: Vec<_> = draws
+            .iter()
+            .filter_map(|d| match d {
+                ScriptDraw::Label { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(labels.len(), 4, "one name plus a ratio and price per rung");
-        assert!(labels.iter().any(|t| t.contains("0.618") && t.contains("99.50")), "the rung reads its own math: {labels:?}");
+        assert!(
+            labels
+                .iter()
+                .any(|t| t.contains("0.618") && t.contains("99.50")),
+            "the rung reads its own math: {labels:?}"
+        );
     }
 
     #[test]
@@ -5549,20 +6531,39 @@ mod concept_shape_tests {
             },
             &frame,
         );
-        let lines: Vec<_> = draws.iter().filter_map(|d| match d {
-            ScriptDraw::Line { x1, y1, x2, y2, style, .. } => Some((*x1, *y1, *x2, *y2, style.clone())),
-            _ => None,
-        }).collect();
+        let lines: Vec<_> = draws
+            .iter()
+            .filter_map(|d| match d {
+                ScriptDraw::Line {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    style,
+                    ..
+                } => Some((*x1, *y1, *x2, *y2, style.clone())),
+                _ => None,
+            })
+            .collect();
         assert_eq!(lines.len(), 3, "two end ticks and the link");
-        let link = lines.iter().find(|l| l.4 == "dashed").expect("the link is dashed");
+        let link = lines
+            .iter()
+            .find(|l| l.4 == "dashed")
+            .expect("the link is dashed");
         assert_eq!(link.0, frame.x_at_nanos(2_000_000_000_000));
         assert_eq!(link.2, frame.x_at_nanos(6_000_000_000_000));
         assert_eq!((link.1, link.3), (frame.y_at(98.0), frame.y_at(96.0)));
-        assert!(lines.iter().filter(|l| l.4 == "solid").all(|l| l.0 == l.2), "the ticks are vertical");
-        let label = draws.iter().find_map(|d| match d {
-            ScriptDraw::Label { text, .. } => Some(text.clone()),
-            _ => None,
-        }).expect("the pair's name");
+        assert!(
+            lines.iter().filter(|l| l.4 == "solid").all(|l| l.0 == l.2),
+            "the ticks are vertical"
+        );
+        let label = draws
+            .iter()
+            .find_map(|d| match d {
+                ScriptDraw::Label { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("the pair's name");
         assert_eq!(label, "SMT · ETHUSDT");
         // A pair-less link still draws, without the separator.
         let bare = position_concept_shape(
@@ -5577,14 +6578,18 @@ mod concept_shape_tests {
             },
             &frame,
         );
-        assert!(bare.iter().any(|d| matches!(d, ScriptDraw::Label { text, .. } if text == "SMT")));
+        assert!(bare
+            .iter()
+            .any(|d| matches!(d, ScriptDraw::Label { text, .. } if text == "SMT")));
         // The router's wire: no `pair` key deserializes as unnamed.
         let wire: ConceptShape = serde_json::from_str(
             r#"{"type":"pair_link","from_ns":1,"to_ns":5,"from_price":100.0,
                 "to_price":101.0,"label":"SMT","color":1}"#,
         )
         .expect("the router's pair link");
-        let ConceptShape::PairLink { pair, .. } = wire else { panic!("pair link") };
+        let ConceptShape::PairLink { pair, .. } = wire else {
+            panic!("pair link")
+        };
         assert!(pair.is_empty());
     }
 
@@ -5598,7 +6603,9 @@ mod concept_shape_tests {
                 "neck":100.0,"target":null,"band_low":null,"band_high":null}"#,
         )
         .expect("the router's polyline");
-        let ConceptShape::Polyline { points, neck, .. } = poly else { panic!("polyline") };
+        let ConceptShape::Polyline { points, neck, .. } = poly else {
+            panic!("polyline")
+        };
         assert_eq!(points.len(), 2);
         assert_eq!(neck, Some(100.0));
         let ladder: ConceptShape = serde_json::from_str(
@@ -5608,7 +6615,9 @@ mod concept_shape_tests {
                 "anchors":[1,100.0,5,96.0],"pocket_low":null,"pocket_high":null}"#,
         )
         .expect("the router's ladder");
-        let ConceptShape::Ladder { rungs, anchors, .. } = ladder else { panic!("ladder") };
+        let ConceptShape::Ladder { rungs, anchors, .. } = ladder else {
+            panic!("ladder")
+        };
         assert_eq!(rungs.len(), 2);
         assert_eq!(anchors, Some((1, 100.0, 5, 96.0)));
         // A pre-rig wire (no optional keys) still deserializes: the fields
@@ -5618,7 +6627,15 @@ mod concept_shape_tests {
                 "label":"x","color":1}"#,
         )
         .expect("a bare polyline");
-        let ConceptShape::Polyline { neck, band_low, closed, .. } = bare else { panic!("polyline") };
+        let ConceptShape::Polyline {
+            neck,
+            band_low,
+            closed,
+            ..
+        } = bare
+        else {
+            panic!("polyline")
+        };
         assert_eq!((neck, band_low, closed), (None, None, false));
     }
 }
@@ -5626,9 +6643,7 @@ mod concept_shape_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drawing::{
-        DrawingKind, DrawingOptions, DrawingPart, OverlayRole, FIB_LEVELS,
-    };
+    use crate::drawing::{DrawingKind, DrawingOptions, DrawingPart, OverlayRole, FIB_LEVELS};
     use crate::footprint;
     use crate::indicator::{
         Evidence, EvidenceLink, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind,
@@ -5678,16 +6693,29 @@ mod tests {
     fn a_log_scale_maps_equal_ratios_to_equal_pixels() {
         // The whole point of log: doubling reads as the same distance
         // anywhere on the axis. 100->200 and 200->400 are both one doubling.
-        let plot = Plot { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let plot = Plot {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        };
         let low = price_to_y(100.0, 50.0, 800.0, &plot, ScaleMap::Log);
         let mid = price_to_y(200.0, 50.0, 800.0, &plot, ScaleMap::Log);
         let high = price_to_y(400.0, 50.0, 800.0, &plot, ScaleMap::Log);
-        assert!((mid - low - (high - mid)).abs() < 1e-9, "{low} {mid} {high}");
+        assert!(
+            (mid - low - (high - mid)).abs() < 1e-9,
+            "{low} {mid} {high}"
+        );
     }
 
     #[test]
     fn the_log_mapping_inverts_back_to_the_price() {
-        let plot = Plot { x: 0.0, y: 10.0, w: 100.0, h: 300.0 };
+        let plot = Plot {
+            x: 0.0,
+            y: 10.0,
+            w: 100.0,
+            h: 300.0,
+        };
         for price in [83_000.0, 0.42, 12_345.678] {
             let y = price_to_y(price, 0.1, 100_000.0, &plot, ScaleMap::Log);
             let back = price_from_y(y, 0.1, 100_000.0, &plot, ScaleMap::Log);
@@ -5699,7 +6727,12 @@ mod tests {
     fn log_ticks_land_on_the_decade_grid() {
         // A range spanning a decade gets the 1/2/5 grid a log reader's eye
         // already knows, not evenly spaced prices in strange places.
-        let plot = Plot { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let plot = Plot {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        };
         let got = ticks(&plot, 90.0, 9000.0, ScaleMap::Log);
         let prices: Vec<f64> = got.iter().map(|tick| tick.price).collect();
         assert!(prices.contains(&100.0), "{prices:?}");
@@ -5718,7 +6751,12 @@ mod tests {
         // points* are equal pixels -- the ratio property is log's, not its),
         // and its zero sits exactly at the reference price: that is the whole
         // difference from a linear axis -- the anchor and the % labels.
-        let plot = Plot { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let plot = Plot {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        };
         let map = ScaleMap::Percent(100.0);
         let at = |p: f64| price_to_y(p, 80.0, 130.0, &plot, map);
         assert!(((at(100.0) - at(110.0)) - (at(110.0) - at(120.0))).abs() < 1e-9);
@@ -5731,7 +6769,12 @@ mod tests {
     #[test]
     fn the_percent_mapping_inverts_back_to_the_price() {
         // The crosshair reads prices even while the axis reads percentages.
-        let plot = Plot { x: 0.0, y: 10.0, w: 100.0, h: 300.0 };
+        let plot = Plot {
+            x: 0.0,
+            y: 10.0,
+            w: 100.0,
+            h: 300.0,
+        };
         let map = ScaleMap::Percent(100.0);
         for price in [95.5, 101.25, 128.75] {
             let y = price_to_y(price, 80.0, 130.0, &plot, map);
@@ -5744,10 +6787,19 @@ mod tests {
     fn percent_ticks_label_percentages() {
         // The axis reads percentages (TradingView's % labels), with zero at
         // the reference -- while the crosshair keeps reading prices.
-        let plot = Plot { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let plot = Plot {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        };
         let got = ticks(&plot, 90.0, 110.0, ScaleMap::Percent(100.0));
         assert!(got.iter().any(|tick| tick.price.abs() < 1e-6), "{got:?}");
-        assert!(got.iter().all(|tick| tick.price >= -10.0 && tick.price <= 10.0), "{got:?}");
+        assert!(
+            got.iter()
+                .all(|tick| tick.price >= -10.0 && tick.price <= 10.0),
+            "{got:?}"
+        );
     }
 
     #[test]
@@ -5767,7 +6819,10 @@ mod tests {
     fn a_linear_request_reports_a_linear_scene() {
         // The toggle is a request knob: the scene must echo the scale back so
         // the shell's own inverse-mapping calls take the same one.
-        let scene = build(&Request { candles: series(50), ..Request::default() });
+        let scene = build(&Request {
+            candles: series(50),
+            ..Request::default()
+        });
         assert_eq!(scene.scale, PriceScale::Linear);
         let scene = build(&Request {
             candles: series(50),
@@ -5782,15 +6837,35 @@ mod tests {
         // docs/33: the crosshair's price tag is the inverse of the mapping
         // every candle already went through. Round-trips at the range's ends
         // and middle; a flat span collapses to the one price it knows.
-        let plot = Plot { x: 8.0, y: 10.0, w: 400.0, h: 300.0 };
+        let plot = Plot {
+            x: 8.0,
+            y: 10.0,
+            w: 400.0,
+            h: 300.0,
+        };
         for price in [95.0, 100.0, 105.0] {
             let y = price_to_y(price, 95.0, 105.0, &plot, ScaleMap::Linear);
             let back = price_from_y(y, 95.0, 105.0, &plot, ScaleMap::Linear);
             assert!((back - price).abs() < 1e-9, "{price} -> {y} -> {back}");
         }
-        assert_eq!(price_from_y(123.0, 100.0, 100.0, &plot, ScaleMap::Linear), 100.0, "a flat range");
         assert_eq!(
-            price_from_y(123.0, 95.0, 105.0, &Plot { x: 0.0, y: 0.0, w: 1.0, h: 0.0 }, ScaleMap::Linear),
+            price_from_y(123.0, 100.0, 100.0, &plot, ScaleMap::Linear),
+            100.0,
+            "a flat range"
+        );
+        assert_eq!(
+            price_from_y(
+                123.0,
+                95.0,
+                105.0,
+                &Plot {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 0.0
+                },
+                ScaleMap::Linear
+            ),
             105.0,
             "a zero-height plot cannot divide"
         );
@@ -6052,7 +7127,8 @@ mod tests {
     }
 
     #[test]
-    fn the_longest_profile_bar_is_the_widest() {        let scene = build(&request(300));
+    fn the_longest_profile_bar_is_the_widest() {
+        let scene = build(&request(300));
         let widest = scene.profile.iter().map(|bar| bar.w).fold(0.0f64, f64::max);
         let loudest = scene
             .profile
@@ -6081,31 +7157,58 @@ mod tests {
     #[test]
     fn session_bayesian_profile_emits_forecast_and_observed_geometry() {
         let day = Timeframe::D1.nanos();
-        let candles: Vec<_> = (0..48).map(|i| {
-            let mut bar = candle(i, 100.0 + (i % 24) as f64 * 0.1, 100.5 + (i % 24) as f64 * 0.1);
-            bar.timeframe = Timeframe::H1;
-            bar.open_time = day + i * Timeframe::H1.nanos();
-            bar.volume = 10.0;
-            bar
-        }).collect();
+        let candles: Vec<_> = (0..48)
+            .map(|i| {
+                let mut bar = candle(
+                    i,
+                    100.0 + (i % 24) as f64 * 0.1,
+                    100.5 + (i % 24) as f64 * 0.1,
+                );
+                bar.timeframe = Timeframe::H1;
+                bar.open_time = day + i * Timeframe::H1.nanos();
+                bar.volume = 10.0;
+                bar
+            })
+            .collect();
         let scene = build(&Request {
             candles,
             profile_type: ProfileType::SessionBayesian,
             profile_session: Timeframe::D1,
             // Keep the current session on screen while hiding earlier bars.
             // Type 1 must still learn from loaded history outside the viewport.
-            viewport: crate::viewport::Viewport { from: 36, count: Some(12), price: None },
+            viewport: crate::viewport::Viewport {
+                from: 36,
+                count: Some(12),
+                price: None,
+            },
             ..Request::default()
         });
         assert!(!scene.profile_projection.is_empty());
         assert!(!scene.profile_heatmap.is_empty());
-        assert_eq!(scene.profile_projection_meta.as_ref().unwrap().training_sessions, 1);
+        assert_eq!(
+            scene
+                .profile_projection_meta
+                .as_ref()
+                .unwrap()
+                .training_sessions,
+            1
+        );
         assert!(!scene.profile.is_empty());
-        let meta = scene.profile_projection_meta.expect("model context is exposed");
+        let meta = scene
+            .profile_projection_meta
+            .expect("model context is exposed");
         assert_eq!(meta.training_sessions, 1);
         assert!((0.0..=1.0).contains(&meta.confidence));
+        assert!((0.0..=1.0).contains(&meta.bullish_share));
         assert!(meta.session_open_y.is_finite());
-        assert!(scene.profile_projection.iter().all(|bar| bar.x < scene.plot.x + scene.plot.w));
+        assert!(scene
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("BUY/SELL LEAN") && note.contains("not an entry")));
+        assert!(scene
+            .profile_projection
+            .iter()
+            .all(|bar| bar.x < scene.plot.x + scene.plot.w));
     }
 
     #[test]
@@ -6113,12 +7216,14 @@ mod tests {
         let highs = [101.0, 103.0, 105.0, 110.0, 106.0, 104.0, 105.0, 112.0];
         let lows = [99.0, 99.5, 100.0, 100.0, 101.0, 100.0, 101.0, 105.0];
         let closes = [100.0, 102.0, 104.0, 108.0, 105.0, 103.0, 104.0, 111.0];
-        let candles: Vec<_> = (0..highs.len()).map(|i| {
-            let mut bar = candle(i as i64, closes[i] - 0.1, closes[i]);
-            bar.high = highs[i];
-            bar.low = lows[i];
-            bar
-        }).collect();
+        let candles: Vec<_> = (0..highs.len())
+            .map(|i| {
+                let mut bar = candle(i as i64, closes[i] - 0.1, closes[i]);
+                bar.high = highs[i];
+                bar.low = lows[i];
+                bar
+            })
+            .collect();
         let scene = build(&Request {
             candles,
             profile_type: ProfileType::StructureAnchored,
@@ -6128,13 +7233,34 @@ mod tests {
         });
         assert_eq!(scene.structure_events.len(), 1);
         assert_eq!(scene.structure_events[0].kind, "bos");
-        assert!(scene.structure_profiles.iter().any(|profile| profile.kind == "bos"));
-        assert!(scene.structure_profiles.iter().any(|profile| profile.active));
-        assert!(scene.structure_profiles.iter().all(|profile| !profile.bars.is_empty()));
-        assert!(scene.structure_profiles.iter().any(|profile| profile.poc_x2 >= 0.0));
-        assert!(scene.structure_profiles.iter().all(|profile| profile.vah_y >= 0.0 && profile.val_y >= 0.0));
-        assert!(scene.profile.is_empty(), "the unsegmented histogram is suppressed");
-        assert!(scene.sub_panes.iter().any(|pane| pane.label.starts_with("CVD")));
+        assert!(scene
+            .structure_profiles
+            .iter()
+            .any(|profile| profile.kind == "bos"));
+        assert!(scene
+            .structure_profiles
+            .iter()
+            .any(|profile| profile.active));
+        assert!(scene
+            .structure_profiles
+            .iter()
+            .all(|profile| !profile.bars.is_empty()));
+        assert!(scene
+            .structure_profiles
+            .iter()
+            .any(|profile| profile.poc_x2 >= 0.0));
+        assert!(scene
+            .structure_profiles
+            .iter()
+            .all(|profile| profile.vah_y >= 0.0 && profile.val_y >= 0.0));
+        assert!(
+            scene.profile.is_empty(),
+            "the unsegmented histogram is suppressed"
+        );
+        assert!(scene
+            .sub_panes
+            .iter()
+            .any(|pane| pane.label.starts_with("CVD")));
     }
 
     #[test]
@@ -6142,20 +7268,25 @@ mod tests {
         let highs = [101.0, 103.0, 105.0, 110.0, 106.0, 104.0, 105.0, 112.0];
         let lows = [99.0, 99.5, 100.0, 100.0, 101.0, 100.0, 101.0, 105.0];
         let closes = [100.0, 102.0, 104.0, 108.0, 105.0, 103.0, 104.0, 111.0];
-        let candles: Vec<_> = (0..highs.len()).map(|i| {
-            let mut bar = candle(i as i64, closes[i] - 0.1, closes[i]);
-            bar.symbol = "DERIV:Volatility 75".into();
-            bar.high = highs[i];
-            bar.low = lows[i];
-            bar.volume = 0.0;
-            bar.buy_volume = 0.0;
-            bar.sell_volume = 0.0;
-            bar
-        }).collect();
-        let quotes = candles.iter().map(|bar| ProfileQuote {
-            time: bar.open_time,
-            price: bar.close,
-        }).collect();
+        let candles: Vec<_> = (0..highs.len())
+            .map(|i| {
+                let mut bar = candle(i as i64, closes[i] - 0.1, closes[i]);
+                bar.symbol = "DERIV:Volatility 75".into();
+                bar.high = highs[i];
+                bar.low = lows[i];
+                bar.volume = 0.0;
+                bar.buy_volume = 0.0;
+                bar.sell_volume = 0.0;
+                bar
+            })
+            .collect();
+        let quotes = candles
+            .iter()
+            .map(|bar| ProfileQuote {
+                time: bar.open_time,
+                price: bar.close,
+            })
+            .collect();
         let scene = build(&Request {
             candles,
             profile_type: ProfileType::StructureAnchored,
@@ -6165,8 +7296,26 @@ mod tests {
         assert_eq!(scene.structure_events.len(), 1);
         assert_eq!(scene.structure_events[0].kind, "bos");
         assert_eq!(scene.structure_events[0].signal, "buy");
-        assert!(scene.structure_profiles.iter().any(|profile| profile.active && !profile.bars.is_empty()));
-        assert!(scene.note.as_deref().is_some_and(|note| note.contains("quote activity") && note.contains("chart signals")));
+        assert!(scene
+            .structure_profiles
+            .iter()
+            .any(|profile| profile.active && !profile.bars.is_empty()));
+        assert!(scene
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("quote activity") && note.contains("POC RETEST")));
+        assert!(scene.profile_entry_signals.iter().all(|cue| {
+            cue.side == "buy" || cue.side == "sell"
+        }));
+    }
+
+    #[test]
+    fn structure_profile_retest_cues_require_a_reclaim_in_the_regime_direction() {
+        assert_eq!(profile_retest_side("up", 101.0, 99.0, 103.0, 102.0, 100.0), Some("buy"));
+        assert_eq!(profile_retest_side("down", 99.0, 97.0, 101.0, 98.0, 100.0), Some("sell"));
+        assert_eq!(profile_retest_side("up", 99.0, 98.0, 102.0, 101.0, 100.0), None);
+        assert_eq!(profile_retest_side("down", 101.0, 98.0, 102.0, 99.0, 100.0), None);
+        assert_eq!(profile_retest_side("up", 101.0, 98.0, 102.0, f64::NAN, 100.0), None);
     }
 
     #[test]
@@ -6234,8 +7383,12 @@ mod tests {
         let left = build(&ask);
         let right = build(&request(300));
 
-        assert_eq!(left.profile.len(), right.profile.len(), "the same candles,
-            so the same buckets -- only the edge they grow from moved");
+        assert_eq!(
+            left.profile.len(),
+            right.profile.len(),
+            "the same candles,
+            so the same buckets -- only the edge they grow from moved"
+        );
         for (l, r) in left.profile.iter().zip(&right.profile) {
             // Same bar, mirrored: a right-anchored bar of width w sits at
             // right_edge - w; a left-anchored one at plot.x. Their outer
@@ -6308,12 +7461,17 @@ mod tests {
         });
         assert_eq!(scene.levels.len(), 1);
         assert_eq!(scene.levels[0].kind, "poc");
+        assert!(
+            scene.vwap.is_empty(),
+            "an explicit lines list without vwap disables the VWAP overlay"
+        );
 
         let all = build(&request(200));
         let kinds: Vec<&str> = all.levels.iter().map(|level| level.kind.as_str()).collect();
-        for expected in ["vwap", "poc", "vah", "val"] {
+        for expected in ["poc", "vah", "val"] {
             assert!(kinds.contains(&expected), "missing {expected}: {kinds:?}");
         }
+        assert!(!all.vwap.is_empty(), "VWAP is a positioned line series");
     }
 
     #[test]
@@ -6952,30 +8110,16 @@ mod tests {
 
     #[test]
     fn the_window_decides_which_candles_are_drawn() {
-        let scene = build(&windowed(500, 100, 50));
+        let request = windowed(500, 100, 50);
+        let scene = build(&request);
         assert_eq!(scene.candles.len(), 50, "the window is the slice");
         assert_eq!(scene.viewport.from, 100);
         assert_eq!(scene.viewport.count, Some(50));
-
-        // The *right* fifty, not the first fifty. The fixture rises, so the
-        // window's own prices are far above the start of the series -- and a
-        // scene that ignored `from` would still pass every count assertion above
-        // while drawing the wrong candles.
-        //
-        // Compared as prices rather than as y coordinates, because both scenes
-        // fit their own window: bar 100 is the cheapest bar *in its window* and
-        // so is bar 0 in its, which puts them at the same y and makes the two
-        // indistinguishable on the canvas.
-        let head = build(&windowed(500, 0, 50));
         assert!(
-            scene.price_min > head.price_max,
-            "the axis must be fitted to the window's prices ({}, {}), not to the \
-             series' start ({}, {})",
-            scene.price_min,
-            scene.price_max,
-            head.price_min,
-            head.price_max
+            (scene.candles[0].open - request.candles[100].open).abs() < f64::EPSILON,
+            "the plotted first candle must come from the requested right-side window"
         );
+        assert!(scene.vwap.iter().all(|point| point.y >= scene.plot.y && point.y <= scene.plot.y + scene.plot.h), "the cumulative line remains inside the fitted overlay range");
 
         // And the times reported are the window's, which is what the shell's
         // axis label is built from.
@@ -7040,23 +8184,107 @@ mod tests {
             "the profile must be the window's, not the series'"
         );
 
-        let vwap = scene
-            .levels
+        assert!(
+            scene.levels.iter().all(|level| level.kind != "vwap"),
+            "VWAP is a resettable line, not a static horizontal level"
+        );
+    }
+
+    #[test]
+    fn session_vwap_keeps_previewport_history_and_draws_weighted_bands() {
+        let day = 86_400_000_000_000i64;
+        let step = 300_000_000_000i64;
+        let mut request = request(30);
+        for (index, candle) in request.candles.iter_mut().enumerate() {
+            candle.open_time = 2 * day - 10 * step + index as i64 * step;
+            let price = if index < 10 {
+                100.0
+            } else if index < 15 {
+                110.0
+            } else {
+                120.0
+            };
+            candle.open = price;
+            candle.high = price + 1.0;
+            candle.low = price - 1.0;
+            candle.close = price;
+            candle.volume = 1.0;
+        }
+        request.viewport = crate::viewport::Viewport {
+            from: 15,
+            count: Some(10),
+            price: None,
+        };
+        request.vwap_bands = true;
+        let scene = build(&request);
+        assert_eq!(scene.vwap.len(), 10);
+        assert!(
+            !scene.vwap[0].anchor_start,
+            "the current session began before this zoomed view"
+        );
+        assert!(
+            (scene.vwap[0].value - 111.666_666_666_7).abs() < 1e-8,
+            "history before the viewport must be included"
+        );
+        assert!(scene.vwap[0].upper_y.is_some() && scene.vwap[0].lower_y.is_some());
+        assert_eq!(scene.vwap_basis.as_deref(), Some("traded_volume"));
+    }
+
+    #[test]
+    fn deriv_vwap_uses_quote_ticks_and_labels_the_proxy() {
+        let mut request = request(20);
+        for candle in &mut request.candles {
+            candle.symbol = "DERIV:Volatility 75".into();
+            candle.volume = 0.0;
+            candle.buy_volume = 0.0;
+            candle.sell_volume = 0.0;
+        }
+        request.profile_quotes = request
+            .candles
             .iter()
-            .find(|level| level.kind == "vwap")
-            .expect("a vwap level");
-        assert!(
-            (vwap.price - calculate_vwap(visible).expect("a window vwap")).abs() < 1e-9,
-            "the vwap must be the window's"
+            .enumerate()
+            .map(|(index, candle)| ProfileQuote {
+                time: candle.open_time,
+                price: 100.0 + index as f64,
+            })
+            .collect();
+        request.vwap_bands = true;
+        let scene = build(&request);
+        assert_eq!(scene.vwap_basis.as_deref(), Some("deriv_quote_ticks"));
+        assert!((scene.vwap.last().unwrap().value - 109.5).abs() < 1e-9);
+        assert!(scene.vwap.last().unwrap().upper_y.is_some());
+        assert!(scene
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("quote-tick weighted-price proxy")));
+
+        request.profile_quotes.clear();
+        let fallback = build(&request);
+        assert_eq!(fallback.vwap_basis.as_deref(), Some("deriv_close_proxy"));
+        assert!(fallback
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("not traded-volume VWAP")));
+    }
+
+    #[test]
+    fn vwap_calendar_anchors_reset_at_monday_and_month_boundaries() {
+        const DAY: i64 = 86_400_000_000_000;
+        assert_ne!(
+            vwap_anchor_key(3 * DAY, VwapAnchor::Week),
+            vwap_anchor_key(4 * DAY, VwapAnchor::Week)
         );
-        // And demonstrably not the whole series', which for a rising series is a
-        // different number by a wide margin.
-        let whole = calculate_vwap(&request.candles).expect("a series vwap");
-        assert!(
-            (vwap.price - whole).abs() > 1.0,
-            "the window's vwap ({}) should differ from the series' ({whole})",
-            vwap.price
+        assert_ne!(
+            vwap_anchor_key(30 * DAY, VwapAnchor::Month),
+            vwap_anchor_key(31 * DAY, VwapAnchor::Month)
         );
+        let mut bar = candle(0, 10.0, 16.0);
+        bar.high = 20.0;
+        bar.low = 4.0;
+        assert!((vwap_source_price(&bar, VwapSource::Typical) - 40.0 / 3.0).abs() < 1e-9);
+        assert_eq!(vwap_source_price(&bar, VwapSource::Close), 16.0);
+        assert_eq!(vwap_source_price(&bar, VwapSource::Hl2), 12.0);
+        assert_eq!(vwap_source_price(&bar, VwapSource::Ohlc4), 12.5);
     }
 
     #[test]
@@ -7099,16 +8327,28 @@ mod tests {
             candle.sell_volume = 0.0;
         }
         request.profile_quotes = vec![
-            ProfileQuote { time: 40 * 300_000_000_000, price: 120.0 },
-            ProfileQuote { time: 41 * 300_000_000_000, price: 120.1 },
-            ProfileQuote { time: 42 * 300_000_000_000, price: 121.0 },
+            ProfileQuote {
+                time: 40 * 300_000_000_000,
+                price: 120.0,
+            },
+            ProfileQuote {
+                time: 41 * 300_000_000_000,
+                price: 120.1,
+            },
+            ProfileQuote {
+                time: 42 * 300_000_000_000,
+                price: 121.0,
+            },
         ];
         let scene = build(&request);
         let expected = calculate_quote_tick_profile(&[120.0, 120.1, 121.0], 0.5);
         let expected_total: f64 = expected.histogram.iter().map(|node| node.volume).sum();
         let actual_total: f64 = scene.profile.iter().map(|bar| bar.volume).sum();
         assert!((actual_total - expected_total).abs() < 1e-9);
-        assert!(scene.note.as_deref().is_some_and(|note| note.contains("quote-tick profile")));
+        assert!(scene
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("quote-tick profile")));
     }
 
     #[test]
@@ -7427,7 +8667,15 @@ mod tests {
         // The price it resolved to is the one that lands there: the round trip
         // in one line, and the thing the shell is trusting the engine with.
         assert!(
-            (price_to_y(price, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear) - y1).abs() < 1e-6
+            (price_to_y(
+                price,
+                scene.price_min,
+                scene.price_max,
+                &scene.plot,
+                ScaleMap::Linear
+            ) - y1)
+                .abs()
+                < 1e-6
         );
     }
 
@@ -7518,7 +8766,13 @@ mod tests {
             "and reaches its right edge, whatever x the user clicked"
         );
         assert!((y1 - y2).abs() < 1e-9, "and it is horizontal");
-        let expected = price_to_y(110.0, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear);
+        let expected = price_to_y(
+            110.0,
+            scene.price_min,
+            scene.price_max,
+            &scene.plot,
+            ScaleMap::Linear,
+        );
         assert!(
             (y1 - expected).abs() < 1e-6,
             "at the anchor's price: {y1} vs {expected}"
@@ -7543,7 +8797,15 @@ mod tests {
             .collect();
         assert_eq!(levels.len(), FIB_LEVELS.len());
 
-        let y_of = |price: f64| price_to_y(price, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear);
+        let y_of = |price: f64| {
+            price_to_y(
+                price,
+                scene.price_min,
+                scene.price_max,
+                &scene.plot,
+                ScaleMap::Linear,
+            )
+        };
         // Level 0 is the first anchor and level 1 is the second. Swapping those
         // two still draws a plausible Fibonacci, which is exactly why it is
         // asserted rather than eyeballed.
@@ -7737,9 +8999,7 @@ mod tests {
         // The points are one array in placement order, and the count is the kind's
         // own -- the shell's save body and the toolbar's click count both read it
         // from here rather than counting the parts.
-        let points = drawing["points"]
-            .as_array()
-            .expect("points is an array");
+        let points = drawing["points"].as_array().expect("points is an array");
         assert_eq!(points.len(), 2, "a trendline reports two points");
 
         // Each carries both units, and the absolute one is what goes to storage.
@@ -8078,7 +9338,7 @@ mod tests {
             price_max: scene.price_max,
             // Timeframe::M5 is what the test series itself carries.
             bar_nanos: analytics_core::types::Timeframe::M5.nanos(),
-        scale: ScaleMap::Linear,
+            scale: ScaleMap::Linear,
         };
         for placed in &scene.overlays {
             assert!(
@@ -8193,7 +9453,10 @@ mod tests {
             }],
             ..request(100)
         });
-        let zone = &scene.indicator.expect("broker zones share indicator layer").zones[0];
+        let zone = &scene
+            .indicator
+            .expect("broker zones share indicator layer")
+            .zones[0];
         assert_eq!(zone.label, "Convexity demand · retracement");
         assert_eq!(zone.price_low, 109.0);
         assert_eq!(zone.price_high, 112.0);
@@ -8252,15 +9515,26 @@ mod tests {
         let json = serde_json::to_value(&scene).expect("serializes");
         let wire = &json["indicator"]["zones"][0];
         for key in [
-            "id", "x", "w", "y_top", "h", "label", "state", "price_low", "price_high",
-            "start_time", "end_time", "explanation",
+            "id",
+            "x",
+            "w",
+            "y_top",
+            "h",
+            "label",
+            "state",
+            "price_low",
+            "price_high",
+            "start_time",
+            "end_time",
+            "explanation",
         ] {
             assert!(!wire[key].is_null(), "the inspector reads `{key}`: {wire}");
         }
     }
 
     #[test]
-    fn a_zone_nothing_explains_omits_the_explanation_key() {        // A pasted output may carry zones without an evidence graph. The key
+    fn a_zone_nothing_explains_omits_the_explanation_key() {
+        // A pasted output may carry zones without an evidence graph. The key
         // is *absent* then, not empty, so the inspector can tell "no reason
         // recorded" from a reason that happens to be blank.
         let output = IndicatorOutput {
@@ -8486,7 +9760,11 @@ mod tests {
             ..IndicatorOutput::default()
         };
         probe.refresh_from_concepts(&pin_series());
-        let zone = probe.zones.first().expect("the fixture detects one zone").clone();
+        let zone = probe
+            .zones
+            .first()
+            .expect("the fixture detects one zone")
+            .clone();
 
         let scene = build(&Request {
             candles: pin_series(),
@@ -8509,11 +9787,25 @@ mod tests {
             .find(|z| z.start_time == zone.start_time)
             .expect("the zone is there");
         assert_eq!(pinned.pinned_edge, Some(ZoneEdge::Top));
-        assert!(pinned.explanation.contains("pinned by you"), "{}", pinned.explanation);
+        assert!(
+            pinned.explanation.contains("pinned by you"),
+            "{}",
+            pinned.explanation
+        );
         // The geometry is the pinned band's: the top maps through the scene's
         // own scale, ABOVE the detected band's (a higher price, a smaller y).
-        let expected = price_to_y(zone.price_high + 3.0, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear);
-        assert!((pinned.y_top - expected).abs() < 1e-9, "{} vs {expected}", pinned.y_top);
+        let expected = price_to_y(
+            zone.price_high + 3.0,
+            scene.price_min,
+            scene.price_max,
+            &scene.plot,
+            ScaleMap::Linear,
+        );
+        assert!(
+            (pinned.y_top - expected).abs() < 1e-9,
+            "{} vs {expected}",
+            pinned.y_top
+        );
         // The wire carries the edge marker; a scene without it still parses.
         let json = serde_json::to_value(&indicator.zones).expect("serializes");
         assert_eq!(json[0]["pinned_edge"], "top");
@@ -8536,7 +9828,11 @@ mod tests {
             ..IndicatorOutput::default()
         };
         probe.refresh_from_concepts(&pin_series());
-        let zone = probe.zones.first().expect("the fixture detects one zone").clone();
+        let zone = probe
+            .zones
+            .first()
+            .expect("the fixture detects one zone")
+            .clone();
 
         let scene = build(&Request {
             candles: pin_series(),
@@ -8570,7 +9866,13 @@ mod tests {
             .find(|z| z.start_time == zone.start_time)
             .expect("the zone is there");
         assert_eq!(untouched.pinned_edge, None);
-        let detected_top = price_to_y(zone.price_high, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear);
+        let detected_top = price_to_y(
+            zone.price_high,
+            scene.price_min,
+            scene.price_max,
+            &scene.plot,
+            ScaleMap::Linear,
+        );
         assert!(
             (untouched.y_top - detected_top).abs() < 1e-9,
             "the refused pin left the detected geometry alone"
@@ -8584,7 +9886,11 @@ mod tests {
         // echo free of the future -- an echo that included it would grow the
         // window a horizon per frame.
         let mut req = request(120);
-        req.forecast = Some(ForecastRequest { steps: Some(30), paths: Some(100), vol_scale: None });
+        req.forecast = Some(ForecastRequest {
+            steps: Some(30),
+            paths: Some(100),
+            vol_scale: None,
+        });
         let scene = build(&req);
         let cone = scene.forecast.as_ref().expect("the cone is drawn");
         assert_eq!(cone.bands.len(), 5);
@@ -8598,8 +9904,18 @@ mod tests {
         // The anchor is the last close at the last bar's center.
         let anchor = cone.bands[2].points[0];
         let last_close = series(120)[119].close;
-        let anchor_y = price_to_y(last_close, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear);
-        assert!((anchor.y - anchor_y).abs() < 1e-9, "{} vs {anchor_y}", anchor.y);
+        let anchor_y = price_to_y(
+            last_close,
+            scene.price_min,
+            scene.price_max,
+            &scene.plot,
+            ScaleMap::Linear,
+        );
+        assert!(
+            (anchor.y - anchor_y).abs() < 1e-9,
+            "{} vs {anchor_y}",
+            anchor.y
+        );
         // Every step keeps the quantiles ordered: y grows downward, so the
         // 95% line never sits below the 5% line.
         for k in 0..31 {
@@ -8610,9 +9926,15 @@ mod tests {
         }
         // Determinism across frames, and the echo never includes the future.
         let again = build(&req);
-        assert_eq!(scene.forecast, again.forecast, "the same view, the same cone");
+        assert_eq!(
+            scene.forecast, again.forecast,
+            "the same view, the same cone"
+        );
         let plain = build(&request(120));
-        assert_eq!(scene.viewport, plain.viewport, "the echo is the pre-extension window");
+        assert_eq!(
+            scene.viewport, plain.viewport,
+            "the echo is the pre-extension window"
+        );
         assert!(plain.forecast.is_none(), "no knob, no cone");
         // Old scenes -- with no forecast key at all -- still deserialize.
         let json = serde_json::to_value(&scene).expect("serializes");
@@ -8626,7 +9948,11 @@ mod tests {
         // docs/35: fewer than the resampling minimum of returns is a refusal,
         // not a costume cone.
         let mut req = request(6);
-        req.forecast = Some(ForecastRequest { steps: None, paths: None, vol_scale: None });
+        req.forecast = Some(ForecastRequest {
+            steps: None,
+            paths: None,
+            vol_scale: None,
+        });
         let scene = build(&req);
         assert!(scene.forecast.is_none());
         assert!(
@@ -8642,11 +9968,17 @@ mod tests {
         // twice the size -- the cone widens, the time axis does not move,
         // and an old-shaped request (no vol_scale key) still parses.
         let mut one = request(120);
-        one.forecast =
-            Some(ForecastRequest { steps: Some(30), paths: Some(200), vol_scale: Some(1.0) });
+        one.forecast = Some(ForecastRequest {
+            steps: Some(30),
+            paths: Some(200),
+            vol_scale: Some(1.0),
+        });
         let mut two = request(120);
-        two.forecast =
-            Some(ForecastRequest { steps: Some(30), paths: Some(200), vol_scale: Some(2.0) });
+        two.forecast = Some(ForecastRequest {
+            steps: Some(30),
+            paths: Some(200),
+            vol_scale: Some(2.0),
+        });
         let a = build(&one).forecast.expect("a cone");
         let b = build(&two).forecast.expect("a cone");
         // Pixel spread between the 5% and 95% lines at the last step.
@@ -8661,7 +9993,10 @@ mod tests {
             spread(&b)
         );
         let last = a.bands[0].points.len() - 1;
-        assert_eq!(a.bands[0].points[last].x, b.bands[0].points[last].x, "same horizon");
+        assert_eq!(
+            a.bands[0].points[last].x, b.bands[0].points[last].x,
+            "same horizon"
+        );
         // The old shape: a request without the key deserializes to 1.0.
         let parsed: ForecastRequest =
             serde_json::from_value(serde_json::json!({ "steps": 30 })).expect("parses");
@@ -8697,7 +10032,11 @@ mod tests {
         let pane = &scene.sub_panes[0];
         // The main plot shrank by the pane's height plus the gap.
         let expected_main = 600.0 - PAD_TOP - PAD_BOTTOM - SUB_PANE_HEIGHT - SUB_PANE_GAP;
-        assert!((scene.plot.h - expected_main).abs() < 1e-9, "{}", scene.plot.h);
+        assert!(
+            (scene.plot.h - expected_main).abs() < 1e-9,
+            "{}",
+            scene.plot.h
+        );
         // The pane sits below the price plot with the gap between them.
         assert!((pane.plot.y - (scene.plot.y + scene.plot.h + SUB_PANE_GAP)).abs() < 1e-9);
         assert!((pane.plot.h - SUB_PANE_HEIGHT).abs() < 1e-9);
@@ -8710,8 +10049,16 @@ mod tests {
         }
         // The 30/70 bands and the ticks are mapped into the pane.
         assert_eq!(pane.levels.len(), 2);
-        let oversold = pane.levels.iter().find(|l| l.value == 30.0).expect("30 band");
-        let overbought = pane.levels.iter().find(|l| l.value == 70.0).expect("70 band");
+        let oversold = pane
+            .levels
+            .iter()
+            .find(|l| l.value == 30.0)
+            .expect("30 band");
+        let overbought = pane
+            .levels
+            .iter()
+            .find(|l| l.value == 70.0)
+            .expect("70 band");
         assert!(oversold.y > overbought.y, "y grows downward");
         assert!(!pane.ticks.is_empty());
         // docs/33: the pane carries the value range its ticks were built
@@ -8725,7 +10072,10 @@ mod tests {
             "line": [], "levels": [], "divergences": [], "ticks": [],
         });
         let parsed: ScenePane = serde_json::from_value(old).expect("old scenes still parse");
-        assert_eq!(parsed.value_max, 0.0, "the shell's tag guard treats 0..0 as no range");
+        assert_eq!(
+            parsed.value_max, 0.0,
+            "the shell's tag guard treats 0..0 as no range"
+        );
     }
 
     #[test]
@@ -8743,9 +10093,17 @@ mod tests {
             });
         }
         let scene = build(&request);
-        assert!(scene.plot.h >= PRICE_PLOT_FLOOR - 1e-9, "the price plot keeps its floor: {}", scene.plot.h);
+        assert!(
+            scene.plot.h >= PRICE_PLOT_FLOOR - 1e-9,
+            "the price plot keeps its floor: {}",
+            scene.plot.h
+        );
         for pane in &scene.sub_panes {
-            assert!((pane.plot.h - SUB_PANE_HEIGHT).abs() < 1e-9, "no pane compresses: {}", pane.plot.h);
+            assert!(
+                (pane.plot.h - SUB_PANE_HEIGHT).abs() < 1e-9,
+                "no pane compresses: {}",
+                pane.plot.h
+            );
         }
         let visible = scene.sub_panes.len();
         assert!(visible < 8, "not all eight fit on 600px");
@@ -8930,15 +10288,26 @@ mod tests {
         // ceiling (auto scale, padded: near the edges, within them).
         let line = &pane.lines[0];
         assert_eq!(line.points.len(), 60, "every bar mapped");
-        assert!(line.points.iter().all(|p| p.y >= pane.plot.y && p.y <= pane.plot.y + pane.plot.h), "inside the plot");
-        assert!(line.points[0].y > line.points[59].y, "a rising line falls on the canvas");
+        assert!(
+            line.points
+                .iter()
+                .all(|p| p.y >= pane.plot.y && p.y <= pane.plot.y + pane.plot.h),
+            "inside the plot"
+        );
+        assert!(
+            line.points[0].y > line.points[59].y,
+            "a rising line falls on the canvas"
+        );
         // The zero level, the marker, and the segment all positioned.
         assert_eq!(pane.levels.len(), 1);
         assert_eq!(pane.markers.len(), 1);
         assert_eq!(pane.divergences.len(), 1);
         // x spacing matches the candles' slot.
         let dx = line.points[1].x - line.points[0].x;
-        assert!((line.points[2].x - line.points[1].x - dx).abs() < 1e-9, "even spacing");
+        assert!(
+            (line.points[2].x - line.points[1].x - dx).abs() < 1e-9,
+            "even spacing"
+        );
     }
 
     #[test]
@@ -8963,7 +10332,12 @@ mod tests {
         let pane = &scene.sub_panes[0];
         let line = &pane.lines[0];
         assert_eq!(line.points.len(), 29, "the gap is skipped");
-        assert!(line.points.iter().all(|p| p.y >= pane.plot.y && p.y <= pane.plot.y + pane.plot.h), "clipped inside");
+        assert!(
+            line.points
+                .iter()
+                .all(|p| p.y >= pane.plot.y && p.y <= pane.plot.y + pane.plot.h),
+            "clipped inside"
+        );
         assert_eq!(pane.value_min, 0.0);
         assert_eq!(pane.value_max, 100.0);
         // The 30/70 levels ride the fixed scale.
@@ -8989,10 +10363,19 @@ mod tests {
         assert_eq!(line.points.len(), 40);
         // The flat stretch is one y; the final higher value sits higher on
         // the canvas (smaller y).
-        assert!((line.points[0].y - line.points[10].y).abs() < 1e-9, "a flat price is a flat line");
-        assert!(line.points[39].y < line.points[0].y, "a higher price maps higher");
+        assert!(
+            (line.points[0].y - line.points[10].y).abs() < 1e-9,
+            "a flat price is a flat line"
+        );
+        assert!(
+            line.points[39].y < line.points[0].y,
+            "a higher price maps higher"
+        );
         // Inside the price plot, never in a sub-pane.
-        assert!(line.points.iter().all(|p| p.y >= scene.plot.y && p.y <= scene.plot.y + scene.plot.h));
+        assert!(line
+            .points
+            .iter()
+            .all(|p| p.y >= scene.plot.y && p.y <= scene.plot.y + scene.plot.h));
     }
 
     #[test]
@@ -9001,10 +10384,22 @@ mod tests {
         // A posterior's 95% band: an upper edge above a lower edge, with a
         // two-bar hole where the measurement was missing.
         let upper: Vec<Option<f64>> = (0..30)
-            .map(|i| if (10..12).contains(&i) { None } else { Some(1.5) })
+            .map(|i| {
+                if (10..12).contains(&i) {
+                    None
+                } else {
+                    Some(1.5)
+                }
+            })
             .collect();
         let lower: Vec<Option<f64>> = (0..30)
-            .map(|i| if (10..12).contains(&i) { None } else { Some(-1.5) })
+            .map(|i| {
+                if (10..12).contains(&i) {
+                    None
+                } else {
+                    Some(-1.5)
+                }
+            })
             .collect();
         let parsed: Request = serde_json::from_value(serde_json::json!({
             "candles": candles, "width": 800.0, "height": 600.0,
@@ -9016,10 +10411,18 @@ mod tests {
         }))
         .expect("the band wire form parses");
         let scene = build(&parsed);
-        assert_eq!(scene.sub_panes.len(), 1, "a band alone is a pane, not a blank");
+        assert_eq!(
+            scene.sub_panes.len(),
+            1,
+            "a band alone is a pane, not a blank"
+        );
         let pane = &scene.sub_panes[0];
         assert!(pane.lines.is_empty() && pane.bars.is_empty());
-        assert_eq!(pane.bands.len(), 2, "the hole splits the band into two runs");
+        assert_eq!(
+            pane.bands.len(),
+            2,
+            "the hole splits the band into two runs"
+        );
         assert_eq!(pane.bands[0].upper.len(), 10);
         assert_eq!(pane.bands[1].upper.len(), 18);
         assert_eq!(pane.bands[0].name, "95% band");
@@ -9046,7 +10449,10 @@ mod tests {
         }))
         .expect("the dots wire form parses");
         let scene = build(&parsed);
-        assert!(scene.overlay_lines.is_empty(), "dots are disconnected points");
+        assert!(
+            scene.overlay_lines.is_empty(),
+            "dots are disconnected points"
+        );
         assert_eq!(scene.overlay_dots.len(), 1);
         let dots = &scene.overlay_dots[0];
         assert_eq!(dots.name, "psar");

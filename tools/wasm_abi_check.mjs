@@ -110,6 +110,7 @@ function candles(count) {
 
 const scene = build({ candles: candles(120), width: 900, height: 420, mode: "candles" });
 check("a scene comes back", typeof scene === "object" && scene !== null);
+check("profile entry-cue field is always present", Array.isArray(scene.profile_entry_signals));
 check("every candle has a bar", scene.candles.length === 120, `got ${scene.candles.length}`);
 check("the profile is populated", scene.profile.length > 0, `got ${scene.profile.length}`);
 check("levels are drawn", scene.levels.length >= 1, `got ${scene.levels.length}`);
@@ -467,13 +468,13 @@ check(
 //
 // `#[serde(default)]` on a `Vec` fills in an *empty* one, so a request that
 // never mentions `lines` would draw nothing while `Request::default()` promised
-// four. This check is where that was found, so it stays.
+// POC/VAH/VAL. VWAP is now a separate positioned series, not a level entry.
 
 const noLines = build({ candles: candles(60), width: 900, height: 420 });
 check(
   "omitting `lines` does not mean no levels",
-  noLines.levels.length === 4,
-  `got ${noLines.levels.length}`
+  noLines.levels.length === 3,
+  `got ${noLines.levels.length}; VWAP is a positioned series now, separate from POC/VAH/VAL levels`
 );
 const emptyLines = build({ candles: candles(60), width: 900, height: 420, lines: [] });
 check(
@@ -481,6 +482,54 @@ check(
   emptyLines.levels.length === 0,
   `got ${emptyLines.levels.length}`
 );
+
+// --- transcript-based profile signals -------------------------------------
+
+const sessionCandles = Array.from({ length: 72 }, (_, i) => {
+  const base = 100 + (i % 24) * 0.15;
+  return {
+    ...candles(1)[0],
+    timeframe: "1h",
+    open_time: i * 3_600_000_000_000,
+    open: base,
+    high: base + 0.7,
+    low: base - 0.6,
+    close: base + 0.3,
+    volume: 10,
+  };
+});
+const typeOne = build({
+  candles: sessionCandles,
+  width: 900,
+  height: 420,
+  profile_type: "session_bayesian",
+  profile_session: "1d",
+});
+check("Type 1 exposes learned forecast share for its chart lean", Number.isFinite(typeOne.profile_projection_meta?.bullish_share));
+check("Type 1 explains that its lean is not an entry", String(typeOne.note).includes("BUY/SELL LEAN") && String(typeOne.note).includes("not an entry"), typeOne.note);
+
+const structureCandles = [101, 103, 105, 110, 106, 104, 105, 112].map((high, i) => ({
+  ...candles(1)[0],
+  symbol: "DERIV:Volatility 75",
+  timeframe: "5m",
+  open_time: i * 300_000_000_000,
+  open: [100, 101, 103, 105, 106, 104, 103, 105][i],
+  high,
+  low: [99, 99.5, 100, 100, 101, 100, 101, 105][i],
+  close: [100, 102, 104, 108, 105, 103, 104, 111][i],
+  volume: 0,
+  buy_volume: 0,
+  sell_volume: 0,
+}));
+const typeTwo = build({
+  candles: structureCandles,
+  width: 900,
+  height: 420,
+  profile_type: "structure_anchored",
+  profile_quotes: structureCandles.map((bar) => ({ time: bar.open_time, price: bar.close })),
+});
+check("Type 2 labels BOS/CHoCH as regime context", typeTwo.structure_events.some((event) => event.kind === "bos"));
+check("Type 2 note explains its separate POC retest cue", String(typeTwo.note).includes("BUY/SELL POC RETEST"), typeTwo.note);
 
 // --- the viewport and the gestures ------------------------------------------
 //

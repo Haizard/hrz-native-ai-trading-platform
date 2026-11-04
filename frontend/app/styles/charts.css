@@ -500,6 +500,16 @@
   border: 0; color: var(--text); background: transparent; font-size: 10px;
 }
 .profileQuick:focus-within { border-color: var(--accent); }
+.vwapQuick {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto;
+  min-width: 0; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px;
+  color: var(--muted); background: var(--bg); font-size: 10px; white-space: nowrap;
+}
+.vwapQuick select {
+  width: 78px; max-width: 16vw; min-width: 58px; padding: 1px 3px;
+  border: 0; color: var(--text); background: transparent; font-size: 10px;
+}
+.vwapQuick:focus-within { border-color: var(--accent); }
 
 /* The active chart is the one the rail, the bar, the watchlist and the aside
    all act on. A dot says so; the old 2px inset line read as a row selection. */
