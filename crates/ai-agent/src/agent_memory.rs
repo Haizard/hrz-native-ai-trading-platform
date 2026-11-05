@@ -337,9 +337,12 @@ mod tests {
             .expect("the trade's own levels are the primary fact");
         assert_eq!(levels.scope, "symbol");
         assert_eq!(levels.symbol.as_deref(), Some(thesis.symbol.as_str()));
-        assert!(levels
-            .content
-            .contains(&thesis.entry.describe()));
+        // A literal, not `thesis.entry.describe()`: comparing the stored
+        // prose to the same formatter that produced it can only fail if the
+        // whole levels fact disappears. The fixture's entry is a bare
+        // 104_000.0 -- a point, no far edge -- so the price the fact must
+        // name for the entry leg is the point form.
+        assert!(levels.content.contains("entry 104000.0000"));
         assert!(levels.content.contains(&thesis.invalidation));
         // One fact per higher-timeframe check, keyed by its slugified label.
         for check in thesis.higher_timeframe_checks.iter().take(4) {

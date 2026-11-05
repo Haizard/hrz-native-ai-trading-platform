@@ -567,10 +567,13 @@ const PRICE_KEYS: &[&str] = &[
     "l",
     "c",
     "price_level",
-    // Zone edges, under the names the tools actually emit: `detect_zones` and
-    // the box/region rows answer with `top`/`bottom`, `price_low`/`price_high`.
-    // A thesis leg must be citable from the reported area, not only from the
-    // midpoint someone chose to quote.
+    // Zone edges. `top`/`bottom` are what the tools actually emit:
+    // `detect_zones` renames the analytics region's `price_low`/`price_high`
+    // to `top`/`bottom` at the tool boundary, and the S/R rows are built with
+    // `top`/`bottom` natively. `price_low`/`price_high` are admitted as the
+    // serde field names of analytics-core's `Region` itself -- no tool result
+    // emits them as keys today. A thesis leg must be citable from the
+    // reported area, not only from the midpoint someone chose to quote.
     "top",
     "bottom",
     "price_low",
@@ -1304,6 +1307,17 @@ mod tests {
             PriceZone::new(103_200.0, 102_800.0),
             PriceZone::new(102_800.0, 103_200.0)
         );
+    }
+
+    #[test]
+    fn describe_prints_each_shape_as_a_literal_price() {
+        // Pinned to literals, never to `describe()` against itself: every
+        // prose consumer (narrative, memory, CLI, card) takes its prices
+        // from here, so a regression that drops an area's far edge or
+        // switches to the midpoint must fail somewhere, not re-derive
+        // its own expected value and pass.
+        assert_eq!(PriceZone::new(1.0, 2.0).describe(), "1.0000 -> 2.0000");
+        assert_eq!(PriceZone::point(1.5).describe(), "1.5000");
     }
 
     #[test]
