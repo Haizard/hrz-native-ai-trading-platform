@@ -5568,6 +5568,19 @@ check(
   `cards: ${reviewCardTitles().join(", ") || "(none)"}`
 );
 
+// The step lines the panel keeps for the turn in flight. The persistent half of
+// "which pass am I on": a toast dismisses itself, these stay in the transcript.
+const stepLines = () => {
+  const turns = thesisPanel.querySelectorAll(".turn");
+  const turn = turns[turns.length - 1];
+  return turn ? [...turn.querySelectorAll(".steps li")].map((li) => li.textContent) : [];
+};
+
+// The newest line logged so far. `HRZLog` is a capped ring, so its *length*
+// cannot be the watermark -- by here it is full and every new line drops an old
+// one. Its `id` keeps counting up, and that is what pins the read to this
+// delivery instead of to the whole run.
+const logBeforeMarked = window.HRZLog.entries().at(-1)?.id ?? 0;
 deliver(agentSocket, {
   type: "progress",
   payload: {
@@ -5582,25 +5595,113 @@ deliver(agentSocket, {
 await settle();
 
 // A toast is a log line (`HRZLog.info` inside `pageToast`), which is how the
-// dock section already reads one.
+// dock section already reads one. Only what this delivery appended counts: the
+// whole ring would say only that the string appeared at some point in the run.
 const markedAnnounced = window.HRZLog.entries()
-  .map((line) => line.message)
-  .some((message) => message.includes("AI REVIEW · MARKED · BTCUSDT · 4H"));
+  .filter((line) => line.id > logBeforeMarked)
+  .some((line) => line.message.includes("AI REVIEW · MARKED · BTCUSDT · 4H"));
 check(
-  "a marked frame is announced as pass two and takes no card of its own",
-  markedAnnounced && !reviewCardTitles().some((title) => title.includes("MARKED")),
-  `log: ${window.HRZLog.entries().slice(-3).map((l) => l.message).join(" | ")} | cards: ${reviewCardTitles().join(", ")}`
+  "a marked frame is announced as pass two",
+  markedAnnounced,
+  `log: ${window.HRZLog.entries().slice(-3).map((l) => l.message).join(" | ") || "(none)"}`
 );
-// The card from the plain rung is still the only one on the chart -- the marked
-// frame said where pass two is, and stopped.
+// The step line says it too, and says it differently: two identical lines for
+// the two passes is the ladder reading as if it had run once.
 check(
-  "and the marked frame left the plain card alone rather than doubling it",
-  reviewCardTitles().length === 1,
-  `cards: ${reviewCardTitles().join(", ")}`
+  "and its step line names the pass, while the plain rung's does not",
+  stepLines().includes(`reviewing ${openTimeframe} chart (1/6)`) &&
+    stepLines().includes("reviewing marked 4h chart (1/6)"),
+  `steps: ${stepLines().slice(-4).join(" | ") || "(none)"}`
+);
+// Past the plain card's 900ms dwell, and past the render a borrowed capture
+// needs. A marked frame that *enqueues* cannot be caught by a 30ms settle: the
+// queue is blocked while the dwell runs, so its card replaces the plain one
+// only when the dwell ends -- which is exactly the regression.
+await new Promise((resolve) => setTimeout(resolve, 2000));
+check(
+  "and it takes no card of its own: the plain rung's is still the one mounted",
+  reviewCardTitles().length === 1 && reviewCardTitles()[0].includes(`AI REVIEW · ${openSymbol}`),
+  `cards: ${reviewCardTitles().join(", ") || "(none)"}`
 );
 
 // Take the ladder card down through the page's own run-end path, so the dwell
 // timer cannot leave a review overlay on the chart the next section reads.
+window.endAiReview();
+await settle();
+
+// --- a marked capture carries the AI layer -----------------------------------
+
+console.log("\na marked capture carries the AI layer");
+
+// A marked capture has to carry the agent's shapes. The pane the photograph is
+// taken from is not the one the user is looking at, and the AI layer is a
+// per-pane switch that defaults off -- so "marked" has to mean the layer was on
+// while the scene was built, or the run is told it looked at its own marks and
+// was handed a bare chart.
+
+/// The request the scratch pane built: one for a series no chart on the page is
+/// showing. A scene request names its series only through its candles, and
+/// `renderOffscreen` is the only thing that renders one for an absent series.
+const openSeries = new Set(
+  paneNodes().map(
+    (node) => `${node.querySelector(".symbol").value}/${node.querySelector(".timeframe").value}`
+  )
+);
+const requestOffscreen = (request) => !openSeries.has(seriesOf(request));
+
+const requestsBeforeCapture = engine.requests.length;
+
+// A timeframe no pane is showing -- the offscreen path, the one that would
+// otherwise inherit a fresh pane's `false`.
+deliver(agentSocket, {
+  type: "progress",
+  payload: {
+    stage: "ui_command",
+    action: "capture_chart",
+    symbol: "BTCUSDT",
+    timeframe: "1d",
+    capture_id: "cap-marked-1",
+    extra: {
+      action: "capture_chart",
+      symbol: "BTCUSDT",
+      timeframe: "1d",
+      capture_id: "cap-marked-1",
+      marked: true,
+    },
+  },
+});
+
+// The capture ends by mounting its card, so that is the signal that every
+// request the scratch pane made is already recorded. Bounded rather than a
+// `waitFor`: a capture that never lands is a defect to report, not a run to end.
+const captureCards = [];
+const captureDeadline = Date.now() + 3000;
+while (Date.now() < captureDeadline && captureCards.length === 0) {
+  await settle();
+  captureCards.push(...reviewCardTitles().filter((title) => title.includes("BTCUSDT · 1D")));
+}
+
+// The last request the offscreen render made, which is the scene it drew with
+// the drawings loaded -- the first ones were built before they arrived.
+const markedRequest = engine.requests
+  .slice(requestsBeforeCapture)
+  .filter((request) => seriesOf(request) === "BTCUSDT/1d" && requestOffscreen(request))
+  .at(-1);
+check(
+  "the offscreen render for a marked capture asks for the AI drawings",
+  Boolean(markedRequest) && markedRequest.drawings.some((d) => d.created_by === "ai"),
+  markedRequest
+    ? `drawings: ${markedRequest.drawings.map((d) => d.created_by || "user").join(",")}`
+    : "no offscreen 1d request was built"
+);
+check(
+  "and the card it mounts says MARKED, the pass the picture is actually from",
+  captureCards.some((title) => title.includes("AI REVIEW · MARKED · BTCUSDT · 1D")),
+  `cards: ${reviewCardTitles().join(", ") || "(none)"}`
+);
+
+// The same teardown as the section above: this card is the run's last overlay,
+// and the next section reads a chart with nothing on it.
 window.endAiReview();
 await settle();
 

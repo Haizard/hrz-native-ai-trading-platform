@@ -9463,13 +9463,19 @@ function executeUiCommand(cmd) {
         const symbol = (cmd.symbol || (activePane && activePane.symbol()) || "").toUpperCase();
         const timeframe = cmd.timeframe || (activePane ? activePane.timeframe() : "");
         if (!symbol || !timeframe) return;
-        const shot = await captureSeries(symbol, timeframe);
+        const marked = Boolean(cmd.extra && cmd.extra.marked);
+        const shot = await captureSeries(symbol, timeframe, { marked });
         if (!shot) return;
         enqueueAiReview({
           symbol,
           timeframe,
           image: shot,
-          caption: `AI LOOK · ${symbol} · ${timeframe.toUpperCase()}`,
+          // This handler owns the marked card, which `showAiReviewFrame`
+          // deliberately declined to show: here is the one place the chart
+          // actually carries the agent's marks.
+          caption: marked
+            ? `AI REVIEW · MARKED · ${symbol} · ${timeframe.toUpperCase()}`
+            : `AI LOOK · ${symbol} · ${timeframe.toUpperCase()}`,
         });
         await fetch("/agent/captures", {
           method: "POST",
@@ -9494,7 +9500,12 @@ function executeUiCommand(cmd) {
 /// already showing that symbol and timeframe, otherwise an offscreen render of
 /// its candle history. Null when the symbol has no such series -- photographing
 /// a chart that does not exist is not an option.
-async function captureSeries(symbol, timeframe) {
+///
+/// `marked` is which pass of a review this is: the picture of the chart *with
+/// the agent's own shapes on it*. It decides whether the AI layer is on while
+/// the scene is built, because that layer is what puts those shapes in the
+/// request the engine draws from.
+async function captureSeries(symbol, timeframe, { marked = false } = {}) {
   const openPane = panes.find(
     (pane) => pane.symbol() === symbol && pane.timeframe() === timeframe
   );
@@ -9502,12 +9513,23 @@ async function captureSeries(symbol, timeframe) {
     // A beat even for a pane already on it: the chart repaints continuously,
     // and a capture taken mid-frame reads to a vision model as a smear.
     await new Promise((resolve) => setTimeout(resolve, 150));
-    return captureChart(openPane.canvas, timeframe);
+    if (!marked) return captureChart(openPane.canvas, timeframe);
+    // The user's own layer switch is theirs: turn it on for the photograph and
+    // put it back exactly as it was, rather than leaving their chart showing
+    // the agent's marks because the agent asked for a picture.
+    const wasOn = openPane.aiLayerOn();
+    openPane.setAiLayerOn(true);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return captureChart(openPane.canvas, timeframe);
+    } finally {
+      openPane.setAiLayerOn(wasOn);
+    }
   }
   const entry = coverage.find((instrument) => instrument.symbol === symbol);
   const frame = entry && entry.timeframes.find((f) => f.timeframe === timeframe);
   if (!frame || frame.candles === 0) return null;
-  return renderOffscreen(symbol, timeframe);
+  return renderOffscreen(symbol, timeframe, { marked });
 }
 
 /// Take a pane off the page.
@@ -9946,8 +9968,8 @@ const STAGE_TEXT = {
   tool_done: (p) => `${p.name} ${p.ok ? "returned" : "failed"}`,
   review_frame: (p) =>
     p.total > 1
-      ? `reviewing ${p.timeframe} chart (${p.index}/${p.total})`
-      : `reviewing ${p.timeframe} chart`,
+      ? `reviewing ${p.marked ? "marked " : ""}${p.timeframe} chart (${p.index}/${p.total})`
+      : `reviewing ${p.marked ? "marked " : ""}${p.timeframe} chart`,
   correcting: (p) => `rejected, asking for a correction: ${p.reason}`,
   ui_command: (p) =>
     p.action === "open_chart"
@@ -12217,7 +12239,7 @@ async function captureLadder(symbol) {
 /// The scratch pane is a real pane: same markup, same engine, same drawing code
 /// -- only offscreen and without a live channel, because a capture is a moment,
 /// not a stream. It is removed as soon as the capture is taken.
-async function renderOffscreen(symbol, timeframe) {
+async function renderOffscreen(symbol, timeframe, { marked = false } = {}) {
   const template = el("charts").querySelector(".chartPane");
   if (!template) return null;
   const holder = document.createElement("div");
@@ -12233,6 +12255,11 @@ async function renderOffscreen(symbol, timeframe) {
     // exactly as a visible pane is set up -- one code path, not a second.
     pane.fillSeries(coverage, symbol, timeframe);
     if (pane.symbol() !== symbol || pane.timeframe() !== timeframe) return null;
+    // A scratch pane starts with the AI layer off, like every pane. For the
+    // marked pass that is the difference between a photograph of the analysis
+    // and a photograph of candles: the layer decides whether the agent's own
+    // shapes are in the request the engine builds the scene from.
+    if (marked) pane.setAiLayerOn(true);
     // Bars, then one synchronous render+draw. A fresh pane has no viewport, so
     // the engine fits -- which is the view an analysis wants.
     await pane.refresh();
