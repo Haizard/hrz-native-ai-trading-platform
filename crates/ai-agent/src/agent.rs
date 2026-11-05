@@ -1190,6 +1190,15 @@ impl Agent {
         /// the marks against it.
         const MENTOR_CAPTURES_PER_RUN: usize = 12;
         let mut captures_used = 0_usize;
+        // Marked frames this run has actually been shown. The duty discharges on
+        // the first one, not on the tool call: six photographs and two that came
+        // back is a review of two charts. Run-level, beside `captures_used`, for
+        // the same reason -- inside the turn loop it would reset every turn, and
+        // a counter that resets makes the duty permanent.
+        let mut marked_frames_seen = 0usize;
+        // The refusal is spent once. A second one is a run burning turns on a
+        // mistake it has already been told about.
+        let mut marked_refusal_used = false;
         // Web pattern images share the captures' budget discipline: images
         // dominate a turn's token cost, so a run gets few and they are counted.
         const MAX_PATTERN_IMAGES_PER_RUN: usize = 4;
@@ -1268,20 +1277,47 @@ impl Agent {
             let drawing_owed = can_draw
                 && !drew_this_run
                 && (skill_requires_drawing || request.teaching);
+            // Mentor mode owes the second look. A run that drew the zones and
+            // then wrote the plan from the plain pictures is the exact failure
+            // the two-pass review exists to prevent, and the model will do it:
+            // the analysis is finished as far as its numbers go.
+            let marked_review_owed =
+                request.teaching && ctx.captures.is_some() && marked_frames_seen == 0;
+            let duties_owed = drawing_owed || marked_review_owed;
             let (turn_tools, tool_choice) = if answering {
-                if drawing_owed {
-                    // submit + the write side of the drawing family. The read
-                    // side is deliberately absent: a live run stalled here
-                    // re-reading get_user_drawings twice instead of drawing,
-                    // and the drawings it might re-read were already listed in
-                    // the analysis phase.
+                if duties_owed {
                     let mut set = vec![submit_thesis_spec()];
-                    set.extend(tools.iter().filter(|s| {
-                        matches!(
-                            s.name.as_str(),
-                            "create_drawing" | "update_drawing" | "delete_drawing"
-                        )
-                    }).cloned());
+                    if drawing_owed {
+                        // submit + the write side of the drawing family. The read
+                        // side is deliberately absent: a live run stalled here
+                        // re-reading get_user_drawings twice instead of drawing,
+                        // and the drawings it might re-read were already listed in
+                        // the analysis phase.
+                        set.extend(
+                            tools
+                                .iter()
+                                .filter(|s| {
+                                    matches!(
+                                        s.name.as_str(),
+                                        "create_drawing" | "update_drawing" | "delete_drawing"
+                                    )
+                                })
+                                .cloned(),
+                        );
+                    }
+                    if marked_review_owed {
+                        // The refusal's instruction is "call review_marked_charts".
+                        // A tool set without it makes that impossible to obey, and
+                        // the run would spend both answer turns hitting a wall the
+                        // gate built -- the record would say the model refused when
+                        // the orchestrator never offered the tool.
+                        set.extend(
+                            tools
+                                .iter()
+                                .filter(|s| s.name.as_str() == "review_marked_charts")
+                                .cloned(),
+                        );
+                    }
                     (set, Some(ToolChoice::Any))
                 } else {
                     (
@@ -1373,7 +1409,14 @@ impl Agent {
                             call.name.as_str(),
                             "create_drawing" | "update_drawing" | "delete_drawing"
                         );
-                    if !drawing_allowed {
+                    // Same argument for the marked duty: the tool the answer-door
+                    // gate names is the tool the model must still be able to call,
+                    // or the correction asks for a call the phase refuses. The
+                    // frames it photographs are the run's own marked charts, so
+                    // this is a second look, not fresh data out of habit.
+                    let review_allowed =
+                        marked_review_owed && call.name == "review_marked_charts";
+                    if !drawing_allowed && !review_allowed {
                         results.push(ToolResult {
                             tool_use_id: call.id.clone(),
                             content: json!({
@@ -1619,6 +1662,62 @@ impl Agent {
                     continue;
                 }
 
+                // The marked duty, acted on once. Refusing a thesis on the
+                // last turn would end the run with no answer at all, which
+                // is worse for the user than an answer that records it never
+                // re-checked -- so the record is written either way and only
+                // the refusal is gated on `!last`. Same posture as the
+                // drawing duty and the grounding correction above it. `owed`
+                // is computed at the top of this turn, so a model that called
+                // the review tool in the same response as the submit has
+                // already been shown frames by now -- re-read the counter
+                // rather than the stale bool, or the record would claim a pass
+                // that ran.
+                if marked_review_owed && marked_frames_seen == 0 && !marked_refusal_used {
+                    marked_refusal_used = true;
+                    trace.push(ToolTrace {
+                        tool: "review_marked_charts".into(),
+                        args: serde_json::json!({}),
+                        result: serde_json::json!({
+                            "skipped": true,
+                            "reason": "the thesis was submitted before any marked \
+                                       frame landed",
+                        }),
+                    });
+                    // `thesis.provenance` was cloned from `trace` at the top
+                    // of this block, so the row only reaches the answer when
+                    // it is re-cloned here: the card has to be able to say
+                    // the run never re-checked, not just the server log.
+                    thesis.provenance = trace.clone();
+                    if !last {
+                        tracing::warn!(
+                            target: "ai_agent",
+                            "thesis submitted before the marked pass; asking for the second look"
+                        );
+                        progress.report(Progress::Correcting {
+                            reason: "You have not looked at the marked charts. Call \
+                                     `review_marked_charts` and confirm the trend, entry, \
+                                     target and stop against the frames that carry your \
+                                     own drawings, then submit again."
+                                .into(),
+                        });
+                        messages.push(Message::tool_results(vec![ToolResult {
+                            tool_use_id: call.id.clone(),
+                            content: serde_json::json!({
+                                "accepted": false,
+                                "error": "no marked frame has been seen this run -- the \
+                                          zones are on the chart but the plan was written \
+                                          from the plain pictures",
+                                "instruction": "Call review_marked_charts, read the six \
+                                                frames it returns, and submit a thesis the \
+                                                marked charts actually support.",
+                            }),
+                            is_error: true,
+                        }]));
+                        continue;
+                    }
+                }
+
                 // A rejected thesis is a fixable one when the model still has
                 // a turn to fix it in: hand the exact reason back and let it
                 // correct the levels. Failing outright would throw away a
@@ -1721,6 +1820,9 @@ impl Agent {
                         let frame = capture.timeframe.to_ascii_uppercase();
                         match shot {
                             Some(found) => {
+                                if capture.marked {
+                                    marked_frames_seen += 1;
+                                }
                                 // The pass is named first because the model is
                                 // comparing two looks at the same timeframe and
                                 // has to know which one this is.
@@ -5095,6 +5197,194 @@ invalidation: []
             1,
             "a lesson's drawing must run in the answer phase, not be refused"
         );
+    }
+
+    /// How many times the marked refusal is in the conversation the orchestrator
+    /// actually sent. Read off the last request, whose `messages` carry the whole
+    /// history: the drawing-duty test reads the same fact the same way, and a
+    /// count is what proves the "once" in "refused once".
+    fn marked_refusals(llm: &ScriptedClient) -> usize {
+        let requests = llm.requests();
+        let last = requests
+            .last()
+            .expect("a run that submits must have sent a request");
+        serde_json::to_string(&last.messages)
+            .unwrap_or_default()
+            .matches("Call review_marked_charts, read the six")
+            .count()
+    }
+
+    /// Mentor mode's promise is that the plan was checked against the marked
+    /// charts. Without the duty the model can -- and live runs do -- mark the
+    /// chart, then write the thesis from the first pass's pictures.
+    #[tokio::test]
+    async fn a_lesson_must_look_at_its_marks_before_it_submits() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let captures = crate::captures::CapturesContext::new(Arc::new(AnsweringCaptures));
+        let mut responses: Vec<LlmResponse> = (0..AgentConfig::default().max_turns - 1)
+            .map(|i| read_call(&format!("r{i}")))
+            .collect();
+        responses.push(draw_call("d1"));
+        // Straight to the thesis: the marked pass never ran.
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        // The refusal is spent; this one lands on the last turn.
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        let llm = Arc::new(ScriptedClient::new(responses));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        let request = AskRequest::new("BTCUSDT", "teach me this structure")
+            .with_drawings(
+                DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer),
+            )
+            .with_captures(captures)
+            .with_teaching(true);
+        agent
+            .ask(&request, &source)
+            .await
+            .expect("the lesson completes after one refusal");
+
+        assert_eq!(
+            marked_refusals(&llm),
+            1,
+            "the model was refused exactly once, and told which call it skipped"
+        );
+    }
+
+    /// The other half: once it has asked, the door is open. A duty that never
+    /// discharges is a run that burns turns until it dies.
+    #[tokio::test]
+    async fn the_marked_duty_opens_once_a_marked_frame_has_landed() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let captures = crate::captures::CapturesContext::new(Arc::new(AnsweringCaptures));
+        let mut responses: Vec<LlmResponse> = (0..AgentConfig::default().max_turns - 1)
+            .map(|i| read_call(&format!("r{i}")))
+            .collect();
+        responses.push(draw_call("d1"));
+        // The marked pass runs, and `AnsweringCaptures` answers every id, so the
+        // rendezvous delivers the marked frames before the next turn.
+        responses.push(marked_call("m1"));
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        let llm = Arc::new(ScriptedClient::new(responses));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        let request = AskRequest::new("BTCUSDT", "teach me this structure")
+            .with_drawings(
+                DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer),
+            )
+            .with_captures(captures)
+            .with_teaching(true);
+        let answer = agent
+            .ask(&request, &source)
+            .await
+            .expect("the lesson completes on its own");
+
+        assert_eq!(
+            marked_refusals(&llm),
+            0,
+            "a run that looked was refused anyway"
+        );
+        // The first answer-phase request is the one where the duty is still owed,
+        // so it must offer the call the refusal would have asked for. Read the
+        // same way the drawing-duty test reads it.
+        let requests = llm.requests();
+        let answer_phase = &requests[AgentConfig::default().max_turns];
+        let announced: Vec<&str> = answer_phase.tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            announced.contains(&"review_marked_charts"),
+            "the marked duty was owed but its tool was not on the table: {announced:?}"
+        );
+        assert!(
+            !answer
+                .thesis
+                .provenance
+                .iter()
+                .any(|row| row.tool == "review_marked_charts"
+                    && row.result["skipped"] == serde_json::json!(true)),
+            "a duty that discharged must not be recorded as skipped: {:?}",
+            answer.thesis.provenance
+        );
+    }
+
+    /// Refused once, never twice: the submission that lands carries the record,
+    /// because an answer that admits it did not re-check beats a run that dies
+    /// at the turn limit.
+    #[tokio::test]
+    async fn a_second_thesis_without_the_marked_pass_is_accepted_with_the_miss_recorded() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let captures = crate::captures::CapturesContext::new(Arc::new(AnsweringCaptures));
+        let mut responses: Vec<LlmResponse> = (0..AgentConfig::default().max_turns - 1)
+            .map(|i| read_call(&format!("r{i}")))
+            .collect();
+        responses.push(draw_call("d1"));
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        let llm = Arc::new(ScriptedClient::new(responses));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        let request = AskRequest::new("BTCUSDT", "teach me this structure")
+            .with_drawings(
+                DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer),
+            )
+            .with_captures(captures)
+            .with_teaching(true);
+        let answer = agent
+            .ask(&request, &source)
+            .await
+            .expect("the answer lands rather than dying at the turn limit");
+
+        let skipped = answer
+            .thesis
+            .provenance
+            .iter()
+            .filter(|row| row.tool == "review_marked_charts")
+            .count();
+        assert_eq!(
+            skipped, 1,
+            "exactly one record of the pass that never ran: {:?}",
+            answer.thesis.provenance
+        );
+        // The refusal is one, not two: the model is never punished twice for the
+        // same omission.
+        assert_eq!(
+            marked_refusals(&llm),
+            1,
+            "the duty must not refuse the same omission twice"
+        );
+    }
+
+    /// A screen that answers every capture the moment it is asked, because the
+    /// duty cares whether a marked frame landed, not how long it took. It holds
+    /// no state: the run's own trace is the record of what was asked.
+    struct AnsweringCaptures;
+
+    #[async_trait]
+    impl crate::captures::ChartCaptureSource for AnsweringCaptures {
+        async fn take(&self, capture_id: &str) -> Option<ChartScreenshot> {
+            Some(ChartScreenshot {
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+                label: Some(format!("{capture_id} shot")),
+            })
+        }
+    }
+
+    /// The marked pass as one tool call, modelled on `draw_call`.
+    fn marked_call(id: &str) -> LlmResponse {
+        LlmResponse {
+            message: Message {
+                role: crate::llm_client::Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: id.into(),
+                    name: "review_marked_charts".into(),
+                    input: json!({}),
+                }],
+            },
+            stop_reason: StopReason::ToolUse,
+            usage: Usage::default(),
+        }
     }
 
     fn read_call(id: &str) -> LlmResponse {
