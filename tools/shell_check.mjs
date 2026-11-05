@@ -218,6 +218,14 @@ const note = (index = PANE) => paneNode(index).querySelector(".chartNote").textC
 /// evidence for it, and both are asserted.
 const badge = (index = PANE) => paneNode(index).querySelector(".feedStatus");
 const badgeState = (index = PANE) => badge(index).dataset.state;
+/// The captions of the review cards mounted on the charts, `[]` when none is.
+///
+/// `paintAiReviewCard` writes one `<span>` per card inside its `.aiReviewOverlay`;
+/// this is the shell's own claim about what the agent is looking at, and the
+/// marked-pass check reads it to prove a *plain* picture never gets captioned
+/// "MARKED".
+const reviewCardTitles = () =>
+  [...document.querySelectorAll(".aiReviewOverlay span")].map((span) => span.textContent);
 const lastScene = () => engine.scenes[engine.scenes.length - 1];
 const lastRequest = () => engine.requests[engine.requests.length - 1];
 /// Which instrument a scene request is for.
@@ -5312,6 +5320,77 @@ check(
   "and the working state is over, so the button can be used again",
   !askButton.disabled
 );
+
+// --- the two passes ----------------------------------------------------------
+//
+// The ladder is read twice -- once plain, once with the agent's own marks on the
+// chart -- and the frames must be tellable apart on screen. Two halves of one
+// rule: a marked frame announces itself, and it takes no card, because the only
+// picture a plain frame can borrow is the one *without* the marks. A card that
+// captions a plain chart "MARKED" is the card lying on purpose.
+//
+// The plain rung is delivered first, aimed at the chart actually on the page, so
+// its card mounts from the pane's own picture -- and the marked check below has
+// a real card title to prove the absence against.
+const openSymbol = paneNode().querySelector(".symbol").value;
+const openTimeframe = paneNode().querySelector(".timeframe").value;
+deliver(agentSocket, {
+  type: "progress",
+  payload: {
+    stage: "review_frame",
+    symbol: openSymbol,
+    timeframe: openTimeframe,
+    index: 1,
+    total: 6,
+    marked: false,
+  },
+});
+await settle();
+check(
+  "a plain rung mounts its card, captioned as pass one",
+  reviewCardTitles().some(
+    (title) =>
+      title.includes(`AI REVIEW · ${openSymbol} · ${openTimeframe.toUpperCase()}`) &&
+      !title.includes("MARKED")
+  ),
+  `cards: ${reviewCardTitles().join(", ") || "(none)"}`
+);
+
+deliver(agentSocket, {
+  type: "progress",
+  payload: {
+    stage: "review_frame",
+    symbol: "BTCUSDT",
+    timeframe: "4h",
+    index: 1,
+    total: 6,
+    marked: true,
+  },
+});
+await settle();
+
+// A toast is a log line (`HRZLog.info` inside `pageToast`), which is how the
+// dock section already reads one.
+const markedAnnounced = window.HRZLog.entries()
+  .map((line) => line.message)
+  .some((message) => message.includes("AI REVIEW · MARKED · BTCUSDT · 4H"));
+check(
+  "a marked frame is announced as pass two and takes no card of its own",
+  markedAnnounced && !reviewCardTitles().some((title) => title.includes("MARKED")),
+  `log: ${window.HRZLog.entries().slice(-3).map((l) => l.message).join(" | ")} | cards: ${reviewCardTitles().join(", ")}`
+);
+// The card from the plain rung is still the only one on the chart -- the marked
+// frame said where pass two is, and stopped.
+check(
+  "and the marked frame left the plain card alone rather than doubling it",
+  reviewCardTitles().length === 1,
+  `cards: ${reviewCardTitles().join(", ")}`
+);
+
+// Take the ladder card down through the page's own run-end path, so the dwell
+// timer cannot leave a review overlay on the chart the next section reads.
+window.endAiReview();
+await settle();
 
 // --- the chart the question was asked about ---------------------------------
 

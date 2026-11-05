@@ -67,6 +67,15 @@ pub enum Progress {
         index: usize,
         /// Number of frames in this review sequence.
         total: usize,
+        /// Which pass this frame belongs to. `false` is the plain look at the
+        /// chart; `true` is the look at the chart *the agent has marked*.
+        ///
+        /// `#[serde(default)]` so a progress line from a binary older than this
+        /// field still decodes, and the shell treats a missing key as the plain
+        /// pass -- the honest default, because a plain pass is what every run
+        /// before this one was.
+        #[serde(default)]
+        marked: bool,
     },
     /// The thesis cited a level no tool reported, and the model has been asked
     /// to correct it.
@@ -207,6 +216,7 @@ mod tests {
             timeframe: "4h".into(),
             index: 1,
             total: 3,
+            marked: false,
         });
     }
 
@@ -220,6 +230,7 @@ mod tests {
             timeframe: "4h".into(),
             index: 2,
             total: 5,
+            marked: false,
         })
         .expect("progress serializes");
         assert_eq!(value["stage"], "review_frame");
@@ -227,6 +238,20 @@ mod tests {
         assert_eq!(value["timeframe"], "4h");
         assert_eq!(value["index"], 2);
         assert_eq!(value["total"], 5);
+        assert_eq!(value["marked"], serde_json::json!(false), "the shell reads `marked`");
+
+        // The second pass has to be tellable apart from the first, on the wire,
+        // or the shell captions a plain chart with "MARKED".
+        let marked = serde_json::to_value(Progress::ReviewFrame {
+            symbol: "BTCUSDT".into(),
+            timeframe: "4h".into(),
+            index: 1,
+            total: 6,
+            marked: true,
+        })
+        .expect("progress serializes");
+        assert_eq!(marked["stage"], "review_frame");
+        assert_eq!(marked["marked"], serde_json::json!(true), "pass two is named");
     }
 
     #[test]

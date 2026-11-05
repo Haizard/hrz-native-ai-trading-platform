@@ -1917,6 +1917,7 @@ async fn analyze_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
             timeframe: timeframe.to_string(),
             index: 1,
             total: 1,
+            marked: false,
         });
     }
     let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
@@ -1971,6 +1972,7 @@ async fn analyze_multi_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<
                 timeframe: timeframe.to_string(),
                 index: index + 1,
                 total,
+                marked: false,
             });
         }
         match state_for(ctx, &symbol, timeframe, lookback).await {

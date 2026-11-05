@@ -574,6 +574,7 @@ pub async fn analyze_ladder(
             timeframe: timeframe.to_string(),
             index: index + 1,
             total,
+            marked: false,
         });
         let latest = match data.latest_candle_time(symbol, *timeframe).await? {
             Some(time) => time,
@@ -786,8 +787,10 @@ mod tests {
                     timeframe,
                     index,
                     total,
+                    marked,
                 } => {
                     assert_eq!(symbol, "BTCUSDT");
+                    assert!(!marked, "the ladder read is the plain pass");
                     Some((timeframe.clone(), *index, *total))
                 }
                 _ => None,

@@ -10340,6 +10340,16 @@ function showAiReviewFrame(turn, progress) {
   // A single read has no ladder to be a rung of, so it is not counted: "1/1"
   // on a one-frame question reads like a ladder that lost its other rungs.
   const counter = progress.total > 1 ? ` · ${progress.index}/${progress.total}` : "";
+  if (progress.marked) {
+    // The marked picture is taken by the `capture_chart` request that follows
+    // this frame (Task 7), and that handler owns the card -- it is the one
+    // place the chart is actually carrying the agent's marks. Showing the
+    // screenshot attached to the request here would caption a plain chart
+    // "MARKED", and showing a second card per rung would double the ladder.
+    // So this frame says which rung pass two is on, and stops.
+    pageToast(`AI REVIEW · MARKED · ${symbol} · ${timeframe.toUpperCase()}${counter}`);
+    return;
+  }
   enqueueAiReview({
     symbol,
     timeframe,
