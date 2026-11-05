@@ -150,8 +150,11 @@ pub(super) fn fresh_edge(
         .find(|candle| candle.high >= price_lo && candle.low <= price_hi)?;
     let bar_width_ms = geometry.frame.bar_nanos as f64 / 1_000_000.0;
     let plot = geometry.frame.plot;
-    // Clamped to the plot: a zone dragged to the right edge has no untested
-    // part left to show, and a sub-band drawn past the plot is a paint bug.
+    // Clamped to the plot, which is the widest thing this can legally mean: a
+    // zone dragged to the right edge has no untested part left to show, and a
+    // sub-band drawn past the plot is a paint bug. A *box* is narrower than the
+    // plot, so a zone part takes the answer through [`zone_fresh_from`] -- see
+    // the doc there.
     Some(
         geometry
             .frame
@@ -159,6 +162,32 @@ pub(super) fn fresh_edge(
             .min(plot.x + plot.w)
             .max(plot.x),
     )
+}
+
+/// The `fresh_from` a [`DrawingPart::Zone`] carries: [`fresh_edge`] clamped into
+/// the box it belongs to.
+///
+/// The bar after the last touch can sit past the box's right edge -- the box is
+/// two anchors, the series is the whole window -- and a fill that runs to it
+/// paints the quiet portion *outside* the zone's own border, which is the smear
+/// `docs/31` exists to forbid. So the invariant lives here rather than at each
+/// emitter: a `zone` part cannot carry a fill edge beyond `x ..= x + w`.
+///
+/// `box_` is the emitter's `(left edge, width)` in canvas x, which is what both
+/// callers already have: `shapes::rect` normalises its corners to exactly that
+/// pair, and a full-width band's box is the plot.
+#[must_use]
+pub(super) fn zone_fresh_from(
+    geometry: Geometry<'_>,
+    box_: (f64, f64),
+    from_ms: f64,
+    to_ms: f64,
+    price_hi: f64,
+    price_lo: f64,
+) -> Option<f64> {
+    let (left, width) = box_;
+    fresh_edge(geometry, from_ms, to_ms, price_hi, price_lo)
+        .map(|edge| edge.clamp(left, left + width))
 }
 
 /// The slope of the line through two pixel positions.
@@ -343,7 +372,8 @@ pub fn parts(
             pitchforks::fork(geometry, pitchforks::Template::ModifiedSchiff)
         }
         DrawingKind::InsidePitchfork => pitchforks::fork(geometry, pitchforks::Template::Inside),
-        // Shapes.
+        // Shapes. The rectangle is the zone tool: this kind emits a `Zone`, not
+        // a `Rect` (`docs/46`), and every other shape here keeps its own part.
         DrawingKind::Rect => shapes::rect(geometry),
         DrawingKind::Triangle => shapes::triangle(geometry),
         DrawingKind::Circle => shapes::circle(geometry),
@@ -714,6 +744,69 @@ mod completeness_gate {
             panic!("expected a zone, got {:?}", parts[0]);
         };
         assert!(fresh_from.is_none());
+    }
+
+    #[test]
+    fn a_zone_whose_last_touch_is_its_own_edge_fills_to_the_box_and_not_past_it() {
+        // The same 20-bar ramp in a box that stops at bar 3. Bar 3 is the last bar
+        // to trade into 101..103, so the untested edge the raw measure reports is
+        // bar 4's x -- one bar *outside* the box and still inside the plot, which
+        // is precisely the ~45px smear `docs/31` forbids: quiet fill painted past
+        // the zone's own border. The part must not carry it.
+        let stage = Stage::ramp(20, 100.0, 1.0);
+        let options = crate::drawing::DrawingOptions::default();
+        let points = [(stage.ms(2), 103.0), (stage.ms(3), 101.0)];
+        let parts = parts(DrawingKind::Rect, false, stage.geometry(&points, &options));
+        let DrawingPart::Zone {
+            x, w, fresh_from, ..
+        } = &parts[0]
+        else {
+            panic!("expected a zone, got {:?}", parts[0]);
+        };
+        // The fixture has to overshoot, or the assertion below proves nothing.
+        let past_the_box = stage.frame.x_at_ms(stage.ms(4));
+        assert!(
+            past_the_box > *x + *w,
+            "the bar after the last touch sits past the box: {past_the_box} vs {}",
+            *x + *w
+        );
+        assert_eq!(
+            *fresh_from,
+            Some(*x + *w),
+            "the fill edge stops at the box's right edge, not at the plot's"
+        );
+    }
+
+    #[test]
+    fn a_point_zone_is_still_a_zone_with_its_price_and_its_fill_edge() {
+        // Both anchors at one price: the leg a thesis emits most often. `h` is
+        // zero, the two labels are the same number, and bars 2..6 still hold a
+        // touch (bar 3), so it still gets a fill edge -- inside its own box.
+        let stage = Stage::ramp(20, 100.0, 1.0);
+        let options = crate::drawing::DrawingOptions::default();
+        let points = [(stage.ms(2), 103.0), (stage.ms(6), 103.0)];
+        let parts = parts(DrawingKind::Rect, false, stage.geometry(&points, &options));
+        let DrawingPart::Zone {
+            x,
+            y: _,
+            w,
+            h,
+            fresh_from,
+            top_label,
+            bottom_label,
+        } = &parts[0]
+        else {
+            panic!("expected a zone, got {:?}", parts[0]);
+        };
+        assert_eq!(*h, 0.0, "a one-price zone has no height to draw");
+        assert_eq!(*top_label, "103.00");
+        assert_eq!(top_label, bottom_label, "one price, one number twice");
+        assert!(
+            fresh_from.is_some_and(|edge| edge <= *x + *w),
+            "a point zone cannot smear either: {fresh_from:?} in {}..={}",
+            *x,
+            *x + *w
+        );
     }
 
     #[test]

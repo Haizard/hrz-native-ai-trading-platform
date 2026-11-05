@@ -164,22 +164,57 @@ const { document } = window;
 // to answer that property, and the branch was removed rather than left here: a
 // stub that supports something nothing calls is a claim about the shell that
 // nothing checks.
-const painted = { ops: [], text: [], styles: [], geom: [] };
+// The values are part of the record, not only the calls: a zone's price tag is a
+// plate painted with one colour and an ink with another, and whether the bold
+// face it needs is put back afterwards is a claim about `save`/`restore`. jsdom
+// ships no canvas implementation, so the context's state -- and the stack that
+// `save` and `restore` push and pop -- is modelled here, and the two arrays that
+// checks read carry what was in effect at each call: `geom` grows two trailing
+// fields (the fill colour and its alpha) and `textState` runs parallel to `text`.
+// Every other check destructures the fields it knows and ignores the rest.
+const painted = { ops: [], text: [], styles: [], geom: [], textState: [] };
+const ctxState = { fillStyle: "", strokeStyle: "", globalAlpha: 1, lineWidth: 1, font: "" };
+const ctxStack = [];
 const context = new Proxy(
   {},
   {
     get(_target, prop) {
       if (prop === "measureText") return () => ({ width: 10 });
+      if (prop === "save")
+        return () => {
+          painted.ops.push("save");
+          ctxStack.push({ ...ctxState });
+        };
+      if (prop === "restore")
+        return () => {
+          painted.ops.push("restore");
+          const previous = ctxStack.pop();
+          if (previous) Object.assign(ctxState, previous);
+        };
+      // Reading a state property answers with the value, not with a recorder.
+      if (prop in ctxState) return ctxState[prop];
       // Every drawing call lands here, so a check can ask "did it stroke
       // anything at all" without knowing which call it was.
       return (...args) => {
         painted.ops.push(String(prop));
-        if (prop === "fillText") painted.text.push(String(args[0]));
+        if (prop === "fillText") {
+          painted.text.push(String(args[0]));
+          painted.textState.push({
+            font: ctxState.font,
+            fillStyle: ctxState.fillStyle,
+            globalAlpha: ctxState.globalAlpha,
+          });
+        }
         // The geometry too, not only the op name: "three thin bands rather than
         // one stripe over the plot" is a claim about numbers, and an op list
         // cannot make it.
         if (prop === "fillRect" || prop === "strokeRect") {
-          painted.geom.push([prop, ...args.map((a) => (typeof a === "number" ? Math.round(a * 100) / 100 : a))]);
+          painted.geom.push([
+            prop,
+            ...args.map((a) => (typeof a === "number" ? Math.round(a * 100) / 100 : a)),
+            ctxState.fillStyle,
+            ctxState.globalAlpha,
+          ]);
         }
         return undefined;
       };
@@ -188,6 +223,7 @@ const context = new Proxy(
     // "nothing hands the context a token" is a claim about these.
     set(_target, prop, value) {
       painted.styles.push(`${String(prop)}=${String(value)}`);
+      if (prop in ctxState) ctxState[prop] = value;
       return true;
     },
   }
@@ -4084,6 +4120,182 @@ check(
   "a zone is grabbable by its body",
   lastRequest().drawings.some((d) => d.id === (zoneDrawing && zoneDrawing.id) && d.selected),
   JSON.stringify(lastRequest().drawings.map((d) => `${d.id}:${d.selected}`))
+);
+
+// --- where the fill ends, where the tags sit, what they are painted with ------
+//
+// A box stroked at its own extent is only the first third of the reference. The
+// rest is three claims the geometry above cannot make:
+//
+//   * the quiet fill stops at the zone's *own* border. `fresh_edge` answers with
+//     the bar after the last touch, which for a box ending on a touched bar sits
+//     one bar outside it and still inside the plot -- the smear `docs/31` names,
+//     and what a plot-wide clamp does not catch;
+//   * the two price tags are at the **right** edge, where a price is read. That
+//     treatment is the whole reason this part exists, and "the label appears in
+//     the paint log" is true of a label drawn anywhere;
+//   * a tag is a plate in the canvas-field colour with the zone's own colour as
+//     ink, drawn solid rather than washed, and the bold face it needs is put back
+//     on the context -- otherwise the drawing's own name renders bold while every
+//     other label in the app does not.
+
+// A tag plate is `measureText`'s stub width (10) plus the renderer's 8 of
+// padding: 18 across, 14 tall, and it ends 2px inside the box's right edge. The
+// filter is deliberately *geometry only* -- where the plate sits is a claim about
+// the box, and a colour mixed into it would let a rename decide the check.
+const PLATE_W = 18;
+const PLATE_H = 14;
+const TAG_FONT = "600 10px ui-monospace, monospace";
+const platesOf = (slice) =>
+  slice.filter(([op, , , w, h]) => op === "fillRect" && w === PLATE_W && h === PLATE_H);
+const fieldPlates = (slice) =>
+  platesOf(slice).filter(
+    ([, , , , , fillStyle, alpha]) => fillStyle === paletteNow().zoneTagPlate && alpha === 1
+  );
+const tagAt = (label, before) => {
+  const at = painted.text.slice(before).indexOf(label);
+  return at < 0 ? null : painted.textState[before + at];
+};
+
+if (zoneShape) {
+  const tagPlates = platesOf(zoneGeom);
+  const rightEdge = zoneShape.x + zoneShape.w - 2;
+  check(
+    "and the two tags are plates at the box's right edge, one per edge",
+    tagPlates.length >= 2 &&
+      tagPlates.every(
+        ([, x, y, w]) =>
+          Math.abs(x + w - rightEdge) < 0.6 &&
+          (Math.abs(y - zoneShape.y) < 0.6 ||
+            Math.abs(y - (zoneShape.y + zoneShape.h - PLATE_H)) < 0.6)
+      ) &&
+      tagPlates.some(([, , y]) => Math.abs(y - zoneShape.y) < 0.6) &&
+      tagPlates.some(([, , y]) => Math.abs(y - (zoneShape.y + zoneShape.h - PLATE_H)) < 0.6),
+    `plates ${JSON.stringify(tagPlates)} · box ${zoneShape.x},${zoneShape.y} ${zoneShape.w}x${zoneShape.h} · right edge ${rightEdge}`
+  );
+  check(
+    "and a tag is the zone's own colour written on a field-colour plate",
+    // Every plate is the field colour drawn solid (`zoneTagPlate` is named for
+    // what it is painted as), and the ink is the zone's own hue -- the pill
+    // `drawZoneLabel` already gives a concept's name, not a translucent wash of
+    // the box's colour with a number punched out of it.
+    fieldPlates(zoneGeom).length === tagPlates.length &&
+      tagPlates.length >= 2 &&
+      zoneLabels.every((label) => {
+        const ink = tagAt(label, zoneTextBefore);
+        return (
+          ink !== null &&
+          ink.font === TAG_FONT &&
+          ink.fillStyle === paletteNow().rect &&
+          ink.globalAlpha === 1
+        );
+      }),
+    `plates ${JSON.stringify(tagPlates)} · inks ${JSON.stringify(
+      zoneLabels.map((label) => tagAt(label, zoneTextBefore))
+    )} · plate ${paletteNow().zoneTagPlate} · rect ${paletteNow().rect}`
+  );
+}
+
+// A box whose span ends on the last bar that traded into the band. `fresh_edge`
+// answers with the *next* bar's x: one bar past the box, still well inside the
+// plot, so the plot clamp lets it through and only the box clamp stops it.
+pickTool("rect");
+const clampGeomBefore = painted.geom.length;
+const clampStoredBefore = backend.drawings.length;
+pointer("pointerdown", 240, 150);
+await settle();
+pointer("pointermove", 330, 380);
+await settle();
+pointer("pointerup", 330, 380);
+await settle();
+await settle();
+
+const clampGeom = painted.geom.slice(clampGeomBefore);
+const clampRect = backend.drawings[backend.drawings.length - 1];
+const clampDrawing = lastScene().drawings.find((drawing) => drawing.id === (clampRect && clampRect.id));
+const clampShape = clampDrawing && clampDrawing.parts.find((p) => p.shape === "zone");
+
+if (clampShape) {
+  const right = clampShape.x + clampShape.w;
+  const barWidth = lastScene().candles[0].w;
+  const plotRight = lastScene().plot.x + lastScene().plot.w;
+  check(
+    "a zone whose last touch is its own edge keeps the fill edge inside the box",
+    typeof clampShape.fresh_from === "number" &&
+      Math.abs(clampShape.fresh_from - right) < 1e-9 &&
+      // The box is many bars wide and ends well before the plot does, so the
+      // edge the raw measure returns is a bar past it and a plot-wide clamp
+      // would have let it through: the equality above is the box clamp, not luck.
+      clampShape.w > 10 * barWidth &&
+      right + barWidth < plotRight,
+    `fresh_from ${clampShape.fresh_from} vs right edge ${right} · bar ${barWidth} · plot ${plotRight}`
+  );
+  const clampFills = clampGeom.filter(
+    ([op, , y, , h]) =>
+      op === "fillRect" && Math.abs(y - clampShape.y) < 0.6 && Math.abs(h - clampShape.h) < 0.6
+  );
+  check(
+    "and the two tones stop at the zone's border instead of running past it",
+    clampFills.length >= 2 &&
+      clampFills.every(([, x, , w]) => x >= clampShape.x - 0.6 && x + w <= right + 0.6) &&
+      Math.abs(Math.max(...clampFills.map(([, x, , w]) => x + w)) - right) < 0.6 &&
+      Math.min(...clampFills.map(([, x]) => x)) >= clampShape.x - 0.6,
+    `fills ${JSON.stringify(clampFills)} · box ${clampShape.x}..${right}`
+  );
+}
+
+// The point zone -- both anchors at one price, which is the shape a one-price
+// thesis leg makes, and the common case in this app. It has no height, so the
+// only thing to prove is that it still *renders*: a border, and the price as a
+// tag at the right edge.
+pickTool("rect");
+pointer("pointerdown", 560, 240);
+await settle();
+pointer("pointermove", 700, 240);
+await settle();
+pointer("pointerup", 700, 240);
+await settle();
+await settle();
+
+// Naming it is not decoration. The name is the text part that arrives *after* the
+// zone inside the same drawing, so its font is the one a tag's bold face leaks
+// onto -- and a drag cannot name a drawing, so the harness writes the stored
+// record the way the server's own response would and makes the shell read it.
+const pointRect = backend.drawings[backend.drawings.length - 1];
+if (pointRect) backend.drawings[backend.drawings.length - 1] = { ...pointRect, label: "demand" };
+const namedGeomBefore = painted.geom.length;
+const namedTextBefore = painted.text.length;
+await window.HRZApp.reloadActivePane();
+await settle();
+await settle();
+
+const namedGeom = painted.geom.slice(namedGeomBefore);
+const pointDrawing = lastScene().drawings.find((d) => d.id === (pointRect && pointRect.id));
+const pointShape = pointDrawing && pointDrawing.parts.find((p) => p.shape === "zone");
+check(
+  "a one-price zone still renders, as a border and a tag at its right edge",
+  pointShape !== undefined &&
+    pointShape !== null &&
+    pointShape.h === 0 &&
+    pointShape.top_label === pointShape.bottom_label &&
+    platesOf(namedGeom).some(
+      ([, x, , w]) => Math.abs(x + w - (pointShape.x + pointShape.w - 2)) < 0.6
+    ) &&
+    namedGeom.some(
+      ([op, x, y, w]) =>
+        op === "strokeRect" &&
+        Math.abs(x - (pointShape.x + 0.5)) < 0.6 &&
+        Math.abs(w - (pointShape.w - 1)) < 0.6
+    ) &&
+    pointDrawing.parts.some((p) => p.shape === "text" && p.text === "demand"),
+  `zone ${JSON.stringify(pointShape)} · paint ${JSON.stringify(namedGeom.slice(-6))}`
+);
+
+const nameInk = tagAt("demand", namedTextBefore);
+check(
+  "and the name under a zone is written in the row's face, not the tag's bold",
+  nameInk !== null && nameInk.font === "10px ui-monospace, monospace",
+  `name paint: ${JSON.stringify(nameInk)}`
 );
 
 // --- a click with no drag ----------------------------------------------------

@@ -12,7 +12,7 @@
 
 use crate::drawing::DrawingPart;
 
-use super::{fresh_edge, Geometry};
+use super::{zone_fresh_from, Geometry};
 
 /// The rectangle with two anchors at opposite corners.
 ///
@@ -34,7 +34,14 @@ pub fn rect(geometry: Geometry<'_>) -> Vec<DrawingPart> {
         y: box_.1,
         w: box_.2,
         h: box_.3,
-        fresh_from: fresh_edge(geometry, geometry.points[0].0, geometry.points[1].0, price_hi, price_lo),
+        fresh_from: zone_fresh_from(
+            geometry,
+            (box_.0, box_.2),
+            geometry.points[0].0,
+            geometry.points[1].0,
+            price_hi,
+            price_lo,
+        ),
         top_label: format!("{price_hi:.2}"),
         bottom_label: format!("{price_lo:.2}"),
     }];

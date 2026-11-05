@@ -1796,9 +1796,10 @@ pub enum DrawingPart {
         w: f64,
         /// Height.
         h: f64,
-        /// Where the untested part of the band starts. `None` means nothing in
-        /// this span has traded into the zone, so all of it is untested and the
-        /// shell fills from `x`. Left of it is the faded, spent portion.
+        /// Where the untested part of the band starts, always inside
+        /// `x ..= x + w`. `None` means nothing in this span has traded into the
+        /// zone, so all of it is untested and the shell fills from `x`. Left of
+        /// it is the faded, spent portion.
         fresh_from: Option<f64>,
         /// The upper edge, formatted. Ready to draw, like every other string
         /// the engine emits.

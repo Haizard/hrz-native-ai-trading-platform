@@ -15,7 +15,7 @@
 use crate::drawing::DrawingPart;
 
 use super::shapes::corners;
-use super::{fresh_edge, Geometry};
+use super::{zone_fresh_from, Geometry};
 
 /// The price/distance ruler: an empty box, guides to both axes, and the delta.
 #[must_use]
@@ -137,7 +137,14 @@ pub fn price_band(geometry: Geometry<'_>) -> Vec<DrawingPart> {
         y: y0.min(y1),
         w: plot.w,
         h: (y1 - y0).abs(),
-        fresh_from: fresh_edge(geometry, left_ms, right_ms, price_hi, price_lo),
+        fresh_from: zone_fresh_from(
+            geometry,
+            (plot.x, plot.w),
+            left_ms,
+            right_ms,
+            price_hi,
+            price_lo,
+        ),
         top_label: format!("{price_hi:.2}"),
         bottom_label: format!("{price_lo:.2}"),
     }]
