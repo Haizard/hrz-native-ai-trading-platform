@@ -26,6 +26,25 @@ use crate::tools::MarketDataSource;
 pub const DEFAULT_LADDER: [Timeframe; 4] =
     [Timeframe::D1, Timeframe::H4, Timeframe::H1, Timeframe::M5];
 
+/// The rungs the marked pass photographs when the model names none.
+///
+/// This is the shell's `LADDER_TIMEFRAMES` (`frontend/app/app.js`) in Rust,
+/// and it has to be: the plain pass is six pictures because the client takes them
+/// itself over that list, so pass two re-photographs the same six or the loop is
+/// six looks followed by one. It is not the *run's* ladder -- a mentor question
+/// from the chart is sent with `timeframes: [activeTimeframe()]` in the same
+/// file, which makes the run ladder one rung wide.
+///
+/// Coarse to fine, so a caller that iterates it reads top-down like the analysis.
+pub const MARKED_LADDER: [Timeframe; 6] = [
+    Timeframe::W1,
+    Timeframe::D1,
+    Timeframe::H4,
+    Timeframe::H1,
+    Timeframe::M15,
+    Timeframe::M5,
+];
+
 /// An ordered set of timeframes, always held coarse to fine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeframeLadder {
@@ -699,6 +718,16 @@ mod tests {
             ladder.timeframes(),
             &[Timeframe::D1, Timeframe::H4, Timeframe::H1, Timeframe::M5]
         );
+    }
+
+    /// The marked pass re-photographs the six charts the user already watched,
+    /// so its rungs have to be the shell's `LADDER_TIMEFRAMES` verbatim -- same
+    /// six strings, same coarse-to-fine order. A rung renamed here is a chart
+    /// the second pass never takes.
+    #[test]
+    fn the_marked_ladder_is_the_shell_six_rungs_coarse_to_fine() {
+        let strings: Vec<String> = MARKED_LADDER.iter().map(ToString::to_string).collect();
+        assert_eq!(strings, vec!["1w", "1d", "4h", "1h", "15m", "5m"]);
     }
 
     #[test]

@@ -765,6 +765,19 @@ impl ToolRegistry {
                     exposed_tool: None,
                 },
                 ToolSpec {
+                    name: "review_marked_charts".into(),
+                    description: REVIEW_MARKED_CHARTS.into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string", "description": "Instrument whose charts to photograph; omit to use the one under analysis. This does not move the user's screen."},
+                            "timeframes": {"type": "array", "items": {"type": "string"}, "description": "Rungs to re-photograph. Omit for the whole ladder this run is reading."}
+                        },
+                        "required": []
+                    }),
+                    exposed_tool: None,
+                },
+                ToolSpec {
                     name: "create_indicator".into(),
                     description: CREATE_INDICATOR.into(),
                     input_schema: serde_json::json!({
@@ -1065,6 +1078,7 @@ impl ToolRegistry {
             "open_chart" => open_chart_tool(ctx, &call.input).await,
             "set_chart" => set_chart_tool(ctx, &call.input).await,
                 "look_at_chart" => look_at_chart_tool(ctx, &call.input).await,
+            "review_marked_charts" => review_marked_charts_tool(ctx, &call.input).await,
         "create_indicator" => create_pipeline_tool("create_indicator", &call.input, "description").await,
         "create_strategy" => create_pipeline_tool("create_strategy", &call.input, "description").await,
         "list_concepts" => list_concepts(ctx, &call.input).await,
@@ -1763,6 +1777,12 @@ const LOOK_AT_CHART: &str = "Capture a fresh image of a chart and see it yoursel
     asks. The image arrives with the tool result when the screen answers; if no screen is attached \
     (the user is away, a server-side run) the result says so instead. Budget a few captures per \
     run, not one per turn.";
+
+const REVIEW_MARKED_CHARTS: &str = "Photograph every timeframe of this analysis again, now \
+    carrying the zones and levels you have drawn, and see them before you commit the plan. \
+    Call this once, after your drawings are on the chart, in the same turn you would have \
+    written the thesis: the images arrive with this call's results. Omit `timeframes` to \
+    re-photograph the whole ladder. This never moves the user's screen.";
 
 /// `create_indicator` — build a chart indicator from a description.
 const CREATE_INDICATOR: &str = "Create a chart indicator from a natural-language \
@@ -2958,6 +2978,23 @@ async fn set_chart_tool(_ctx: &ToolContext<'_>, args: &Value) -> Result<Value, A
     Ok(ui_command("set_chart", symbol, timeframe))
 }
 
+/// A fresh rendezvous id for one capture request.
+///
+/// No uuid dependency in this crate: millis plus a process-wide counter is
+/// collision-free for a per-run, per-user rendezvous, and six ids minted in the
+/// same millisecond are still six different ids because of the counter.
+fn next_capture_id() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    format!(
+        "cap-{millis:x}-{}",
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 /// `look_at_chart`: a capture request, not a capture. The command rides the
 /// progress channel like `open_chart`; the image comes back over the upload
 /// rendezvous and the loop hands it to the model with the tool results. When
@@ -2990,28 +3027,120 @@ async fn look_at_chart_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
                 .to_string(),
         ),
     };
-    // No uuid dependency in this crate: millis + a process-wide counter is
-    // collision-free for a per-run, per-user rendezvous.
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or_default();
-    let capture_id = format!(
-        "cap-{millis:x}-{}",
-        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    );
     Ok(json!({
         "ok": true,
         "ui_command": {
             "action": "capture_chart",
             "symbol": symbol,
             "timeframe": timeframe,
-            "capture_id": capture_id,
+            "capture_id": next_capture_id(),
         },
         "note": "the capture was requested from the user's screen; when it answers, the image \
                  arrives with this turn's results. If nothing arrives, answer from the data \
                  you already have.",
+    }))
+}
+
+/// `review_marked_charts`: the second pass, asked for as one call.
+///
+/// Six commands, not six turns. A model that has to ask for each frame
+/// separately spends the run's budget on bookkeeping and gets three of six
+/// before the cap; one call that expands to the ladder is the difference between
+/// a review that looked and a review that described.
+async fn review_marked_charts_tool(
+    ctx: &ToolContext<'_>,
+    args: &Value,
+) -> Result<Value, AgentError> {
+    const TOOL: &str = "review_marked_charts";
+    if ctx.captures.is_none() {
+        return Err(AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason: "no screen is attached to this run, so there is no marked chart to \
+                     photograph. Say in the answer that the marked pass could not run, \
+                     and ground the plan in the data tools instead."
+                .into(),
+        });
+    }
+
+    let symbol = args
+        .get("symbol")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_uppercase());
+
+    // The six rungs are the default: the plain pass the user watched was these
+    // six, and a marked pass over a different set would not be a second look at
+    // the same work.
+    let rungs: Vec<Timeframe> = match args.get("timeframes").and_then(Value::as_array) {
+        None => crate::multi_timeframe::MARKED_LADDER.to_vec(),
+        Some(list) => {
+            let mut parsed = Vec::with_capacity(list.len());
+            for raw in list {
+                let text = raw.as_str().unwrap_or_default();
+                parsed.push(text.parse::<Timeframe>().map_err(|_| AgentError::InvalidToolArgs {
+                    tool: TOOL.into(),
+                    reason: format!("`timeframes` contains `{text}`, not a resolution the engine accepts"),
+                })?);
+            }
+            parsed
+        }
+    };
+    if rungs.is_empty() {
+        return Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: "no timeframes to re-photograph: the list was empty and none parse".into(),
+        });
+    }
+    // Coarse to fine, and deduplicated, whatever the model typed: the six cards
+    // and the six captions the model reads are in the order it thinks in.
+    // `TimeframeLadder::new` already does exactly this (multi_timeframe.rs,
+    // sorting descending by duration because `Timeframe`'s `Ord` is by duration),
+    // so the ladder type is the one place that ordering lives.
+    let rungs = crate::multi_timeframe::TimeframeLadder::new(rungs)
+        .timeframes()
+        .to_vec();
+
+    let mut commands = Vec::with_capacity(rungs.len());
+    let mut frames = Vec::with_capacity(rungs.len());
+    let total = rungs.len();
+    for (index, rung) in rungs.iter().enumerate() {
+        let timeframe = rung.to_string();
+        // Announced before the photograph is taken, exactly as the plain pass
+        // announces each rung before reading it: the user watches pass two
+        // arrive rather than seeing six charts change at once at the end.
+        if let Some(progress) = ctx.progress {
+            progress.report(crate::progress::Progress::ReviewFrame {
+                symbol: symbol.clone().unwrap_or_default(),
+                timeframe: timeframe.clone(),
+                index: index + 1,
+                total,
+                marked: true,
+            });
+        }
+        let capture_id = next_capture_id();
+        frames.push(timeframe.clone());
+        commands.push(json!({
+            "action": "capture_chart",
+            // Cloned, not moved: six commands read the same `Option<String>`, and
+            // the second iteration would be reading a moved value. Null in the
+            // JSON means "the pane the user is on", which is what the shell's
+            // capture handler already does for `look_at_chart`.
+            "symbol": symbol.clone(),
+            "timeframe": timeframe,
+            "capture_id": capture_id,
+            "marked": true,
+        }));
+    }
+
+    Ok(json!({
+        "ok": true,
+        "ui_commands": commands,
+        "frames": frames,
+        "note": "the marked frames will arrive with this turn's results, captioned \
+                 `PASS 2 · <TIMEFRAME> · marked`. Any frame that does not arrive is \
+                 reported as missing -- confirm the trend, entry, target and stop from \
+                 the frames you actually see, and say which you could not see.",
     }))
 }
 
@@ -4253,6 +4382,18 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
     use super::*;
     use crate::llm_client::{ContentBlock, Message, Role};
 
+    /// A screen that is attached but never answers. `review_marked_charts` only
+    /// asks whether a capture source exists -- the waiting is the run's job --
+    /// so this is the whole fixture the tool's own tests need.
+    struct SilentScreen;
+
+    #[async_trait::async_trait]
+    impl crate::captures::ChartCaptureSource for SilentScreen {
+        async fn take(&self, _capture_id: &str) -> Option<crate::chart_context::ChartScreenshot> {
+            None
+        }
+    }
+
     /// A fixed data source: rising candles, no trades.
     struct Fixture {
         candles: Vec<Candle>,
@@ -4518,6 +4659,129 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
             .filter(|step| matches!(step, crate::progress::Progress::ReviewFrame { .. }))
             .count();
         assert_eq!(frames, 1, "one frame for one read");
+    }
+
+    /// The marked pass is six frames or it is not the marked pass: the product
+    /// owner's complaint was that a run marked the charts and then described
+    /// them from memory.
+    #[tokio::test]
+    async fn review_marked_charts_asks_for_the_whole_ladder_at_once() {
+        let fixture = Fixture::rising(40);
+        let screen = SilentScreen;
+        let ctx = ToolContext::new(&fixture).with_captures(&screen);
+
+        let out = review_marked_charts_tool(&ctx, &json!({"symbol": "BTCUSDT"}))
+            .await
+            .expect("the marked pass is requested");
+
+        let commands = out["ui_commands"].as_array().expect("a list");
+        assert_eq!(commands.len(), 6, "one frame per rung: {commands:?}");
+        let ids: Vec<&str> = commands
+            .iter()
+            .map(|c| c["capture_id"].as_str().expect("an id"))
+            .collect();
+        assert_eq!(
+            ids.len(),
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            "six frames, six rendezvous ids: {ids:?}"
+        );
+        let rungs: Vec<&str> = commands
+            .iter()
+            .map(|c| c["timeframe"].as_str().expect("a timeframe"))
+            .collect();
+        // The exact list, in the exact order, because the plain pass the user
+        // already saw is this same list taken by the shell.
+        assert_eq!(rungs, vec!["1w", "1d", "4h", "1h", "15m", "5m"]);
+        for command in commands {
+            assert_eq!(command["action"], "capture_chart");
+            assert_eq!(command["symbol"], "BTCUSDT");
+            assert_eq!(command["marked"], true, "the shell photographs the marked chart");
+        }
+        assert_eq!(
+            out["frames"].as_array().expect("frames").len(),
+            6,
+            "the run is told which six it asked for"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_marked_review_can_narrow_to_the_rungs_the_model_asks_about() {
+        // "re-check just the 4h and the 1h" is a legitimate request, and the
+        // tool that ignores it photographs six charts nobody asked for.
+        let fixture = Fixture::rising(40);
+        let screen = SilentScreen;
+        let ctx = ToolContext::new(&fixture).with_captures(&screen);
+
+        let out = review_marked_charts_tool(
+            &ctx,
+            &json!({"symbol": "BTCUSDT", "timeframes": ["1h", "4h"]}),
+        )
+        .await
+        .expect("two frames");
+        let got: Vec<&str> = out["ui_commands"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|c| c["timeframe"].as_str().expect("a timeframe"))
+            .collect();
+        // Coarse first, whatever order the model typed: the cards and the
+        // captions have to match the order the analysis was read in.
+        assert_eq!(got, vec!["4h", "1h"]);
+    }
+
+    #[tokio::test]
+    async fn a_marked_review_without_a_screen_says_so() {
+        let fixture = Fixture::rising(40);
+        let ctx = ToolContext::new(&fixture);
+        let err = review_marked_charts_tool(&ctx, &json!({}))
+            .await
+            .expect_err("nothing to photograph");
+        assert!(matches!(err, AgentError::ToolFailed { .. }), "got {err}");
+        assert!(err.to_string().contains("no screen"), "got {err}");
+    }
+
+    /// The same six announcements, one per rung, in ladder order and marked --
+    /// the overlay has to show pass two arriving rather than six charts changing
+    /// at once at the end.
+    #[tokio::test]
+    async fn a_marked_review_announces_its_rungs_in_order() {
+        let fixture = Fixture::rising(40);
+        let screen = SilentScreen;
+        let sink = crate::progress::Collected::default();
+        let ctx = ToolContext::new(&fixture)
+            .with_captures(&screen)
+            .with_progress(&sink);
+
+        review_marked_charts_tool(&ctx, &json!({"symbol": "BTCUSDT"}))
+            .await
+            .expect("the marked pass is requested");
+
+        let frames: Vec<(String, usize, usize, bool)> = sink
+            .steps()
+            .into_iter()
+            .filter_map(|step| match step {
+                crate::progress::Progress::ReviewFrame {
+                    timeframe,
+                    index,
+                    total,
+                    marked,
+                    ..
+                } => Some((timeframe, index, total, marked)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            frames,
+            vec![
+                ("1w".into(), 1, 6, true),
+                ("1d".into(), 2, 6, true),
+                ("4h".into(), 3, 6, true),
+                ("1h".into(), 4, 6, true),
+                ("15m".into(), 5, 6, true),
+                ("5m".into(), 6, 6, true),
+            ],
+            "one marked announcement per rung, in the order the ladder is read"
+        );
     }
 
     /// A teaching sketch is a polyline of many anchors, and one drawing with
