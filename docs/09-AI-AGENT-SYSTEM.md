@@ -99,9 +99,9 @@ pub struct TradeThesis {
     pub confidence_pct: f64,
     pub higher_timeframe_checks: Vec<ConditionCheck>,   // ✓/✗ with description
     pub order_flow_checks: Vec<ConditionCheck>,
-    pub entry_price: f64,
-    pub stop_price: f64,
-    pub target_price: f64,
+    pub entry: PriceZone,
+    pub stop: PriceZone,
+    pub target: PriceZone,
     pub risk_reward: f64,
     pub invalidation: String,
     pub skill_used: Option<String>,
@@ -112,6 +112,10 @@ pub struct TradeThesis {
 ```
 The narrative field is generated **from** the structured fields, never the other way
 around — the numbers are ground truth; the prose explains them.
+
+Each leg is a `PriceZone { low, high }`: a price *area*, the way a trader marks a level,
+with `low == high` meaning exactly one price, `risk_reward` computed midpoint to
+midpoint, and every one of the six edges grounded against the prices the tools reported.
 
 ## Strategy generation from natural language
 User describes a setup in plain language → agent drafts a `StrategyDocument` → runs it

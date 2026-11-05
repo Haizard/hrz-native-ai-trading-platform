@@ -164,7 +164,7 @@ const { document } = window;
 // to answer that property, and the branch was removed rather than left here: a
 // stub that supports something nothing calls is a claim about the shell that
 // nothing checks.
-const painted = { ops: [], text: [], styles: [] };
+const painted = { ops: [], text: [], styles: [], geom: [] };
 const context = new Proxy(
   {},
   {
@@ -175,6 +175,12 @@ const context = new Proxy(
       return (...args) => {
         painted.ops.push(String(prop));
         if (prop === "fillText") painted.text.push(String(args[0]));
+        // The geometry too, not only the op name: "three thin bands rather than
+        // one stripe over the plot" is a claim about numbers, and an op list
+        // cannot make it.
+        if (prop === "fillRect" || prop === "strokeRect") {
+          painted.geom.push([prop, ...args.map((a) => (typeof a === "number" ? Math.round(a * 100) / 100 : a))]);
+        }
         return undefined;
       };
     },
@@ -5042,6 +5048,10 @@ console.log("\nthe agent's answer");
 const questionBox = document.getElementById("question");
 const askButton = document.getElementById("ask");
 const agentTextBefore = painted.text.length;
+// The geometry marker sits beside the text one: the band claim is about the
+// rectangles *this answer* painted, and `painted.geom` also holds every candle
+// and panel background filled earlier in the run.
+const agentGeomBefore = painted.geom.length;
 
 questionBox.value = "find me a long setup";
 askButton.click();
@@ -5081,9 +5091,9 @@ try {
       confidence_pct: 61,
       higher_timeframe_checks: [],
       order_flow_checks: [],
-      entry_price: 100,
-      stop_price: 99,
-      target_price: 102,
+      entry: { low: 99.6, high: 100.4 },
+      stop: { low: 98.4, high: 99.0 },
+      target: { low: 101.5, high: 102.5 },
       risk_reward: 2,
       // Every field `thesisHtml` reads, because a card that throws on a missing
       // one is a card the transcript cannot render at all.
@@ -5131,9 +5141,11 @@ check(
 // also proves the shell sent prices rather than pixels: a shell that mapped them
 // itself would have to reproduce the engine's price scale exactly, and the
 // numbers below would drift away from the axis ticks on the next resize.
+// The label sits on the leg's upper edge, which is the other half of the same
+// contract a zone is drawn from.
 check(
   "and it is the engine that put them there, at the prices the answer gave",
-  ["stop 99.00", "entry 100.00", "target 102.00"].every((label) =>
+  ["stop 99.00", "entry 100.40", "target 102.50"].every((label) =>
     drawn.includes(label)
   ),
   `looking for the answer's three levels; drew ${drawn.join(" / ")}`
@@ -5168,15 +5180,20 @@ check(
       sceneOverlays.every((o) => typeof o.y === "number" && typeof o.price === "number"),
     JSON.stringify(sceneOverlays)
   );
-  // The band: the engine orders the two edges, so the shell never has to know
-  // whether a short's stop is above or below its entry.
-  const banded = (sceneOverlays ?? []).filter((o) => o.band_y !== null && o.band_y !== undefined);
-  check(
-    "and the stop-to-target band arrives with both edges resolved",
-    banded.length === 1,
-    `${banded.length} of ${(sceneOverlays ?? []).length} carry a band`
-  );
 }
+
+// A plan band is full-width by construction, so width picks the bands out of
+// every rectangle the shell filled; the height budget is the actual claim --
+// three legs, each one its own thin area, none of them the entry→target span.
+const bands = painted.geom
+  .slice(agentGeomBefore)
+  .filter(([op, , , w, h]) => op === "fillRect" && w > VIEW.width * 0.5 && h > 0)
+  .map(([, , , w, h]) => ({ w, h }));
+check(
+  "the plan arrives as three thin bands, not one stripe over the plot",
+  bands.length === 3 && bands.every((band) => band.h < VIEW.height / 5),
+  `${bands.length} bands, heights ${bands.map((band) => band.h).join(", ")}`
+);
 
 const thesisPanel = document.getElementById("thesis");
 check(

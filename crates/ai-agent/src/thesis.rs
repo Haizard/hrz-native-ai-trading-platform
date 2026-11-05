@@ -45,6 +45,11 @@ use crate::llm_client::ToolSpec;
 /// it does not tell the model how wide a stop should be.
 pub const MIN_RISK_FRACTION: f64 = 0.0002;
 
+/// Smallest zone height as a fraction of the entry-to-stop distance. A band
+/// thinner than this is a single price wearing a zone's clothes, and the
+/// honest way to say one price is one price (`low == high`).
+pub const MIN_ZONE_FRACTION: f64 = 0.05;
+
 /// Which way the thesis points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -133,6 +138,103 @@ pub struct ToolTrace {
     pub result: Value,
 }
 
+/// A price *area*: the way a trader actually marks a level.
+///
+/// `low == high` is legal and means exactly one price, so nothing that today
+/// reports a single number has to invent a second edge to keep working. The
+/// edges are normalised by `new`, so a model that answers `{"low": 103_200,
+/// "high": 102_800}` describes the same band as the other way round.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ZoneInput")]
+pub struct PriceZone {
+    /// Lower edge.
+    pub low: f64,
+    /// Upper edge.
+    pub high: f64,
+}
+
+impl PriceZone {
+    /// Both edges, ordered -- whichever way round the model wrote them.
+    #[must_use]
+    pub fn new(low: f64, high: f64) -> Self {
+        Self {
+            low: low.min(high),
+            high: low.max(high),
+        }
+    }
+
+    /// One price, wearing no band.
+    #[must_use]
+    pub const fn point(value: f64) -> Self {
+        Self {
+            low: value,
+            high: value,
+        }
+    }
+
+    /// The centre, which is what the arithmetic uses: an R computed from the
+    /// far edge of a fat entry zone would flatter the trade.
+    #[must_use]
+    pub fn midpoint(&self) -> f64 {
+        (self.low + self.high) / 2.0
+    }
+
+    /// The width of the band; zero for a one-price zone.
+    #[must_use]
+    pub fn height(&self) -> f64 {
+        self.high - self.low
+    }
+
+    /// Whether this leg is a single price rather than an area.
+    #[must_use]
+    pub fn is_point(&self) -> bool {
+        self.low == self.high
+    }
+
+    /// One number for a one-price zone, a range otherwise. Every prose
+    /// consumer (narrative, memory, CLI, card) goes through this so the three
+    /// of them cannot disagree about what the plan was.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        if self.is_point() {
+            format!("{:.4}", self.low)
+        } else {
+            format!("{:.4} -> {:.4}", self.low, self.high)
+        }
+    }
+}
+
+impl Default for PriceZone {
+    /// The "no levels" a `Bias::None` thesis carries. `finalize` zeroes to
+    /// this, so a consumer that reads the legs without checking the direction
+    /// sees nothing usable rather than a band around zero.
+    fn default() -> Self {
+        Self::point(0.0)
+    }
+}
+
+/// The two shapes a leg arrives in, on the wire and in stored rows.
+///
+/// A bare number is one price; a `{low, high}` pair is an area. `serde` cannot
+/// express that with a plain struct derive, so `PriceZone` reads through this
+/// untagged enum instead -- the same tolerance `parse_zone` gives the model's
+/// tool call, extended to a stored thesis deserialising from JSON.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ZoneInput {
+    Point(f64),
+    Area { low: f64, high: f64 },
+}
+
+impl From<ZoneInput> for PriceZone {
+    fn from(input: ZoneInput) -> Self {
+        match input {
+            ZoneInput::Point(value) => Self::point(value),
+            ZoneInput::Area { low, high } => Self::new(low, high),
+        }
+    }
+}
+
 /// The explainable thesis.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TradeThesis {
@@ -148,12 +250,13 @@ pub struct TradeThesis {
     pub higher_timeframe_checks: Vec<ConditionCheck>,
     /// Order-flow checks on the decision timeframe.
     pub order_flow_checks: Vec<ConditionCheck>,
-    /// Planned entry.
-    pub entry_price: f64,
-    /// Planned stop.
-    pub stop_price: f64,
-    /// Planned target.
-    pub target_price: f64,
+    /// Planned entry area.
+    pub entry: PriceZone,
+    /// Planned stop area -- the invalidation *level*, which is why the
+    /// narrative keeps the `invalidation` sentence for the why.
+    pub stop: PriceZone,
+    /// Planned target area.
+    pub target: PriceZone,
     /// Reward-to-risk, recomputed in Rust.
     pub risk_reward: f64,
     /// What would prove the thesis wrong.
@@ -222,60 +325,81 @@ impl TradeThesis {
         }
 
         if !self.direction.is_directional() {
-            self.entry_price = 0.0;
-            self.stop_price = 0.0;
-            self.target_price = 0.0;
+            self.entry = PriceZone::default();
+            self.stop = PriceZone::default();
+            self.target = PriceZone::default();
             self.risk_reward = 0.0;
             return Ok(());
         }
 
-        for (name, value) in [
-            ("entry_price", self.entry_price),
-            ("stop_price", self.stop_price),
-            ("target_price", self.target_price),
+        // Normalise once, here, so every rule below can read the legs as
+        // ordered and `low <= high` stops being a check.
+        self.entry = PriceZone::new(self.entry.low, self.entry.high);
+        self.stop = PriceZone::new(self.stop.low, self.stop.high);
+        self.target = PriceZone::new(self.target.low, self.target.high);
+
+        for (name, zone) in [
+            ("entry", self.entry),
+            ("stop", self.stop),
+            ("target", self.target),
         ] {
-            if !value.is_finite() || value <= 0.0 {
-                return Err(AgentError::Ungrounded(format!(
-                    "{name} is {value}, which is not a usable price"
-                )));
+            for (edge, value) in [("low", zone.low), ("high", zone.high)] {
+                if !value.is_finite() || value <= 0.0 {
+                    return Err(AgentError::Ungrounded(format!(
+                        "{name}.{edge} is {value}, which is not a usable price"
+                    )));
+                }
             }
         }
 
-        // Structural sanity: a long's stop is below entry and its target above.
-        // Without this, a model that swapped two numbers produces a thesis that
-        // looks complete and is nonsense.
+        // Structural sanity, now stated as non-overlap: a stop that reaches
+        // into the entry area is not a stop, it is the entry. `stop.high <=
+        // entry.low` says "entirely under it", which also refuses a stop
+        // parked above a long's entry without a second branch.
         {
             let long = matches!(self.direction, Bias::Long);
-            let risk = if long {
-                self.entry_price - self.stop_price
+            let stop_clear = if long {
+                self.stop.high <= self.entry.low
             } else {
-                self.stop_price - self.entry_price
+                self.stop.low >= self.entry.high
             };
-            let reward = if long {
-                self.target_price - self.entry_price
+            let target_clear = if long {
+                self.target.low >= self.entry.high
             } else {
-                self.entry_price - self.target_price
+                self.target.high <= self.entry.low
             };
-
-            if risk <= 0.0 {
+            if !stop_clear {
                 return Err(AgentError::Ungrounded(format!(
                     "{:?} thesis has entry {} and stop {}: the stop is on the wrong side",
-                    self.direction, self.entry_price, self.stop_price
+                    self.direction,
+                    self.entry.describe(),
+                    self.stop.describe()
                 )));
             }
-            if reward <= 0.0 {
+            if !target_clear {
                 return Err(AgentError::Ungrounded(format!(
                     "{:?} thesis has entry {} and target {}: the target is on the wrong side",
-                    self.direction, self.entry_price, self.target_price
+                    self.direction,
+                    self.entry.describe(),
+                    self.target.describe()
                 )));
             }
 
-            // A stop a fraction of a basis point away is not risk, it is
-            // noise -- and it inflates R into nonsense. A live run put the
-            // stop exactly on the swept level, 0.7bp below entry, and
-            // reported a 44R setup. Two basis points is deliberately loose;
-            // it catches the absurd case without legislating real stops.
-            let min_risk = self.entry_price * MIN_RISK_FRACTION;
+            // Midpoint to midpoint: the size of the trade is the distance
+            // between the two levels as the trader means them, not between
+            // whichever edges happen to be closest.
+            let risk = if long {
+                self.entry.midpoint() - self.stop.midpoint()
+            } else {
+                self.stop.midpoint() - self.entry.midpoint()
+            };
+            let reward = if long {
+                self.target.midpoint() - self.entry.midpoint()
+            } else {
+                self.entry.midpoint() - self.target.midpoint()
+            };
+
+            let min_risk = self.entry.midpoint() * MIN_RISK_FRACTION;
             if risk < min_risk {
                 return Err(AgentError::Ungrounded(format!(
                     "{:?} thesis risks {} between entry {} and stop {}, which is under \
@@ -283,11 +407,37 @@ impl TradeThesis {
                      beyond it with room",
                     self.direction,
                     risk,
-                    self.entry_price,
-                    self.stop_price,
+                    self.entry.describe(),
+                    self.stop.describe(),
                     MIN_RISK_FRACTION,
                     min_risk
                 )));
+            }
+
+            // A zone thinner than 5% of the risk is decoration. Refusing it
+            // (rather than silently widening) is what keeps the marks on the
+            // chart the ones the trade was actually taken at.
+            for (name, zone) in [
+                ("entry", self.entry),
+                ("stop", self.stop),
+                ("target", self.target),
+            ] {
+                if zone.is_point() {
+                    continue;
+                }
+                let min_height = risk * MIN_ZONE_FRACTION;
+                if zone.height() < min_height {
+                    return Err(AgentError::Ungrounded(format!(
+                        "{name} spans {} (height {:.4}), thinner than {:.4}, which is {} of \
+                         the {:.4} entry-to-stop distance: to price one level exactly, give \
+                         the same number for both edges",
+                        zone.describe(),
+                        zone.height(),
+                        min_height,
+                        MIN_ZONE_FRACTION,
+                        risk
+                    )));
+                }
             }
 
             self.risk_reward = reward / risk;
@@ -297,14 +447,16 @@ impl TradeThesis {
             self.risk_reward = 0.0;
         }
 
-        // Grounding: every level must be reconcilable with something the tools
-        // actually reported.
-        for (name, value) in [
-            ("entry_price", self.entry_price),
-            ("stop_price", self.stop_price),
-            ("target_price", self.target_price),
+        // Grounding: every edge is a claim about the data, so every edge is
+        // checked. Three prices became six numbers, and a fat zone whose far
+        // edge is invented is exactly as ungrounded as an invented price was.
+        for (name, zone) in [
+            ("entry", self.entry),
+            ("stop", self.stop),
+            ("target", self.target),
         ] {
-            observed.check(name, value)?;
+            observed.check(&format!("{name}.low"), zone.low)?;
+            observed.check(&format!("{name}.high"), zone.high)?;
         }
 
         Ok(())
@@ -329,8 +481,11 @@ impl TradeThesis {
 
         if self.direction.is_directional() {
             out.push_str(&format!(
-                "Entry {:.4}, stop {:.4}, target {:.4} -> {:.2}R.\n",
-                self.entry_price, self.stop_price, self.target_price, self.risk_reward
+                "Entry {}, stop {}, target {} -> {:.2}R.\n",
+                self.entry.describe(),
+                self.stop.describe(),
+                self.target.describe(),
+                self.risk_reward
             ));
         } else {
             out.push_str("No trade: the conditions for a setup were not met.\n");
@@ -543,18 +698,38 @@ fn check_schema() -> Value {
             "timeframe": {"type": "string", "description": "The timeframe the entry decision was made on"},
             "direction": {"type": "string", "enum": ["long", "short", "none"]},
             "confidence_pct": {"type": "number", "minimum": 0, "maximum": 100},
-            "entry_price": {"type": "number"},
-            "stop_price": {"type": "number"},
-            "target_price": {"type": "number"},
+            "entry": zone_schema(),
+            "stop": zone_schema(),
+            "target": zone_schema(),
             "invalidation": {"type": "string", "description": "What would prove this wrong"},
             "higher_timeframe_checks": check_array_schema(),
             "order_flow_checks": check_array_schema(),
         },
         "required": [
             "symbol", "timeframe", "direction", "confidence_pct",
-            "entry_price", "stop_price", "target_price", "invalidation",
+            "entry", "stop", "target", "invalidation",
             "higher_timeframe_checks", "order_flow_checks"
         ],
+    })
+}
+
+/// One leg of the plan.
+///
+/// A bare number is legal and means both edges. The alternative -- forcing an
+/// object -- would make a model that has decided "stop at 102000.00" invent a
+/// second price to satisfy syntax, which is how invented levels get into a
+/// thesis. `finalize` is where a wrong number is refused.
+fn zone_schema() -> Value {
+    json!({
+        "description": "A price area as {\"low\": .., \"high\": ..}. A bare number is \
+            accepted and means one price for both edges. Copy the numbers verbatim \
+            from tool output.",
+        "type": ["number", "object"],
+        "properties": {
+            "low": {"type": "number"},
+            "high": {"type": "number"},
+        },
+        "required": ["low", "high"],
     })
 }
 
@@ -632,6 +807,15 @@ pub fn parse_thesis(args: &Value) -> Result<TradeThesis, AgentError> {
             })
     };
 
+    let zone = |key: &str| -> Result<PriceZone, AgentError> {
+        parse_zone(args.get(key)).ok_or_else(|| AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: format!(
+                "`{key}` is required and must be a number or a {{\"low\": .., \"high\": ..}} pair"
+            ),
+        })
+    };
+
     Ok(TradeThesis {
         symbol,
         timeframe,
@@ -639,9 +823,9 @@ pub fn parse_thesis(args: &Value) -> Result<TradeThesis, AgentError> {
         confidence_pct: number("confidence_pct")?,
         higher_timeframe_checks: parse_checks(args.get("higher_timeframe_checks")),
         order_flow_checks: parse_checks(args.get("order_flow_checks")),
-        entry_price: number("entry_price")?,
-        stop_price: number("stop_price")?,
-        target_price: number("target_price")?,
+        entry: zone("entry")?,
+        stop: zone("stop")?,
+        target: zone("target")?,
         // Recomputed by finalize(); zero here means "not yet derived", and
         // finalize always overwrites it before the thesis is returned.
         risk_reward: 0.0,
@@ -656,6 +840,23 @@ pub fn parse_thesis(args: &Value) -> Result<TradeThesis, AgentError> {
         narrative: String::new(),
         provenance: Vec::new(),
     })
+}
+
+/// Read one leg in either accepted shape.
+///
+/// Tolerant for the same reason as `parse_status`, which already bends for a
+/// bare `"passed": true`: the wire is the model's, and a shape slip should not
+/// discard an otherwise checkable thesis.
+fn parse_zone(value: Option<&Value>) -> Option<PriceZone> {
+    match value? {
+        Value::Number(number) => number.as_f64().map(PriceZone::point),
+        Value::Object(map) => {
+            let low = map.get("low").and_then(Value::as_f64)?;
+            let high = map.get("high").and_then(Value::as_f64)?;
+            Some(PriceZone::new(low, high))
+        }
+        _ => None,
+    }
 }
 
 /// Read a check's status, preferring `status` and falling back to `passed`.
@@ -738,9 +939,9 @@ mod tests {
                 observed: None,
                 source: "detect_absorption".into(),
             }],
-            entry_price: entry,
-            stop_price: stop,
-            target_price: target,
+            entry: PriceZone::point(entry),
+            stop: PriceZone::point(stop),
+            target: PriceZone::point(target),
             risk_reward: 0.0,
             invalidation: "5m close below the swept low".into(),
             skill_used: Some("Liquidity Sweep + Absorption v2.1".into()),
@@ -847,7 +1048,7 @@ mod tests {
         t.confidence_pct = 0.0;
         t.finalize(&observed()).unwrap();
 
-        assert_eq!(t.entry_price, 0.0);
+        assert_eq!(t.entry, PriceZone::default());
         assert_eq!(t.risk_reward, 0.0);
         assert!(t.fallback_narrative().contains("No trade"));
     }
@@ -858,7 +1059,7 @@ mod tests {
         let mut t = thesis(Bias::Long, 0.0, 0.0, 0.0);
         let err = t.finalize(&observed()).unwrap_err();
         assert!(matches!(err, AgentError::Ungrounded(_)), "got {err}");
-        assert!(err.to_string().contains("entry_price"));
+        assert!(err.to_string().contains("entry.low"), "got {err}");
     }
 
     #[test]
@@ -920,9 +1121,9 @@ mod tests {
             "timeframe": "5m",
             "direction": "long",
             "confidence_pct": 64.0,
-            "entry_price": 103250.5,
-            "stop_price": 102900.0,
-            "target_price": 104300.0,
+            "entry": 103250.5,
+            "stop": 102900.0,
+            "target": 104300.0,
             "invalidation": "5m close below the swept low",
             "higher_timeframe_checks": [
                 {"label": "4h trend", "passed": true, "detail": "bullish",
@@ -951,8 +1152,8 @@ mod tests {
         // honest blank was recorded as a confident failure.
         let args = json!({
             "symbol": "BTCUSDT", "timeframe": "5m", "direction": "long",
-            "confidence_pct": 40.0, "entry_price": 77221.1, "stop_price": 77125.03,
-            "target_price": 77475.0, "invalidation": "x",
+            "confidence_pct": 40.0, "entry": 77221.1, "stop": 77125.03,
+            "target": 77475.0, "invalidation": "x",
             "higher_timeframe_checks": [],
             "order_flow_checks": [
                 {"label": "absorption", "status": "unknown",
@@ -989,8 +1190,8 @@ mod tests {
     fn a_boolean_passed_is_still_understood_when_a_model_emits_it() {
         let args = json!({
             "symbol": "BTCUSDT", "timeframe": "5m", "direction": "long",
-            "confidence_pct": 40.0, "entry_price": 1.0, "stop_price": 0.9,
-            "target_price": 1.3, "invalidation": "x",
+            "confidence_pct": 40.0, "entry": 1.0, "stop": 0.9,
+            "target": 1.3, "invalidation": "x",
             "higher_timeframe_checks": [{"label": "trend", "passed": true, "detail": "up"}],
             "order_flow_checks": [{"label": "absorption", "passed": false, "detail": "none"}],
         });
@@ -1013,8 +1214,8 @@ mod tests {
     fn an_absent_passed_flag_is_unknown_not_failed() {
         let args = json!({
             "symbol": "BTCUSDT", "timeframe": "5m", "direction": "long",
-            "confidence_pct": 10.0, "entry_price": 1.0, "stop_price": 0.9,
-            "target_price": 1.3, "invalidation": "x",
+            "confidence_pct": 10.0, "entry": 1.0, "stop": 0.9,
+            "target": 1.3, "invalidation": "x",
             "higher_timeframe_checks": [{"label": "trend", "detail": "unclear"}],
             "order_flow_checks": [],
         });
@@ -1046,16 +1247,106 @@ mod tests {
             "timeframe",
             "direction",
             "confidence_pct",
-            "entry_price",
-            "stop_price",
-            "target_price",
+            "entry",
+            "stop",
+            "target",
             "invalidation",
+            "higher_timeframe_checks",
+            "order_flow_checks",
         ] {
             assert!(
                 required.iter().any(|v| v == field),
                 "schema must require {field}"
             );
         }
+    }
+
+    #[test]
+    fn a_zone_leg_is_stored_with_both_edges_and_scored_from_its_midpoint() {
+        let mut t = thesis(Bias::Long, 103000.0, 102000.0, 106000.0);
+        t.entry = PriceZone::new(102800.0, 103200.0);
+        t.finalize(&observed()).unwrap();
+        assert_eq!(t.entry, PriceZone::new(102800.0, 103200.0));
+        // midpoint 103000 -- the same trade as the single price above.
+        assert!((t.risk_reward - 3.0).abs() < 1e-9, "got {}", t.risk_reward);
+    }
+
+    #[test]
+    fn reversed_edges_describe_the_same_band() {
+        assert_eq!(
+            PriceZone::new(103_200.0, 102_800.0),
+            PriceZone::new(102_800.0, 103_200.0)
+        );
+    }
+
+    #[test]
+    fn a_stop_that_reaches_into_the_entry_area_is_not_a_stop() {
+        let mut t = thesis(Bias::Long, 103000.0, 102000.0, 106000.0);
+        t.entry = PriceZone::new(102800.0, 103200.0);
+        t.stop = PriceZone::new(102900.0, 103100.0);
+        let err = t.finalize(&observed()).unwrap_err();
+        assert!(err.to_string().contains("wrong side"), "got {err}");
+    }
+
+    #[test]
+    fn a_zone_thinner_than_the_floor_is_refused_toward_a_honest_point() {
+        let mut t = thesis(Bias::Long, 103000.0, 102000.0, 106000.0);
+        // 2 wide against 1000 of risk: a price with a decoration on it.
+        t.entry = PriceZone::new(102999.0, 103001.0);
+        let err = t.finalize(&observed()).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("same number for both edges"), "got {text}");
+
+        // The exact answer the message invites is accepted.
+        let mut exact = thesis(Bias::Long, 103000.0, 102000.0, 106000.0);
+        exact.finalize(&observed()).unwrap();
+    }
+
+    #[test]
+    fn every_edge_is_grounded() {
+        let mut t = thesis(Bias::Long, 103000.0, 102000.0, 106000.0);
+        // The near edge is plausible; the far edge is from another chart.
+        t.entry = PriceZone::new(102800.0, 250000.0);
+        // A leg this wide carries its target with it: the non-overlap rule
+        // refuses a target parked inside the entry area before grounding runs,
+        // so the plan sits above the far edge and the invented edge is the
+        // only thing left to reject.
+        t.target = PriceZone::point(260000.0);
+        let err = t.finalize(&observed()).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("entry.high"), "got {text}");
+        assert!(text.contains("250000"), "got {text}");
+    }
+
+    #[test]
+    fn a_bare_number_from_the_model_is_one_price_not_a_rejection() {
+        // Old-shaped arguments (and a model that simply prefers one number)
+        // must still parse: the shape tolerance exists so that `finalize` is
+        // the only place a thesis can be refused.
+        let t = parse_thesis(&json!({
+            "symbol": "BTCUSDT", "timeframe": "5m", "direction": "long",
+            "confidence_pct": 60.0,
+            "entry": 103000.0, "stop": 102000.0, "target": 106000.0,
+            "invalidation": "x",
+            "higher_timeframe_checks": [], "order_flow_checks": [],
+        }))
+        .expect("a number is a leg");
+        assert!(t.entry.is_point());
+        assert_eq!(t.entry.low, 103000.0);
+    }
+
+    #[test]
+    fn a_zone_pair_parses() {
+        let t = parse_thesis(&json!({
+            "symbol": "BTCUSDT", "timeframe": "5m", "direction": "long",
+            "confidence_pct": 60.0,
+            "entry": {"low": 102800.0, "high": 103200.0},
+            "stop": 102000.0, "target": 106000.0,
+            "invalidation": "x",
+            "higher_timeframe_checks": [], "order_flow_checks": [],
+        }))
+        .expect("a pair is a leg");
+        assert_eq!(t.entry.height(), 400.0);
     }
 
     #[test]

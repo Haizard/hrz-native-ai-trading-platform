@@ -851,8 +851,8 @@ CPU calc   GPU-friendly buffers
 - **AI chat panel**: natural-language input, streaming responses via
   `/ws/agent/{session_id}`, action buttons (Analyze / Create Strategy / Backtest /
   Create Bot) matching the source research's UI sketch, and the ability to highlight the
-  exact chart region(s) referenced in the AI's explanation (map thesis fields like
-  `entry_price`/timestamps back to chart coordinates).
+  exact chart region(s) referenced in the AI's explanation (map the legs'
+  prices/timestamps back to chart coordinates).
 
   **Built as of 2026-09-15: a transcript, with the agent's work shown while it runs.** The
   panel keeps every question and its answer instead of replacing its contents on each

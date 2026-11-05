@@ -465,8 +465,11 @@ fn print_thesis(answer: &ai_agent::AgentAnswer) {
     }
 
     println!(
-        "\nentry {:.4}  stop {:.4}  target {:.4}  R:R {:.2}",
-        t.entry_price, t.stop_price, t.target_price, t.risk_reward
+        "\nentry {}  stop {}  target {}  R:R {:.2}",
+        t.entry.describe(),
+        t.stop.describe(),
+        t.target.describe(),
+        t.risk_reward
     );
     println!("invalidation: {}", t.invalidation);
     if let Some(n) = t.historical_similar_setups {

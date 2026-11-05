@@ -88,7 +88,7 @@ pub use snapshots::{ChartSnapshot, NewSnapshot, SnapshotStore};
 pub use strategy_dsl::StrategyDocument;
 pub use thesis::{Bias, CheckStatus, ConditionCheck, PriceRange, ToolTrace};
 
-pub use thesis::TradeThesis;
+pub use thesis::{PriceZone, TradeThesis};
 pub use tools::{
     structure_digest, BacktestRunner, BacktestSummary, MarketDataSource, ToolContext,
     ToolRegistry,

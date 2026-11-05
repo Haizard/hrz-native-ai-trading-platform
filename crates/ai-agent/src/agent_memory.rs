@@ -241,13 +241,13 @@ pub fn facts_from_thesis(thesis: &TradeThesis) -> Vec<NewMemory> {
             &thesis.symbol,
             format!("{side}_levels"),
             format!(
-                "{} thesis on {}: entry {:.4}, stop {:.4}, target {:.4} (R:R {:.2}); \
+                "{} thesis on {}: entry {}, stop {}, target {} (R:R {:.2}); \
                  invalidates if {}",
                 side,
                 thesis.timeframe,
-                thesis.entry_price,
-                thesis.stop_price,
-                thesis.target_price,
+                thesis.entry.describe(),
+                thesis.stop.describe(),
+                thesis.target.describe(),
                 thesis.risk_reward,
                 thesis.invalidation
             ),
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(levels.symbol.as_deref(), Some(thesis.symbol.as_str()));
         assert!(levels
             .content
-            .contains(&format!("{:.4}", thesis.entry_price)));
+            .contains(&thesis.entry.describe()));
         assert!(levels.content.contains(&thesis.invalidation));
         // One fact per higher-timeframe check, keyed by its slugified label.
         for check in thesis.higher_timeframe_checks.iter().take(4) {
@@ -366,9 +366,9 @@ mod tests {
                 {"label": "1d range low", "status": "pass", "detail": "daily range low 96,000 held", "source": "analyze_timeframe"}
             ],
             "order_flow_checks": [],
-            "entry_price": 104_000.0,
-            "stop_price": 102_500.0,
-            "target_price": 108_000.0,
+            "entry": 104_000.0,
+            "stop": 102_500.0,
+            "target": 108_000.0,
             "risk_reward": 2.67,
             "invalidation": "a 1h close below 102,500",
             "narrative": "test",

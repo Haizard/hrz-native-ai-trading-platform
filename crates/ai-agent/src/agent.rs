@@ -42,7 +42,7 @@ use crate::multi_timeframe::{analyze_ladder, LadderView, TimeframeLadder};
 use crate::progress::{NoProgress, Progress, ProgressSink};
 use crate::skills::{Skill, SkillLibrary, SkillQuery};
 use crate::thesis::{
-    parse_thesis, submit_thesis_spec, PriceRange, ToolTrace, TradeThesis, SUBMIT_THESIS,
+    parse_thesis, submit_thesis_spec, PriceRange, PriceZone, ToolTrace, TradeThesis, SUBMIT_THESIS,
 };
 use crate::tools::{ToolContext, ToolRegistry};
 use crate::user_drawings::AgentPoint;
@@ -3374,9 +3374,9 @@ fn synthesize_stand_aside(
         confidence_pct: 0.0,
         higher_timeframe_checks: Vec::new(),
         order_flow_checks: Vec::new(),
-        entry_price: 0.0,
-        stop_price: 0.0,
-        target_price: 0.0,
+        entry: PriceZone::default(),
+        stop: PriceZone::default(),
+        target: PriceZone::default(),
         risk_reward: 0.0,
         invalidation: "stand-aside: the run produced no structured thesis".into(),
         skill_used: None, // set by the caller, which holds the loaded skill
@@ -3467,7 +3467,7 @@ mod tests {
         let input = json!({
             "symbol": "BTCUSDT", "timeframe": "5m", "direction": "long",
             "confidence_pct": 62.0,
-            "entry_price": entry, "stop_price": stop, "target_price": target,
+            "entry": entry, "stop": stop, "target": target,
             "invalidation": "5m close below the swept low",
             "higher_timeframe_checks": [
                 {"label": "1d trend", "status": "pass", "detail": "bullish", "source": "analyze_timeframe"}

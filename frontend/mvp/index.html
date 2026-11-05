@@ -168,6 +168,19 @@ const fmtPrice = (v) =>
   v == null ? "—" : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtTime = (ms) => new Date(ms).toLocaleString();
 
+// A thesis leg is a price zone now, and this page draws single dashed lines, so
+// it wants a leg's middle. A bare number still reads, which keeps an older
+// stored thesis on screen instead of blanking the card.
+const legPrice = (value) => {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (value && typeof value === "object") {
+    const low = Number(value.low ?? value.high);
+    const high = Number(value.high ?? value.low);
+    if (Number.isFinite(low) && Number.isFinite(high)) return (low + high) / 2;
+  }
+  return null;
+};
+
 // ---------------------------------------------------------------------------
 // Session
 //
@@ -300,7 +313,7 @@ function draw() {
   // Keep the thesis levels in view even when they sit outside the visible
   // range -- a stop below the window low is still the most important line.
   const t = state.thesis;
-  for (const v of [t?.entry_price, t?.stop_price, t?.target_price]) {
+  for (const v of [legPrice(t?.entry ?? t?.entry_price), legPrice(t?.stop ?? t?.stop_price), legPrice(t?.target ?? t?.target_price)]) {
     if (typeof v === "number" && isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
   }
   const span = hi - lo || Math.max(1, hi * 0.001);
@@ -355,9 +368,9 @@ function draw() {
   // thesis overlays
   if (t) {
     const lines = [
-      ["entry", t.entry_price, "#2563eb"],
-      ["stop", t.stop_price, "#dc2626"],
-      ["target", t.target_price, "#16a34a"],
+      ["entry", legPrice(t.entry ?? t.entry_price), "#2563eb"],
+      ["stop", legPrice(t.stop ?? t.stop_price), "#dc2626"],
+      ["target", legPrice(t.target ?? t.target_price), "#16a34a"],
     ];
     ctx.setLineDash([6, 4]);
     ctx.lineWidth = 1.5;
@@ -447,9 +460,9 @@ function renderThesis(res) {
     <div class="row"><span>confidence</span><span class="mono">${Number(t.confidence_pct).toFixed(0)}%</span></div>
     ${t.skill_used ? `<div class="row"><span>skill</span><span class="mono">${escapeHtml(t.skill_used)}</span></div>` : ""}
     <hr style="border:none;border-top:1px solid var(--border);margin:8px 0" />
-    <div class="row"><span>entry</span><span class="mono">${fmtPrice(t.entry_price)}</span></div>
-    <div class="row"><span>stop</span><span class="mono">${fmtPrice(t.stop_price)}</span></div>
-    <div class="row"><span>target</span><span class="mono">${fmtPrice(t.target_price)}</span></div>
+    <div class="row"><span>entry</span><span class="mono">${fmtPrice(legPrice(t.entry ?? t.entry_price))}</span></div>
+    <div class="row"><span>stop</span><span class="mono">${fmtPrice(legPrice(t.stop ?? t.stop_price))}</span></div>
+    <div class="row"><span>target</span><span class="mono">${fmtPrice(legPrice(t.target ?? t.target_price))}</span></div>
     <div class="row"><span>R:R</span><span class="mono">${Number(t.risk_reward).toFixed(2)}</span></div>
     <div class="row"><span>invalidation</span><span>${escapeHtml(t.invalidation || "—")}</span></div>
     ${t.historical_similar_setups != null ? `<div class="row"><span>history</span><span class="mono">${t.historical_similar_setups} setups${t.historical_win_rate != null ? ` · ${(t.historical_win_rate * 100).toFixed(1)}% win` : ""}</span></div>` : ""}

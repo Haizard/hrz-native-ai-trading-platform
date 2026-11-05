@@ -9935,9 +9935,9 @@ function thesisHtml(t) {
     <dl class="kv">
       <dt>direction</dt><dd>${t.direction}</dd>
       <dt>confidence</dt><dd>${t.confidence_pct.toFixed(0)}%</dd>
-      <dt>entry</dt><dd>${t.entry_price.toFixed(2)}</dd>
-      <dt>stop</dt><dd>${t.stop_price.toFixed(2)}</dd>
-      <dt>target</dt><dd>${t.target_price.toFixed(2)}</dd>
+      <dt>entry</dt><dd>${zoneText(t.entry ?? t.entry_price)}</dd>
+      <dt>stop</dt><dd>${zoneText(t.stop ?? t.stop_price)}</dd>
+      <dt>target</dt><dd>${zoneText(t.target ?? t.target_price)}</dd>
       <dt>R:R</dt><dd>${t.risk_reward.toFixed(2)}</dd>
       <dt>skill</dt><dd>${escapeHtml(t.skill_used || "—")}</dd>
     </dl>
@@ -10424,40 +10424,70 @@ function showAiDrawingsOnCharts() {
   if (typeof refreshGlobalTools === "function") refreshGlobalTools();
 }
 
+// Both shapes on the wire: {low, high} from a current run, a bare number from a
+// stored row written before a leg was an area (docs/superpowers/specs
+// /2026-11-05-mentor-two-pass-zone-review-design.md §1). Chat history is a
+// record of what was said, so the reader bends rather than a migration
+// rewriting it.
+function zoneOf(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? { low: value, high: value } : null;
+  }
+  if (value && typeof value === "object") {
+    const low = Number(value.low ?? value.high);
+    const high = Number(value.high ?? value.low);
+    if (Number.isFinite(low) && Number.isFinite(high)) {
+      return { low: Math.min(low, high), high: Math.max(low, high) };
+    }
+  }
+  return null;
+}
+
+function zoneText(value) {
+  const zone = zoneOf(value);
+  if (!zone) return "—";
+  return zone.high > zone.low
+    ? `${zone.low.toFixed(2)} → ${zone.high.toFixed(2)}`
+    : zone.low.toFixed(2);
+}
+
 /// The thesis's own prices, as the overlays a chart request carries.
 ///
-/// Three levels and a band, built from the thesis's numeric fields. The engine
+/// One bounded band per leg, built from the thesis's numeric fields. The engine
 /// resolves the coordinates -- this function does no arithmetic on a price, and
 /// that is the whole design: the stop-to-target band used to be mapped here with
 /// the shell's own copy of the price scale, which drifted from the engine's on
 /// every resize and zoom.
+///
+/// A leg whose two edges are the same number is drawn as a line, not a band:
+/// `low == high` is the honest way to say one price, and shading a stripe from
+/// entry to target is what made the plan look like it covered the whole plot.
 ///
 /// A `direction` of `none` carries zeroed levels (the thesis is exempt from the
 /// level checks precisely so an honest "no trade" is not forced to invent one),
 /// and a level at zero is not a price -- so a stand-aside thesis contributes
 /// nothing rather than three lines along the bottom of the chart.
 function thesisOverlays(thesis) {
-  if (!thesis || thesis.direction === "none") return [];
-  const levels = [
-    { price: thesis.stop_price, label: "stop", role: "stop" },
-    { price: thesis.entry_price, label: "entry", role: "entry" },
-    { price: thesis.target_price, label: "target", role: "target" },
-  ].filter((level) => Number.isFinite(level.price) && level.price > 0);
-
-  // The band is one overlay spanning stop to target, not two more overlays:
-  // two lines that disagreed would shade the wrong region, and the engine can
-  // order the edges itself because it knows which way the trade points.
-  if (levels.length === 3) {
-    const entry = levels.find((level) => level.role === "entry");
-    const stop = levels.find((level) => level.role === "stop");
-    const target = levels.find((level) => level.role === "target");
-    entry.band_to = target.price;
-    entry.filled = true;
-    // The stop gets no band: the shaded region is the *reward* the thesis is
-    // claiming, and shading the risk as well would make the two look alike.
-    stop.band_to = null;
+  const overlays = [];
+  for (const [role, value] of [
+    ["entry", thesis.entry ?? thesis.entry_price],
+    ["stop", thesis.stop ?? thesis.stop_price],
+    ["target", thesis.target ?? thesis.target_price],
+  ]) {
+    const zone = zoneOf(value);
+    if (!zone || !(zone.low > 0) || !Number.isFinite(zone.high)) continue;
+    const isArea = zone.high > zone.low;
+    overlays.push({
+      price: zone.high,
+      label: role,
+      role,
+      // A one-price leg is a line, not a band: `drawOverlays` only fills when
+      // `band_to` arrives, so a point leg keeps its rule-level honesty.
+      band_to: isArea ? zone.low : null,
+      filled: isArea,
+    });
   }
-  return levels;
+  return overlays;
 }
 
 function paintAsk() {
