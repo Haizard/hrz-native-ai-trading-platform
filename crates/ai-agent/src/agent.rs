@@ -746,6 +746,55 @@ impl Default for AgentConfig {
     }
 }
 
+/// One capture a run asked the screen for, and the pass it belongs to.
+///
+/// The id alone is not enough any more: six plain frames and six marked ones
+/// can name the same timeframe, and the caption the model reads has to say
+/// which of the two it is looking at.
+#[derive(Debug, Clone)]
+struct CaptureRequest {
+    id: String,
+    timeframe: String,
+    marked: bool,
+}
+
+/// Wait on every outstanding capture at once, up to `rounds` polls `gap` apart.
+///
+/// Serial waiting is the bug: six ids polled one after another is up to six
+/// full timeouts of nothing happening on screen, and a marked pass asks for all
+/// six in the same turn. One deadline, every id checked each round, is the same
+/// wall clock as the fastest upload and keeps the misses honest.
+///
+/// Returns one entry per request, in the order they were asked, so the
+/// captions the model reads line up with the frames it was told to expect. A
+/// `None` is a reported miss, never a silently dropped frame.
+async fn poll_captures(
+    source: &dyn crate::captures::ChartCaptureSource,
+    outstanding: &mut Vec<CaptureRequest>,
+    rounds: usize,
+    gap: std::time::Duration,
+) -> Vec<(CaptureRequest, Option<crate::chart_context::ChartScreenshot>)> {
+    let waiting = std::mem::take(outstanding);
+    let mut settled: Vec<Option<crate::chart_context::ChartScreenshot>> =
+        (0..waiting.len()).map(|_| None).collect();
+    let mut asked = 0usize;
+    while asked < rounds {
+        for round in 0..waiting.len() {
+            if settled[round].is_some() {
+                continue;
+            }
+            if let Some(shot) = source.take(&waiting[round].id).await {
+                settled[round] = Some(shot);
+            }
+        }
+        asked += 1;
+        if asked < rounds && settled.iter().any(Option::is_none) {
+            tokio::time::sleep(gap).await;
+        }
+    }
+    waiting.into_iter().zip(settled).collect()
+}
+
 /// The agent: LLM + tools + skills, in one loop.
 pub struct Agent {
     llm: Arc<dyn LlmClient>,
@@ -1130,7 +1179,16 @@ impl Agent {
         let mut shown_doctrine = std::collections::HashSet::new();
         // Images dominate a turn's token cost the way attached screenshots
         // do, so a run gets the same budget the question itself gets.
+        /// Captures one ordinary run may ask the screen for.
         const MAX_CAPTURES_PER_RUN: usize = 3;
+
+        /// Captures a mentor run may ask for: the ladder twice, at six timeframes.
+        ///
+        /// The budget is a cost guard, not a correctness rule -- twelve pictures is the
+        /// price of the two-pass review the product owner asked for, and the two extra
+        /// turns it spends are the difference between describing a chart and checking
+        /// the marks against it.
+        const MENTOR_CAPTURES_PER_RUN: usize = 12;
         let mut captures_used = 0_usize;
         // Web pattern images share the captures' budget discipline: images
         // dominate a turn's token cost, so a run gets few and they are counted.
@@ -1292,7 +1350,7 @@ impl Agent {
             // Capture requests issued this turn, in issue order: the commands
             // ride the progress channel the moment they are dispatched, and the
             // uploads are collected after the call loop, before the results go.
-            let mut pending_captures: Vec<String> = Vec::new();
+            let mut pending_captures: Vec<CaptureRequest> = Vec::new();
             // Images a tool staged for the vision path (`search_pattern_images`):
             // collected like captures and merged into the same results message.
             let mut pending_images: Vec<ContentBlock> = Vec::new();
@@ -1381,7 +1439,20 @@ impl Agent {
                 // command queued until the run ended would open the chart
                 // after the answer about it.
                 if !result.is_error {
-                    if let Some(command) = result.content.get("ui_command") {
+                    // `review_marked_charts` asks for the whole ladder in one
+                    // call, so the commands arrive as a list. `look_at_chart`
+                    // still answers with a single `ui_command`, and both shapes
+                    // are the same fact: "photograph this frame for me".
+                    let mut commands: Vec<serde_json::Value> = result
+                        .content
+                        .get("ui_commands")
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    if let Some(single) = result.content.get("ui_command") {
+                        commands.push(single.clone());
+                    }
+                    for command in commands {
                         let action = command
                             .get("action")
                             .and_then(serde_json::Value::as_str)
@@ -1393,7 +1464,18 @@ impl Agent {
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string)
                             {
-                                pending_captures.push(id);
+                                pending_captures.push(CaptureRequest {
+                                    id,
+                                    timeframe: command
+                                        .get("timeframe")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    marked: command
+                                        .get("marked")
+                                        .and_then(serde_json::Value::as_bool)
+                                        .unwrap_or(false),
+                                });
                             }
                         }
                         progress.report(Progress::UiCommand {
@@ -1603,9 +1685,21 @@ impl Agent {
             // poll; an unanswered one becomes an honest note, never a hang.
             let mut visual_blocks: Vec<ContentBlock> = std::mem::take(&mut pending_images);
             if !pending_captures.is_empty() {
+                // `ctx.captures` is already the source -- `Option<&'a dyn
+                // ChartCaptureSource>` (tools.rs:361), not a context object, and
+                // it is `Copy`, so `if let` binds it without an `expect`.
                 if let Some(source) = ctx.captures {
-                    for capture_id in pending_captures.drain(..) {
-                        if captures_used >= MAX_CAPTURES_PER_RUN {
+                    // The mentor budget is the same guard with more room: the
+                    // product owner asked for six frames twice, and an ordinary
+                    // run keeps the three it has always had.
+                    let budget = if request.teaching {
+                        MENTOR_CAPTURES_PER_RUN
+                    } else {
+                        MAX_CAPTURES_PER_RUN
+                    };
+                    let mut asks: Vec<CaptureRequest> = Vec::new();
+                    for pending in pending_captures.drain(..) {
+                        if captures_used >= budget {
                             visual_blocks.push(ContentBlock::Text(
                                 "the capture budget for this run is spent; answer from the \
                                  data you have."
@@ -1614,22 +1708,32 @@ impl Agent {
                             continue;
                         }
                         captures_used += 1;
-                        let mut shot = None;
-                        for _ in 0..24 {
-                            if let Some(found) = source.take(&capture_id).await {
-                                shot = Some(found);
-                                break;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                        }
+                        asks.push(pending);
+                    }
+                    for (capture, shot) in poll_captures(
+                        source,
+                        &mut asks,
+                        24,
+                        std::time::Duration::from_millis(250),
+                    )
+                    .await
+                    {
+                        let frame = capture.timeframe.to_ascii_uppercase();
                         match shot {
                             Some(found) => {
-                                let label = found
-                                    .label
-                                    .clone()
-                                    .unwrap_or_else(|| "chart capture".to_string());
+                                // The pass is named first because the model is
+                                // comparing two looks at the same timeframe and
+                                // has to know which one this is.
+                                let caption = if capture.marked {
+                                    format!("PASS 2 · {frame} · marked")
+                                } else {
+                                    found
+                                        .label
+                                        .clone()
+                                        .unwrap_or_else(|| format!("{frame} chart capture"))
+                                };
                                 visual_blocks.push(ContentBlock::Text(format!(
-                                    "The chart capture you requested ({label}) is attached \
+                                    "The chart capture you requested ({caption}) is attached \
                                      below -- read it like the screenshots that ride a \
                                      question: illustration, not data."
                                 )));
@@ -1638,16 +1742,16 @@ impl Agent {
                                     data: found.data.clone(),
                                 });
                             }
-                            None => visual_blocks.push(ContentBlock::Text(
-                                "the screen did not answer the capture request in time -- no \
-                                 image is attached; answer from the data you have."
-                                    .into(),
-                            )),
+                            None => visual_blocks.push(ContentBlock::Text(format!(
+                                "no image for {frame} -- the screen did not answer that \
+                                 capture in time; say so rather than describing a chart you \
+                                 did not see."
+                            ))),
                         }
                     }
                 } else {
                     // The tool already told the model there is no screen; drop
-                    // the ids so a later turn does not wait on them.
+                    // the requests so a later turn does not wait on them.
                     pending_captures.clear();
                 }
             }
@@ -3390,6 +3494,8 @@ fn synthesize_stand_aside(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::captures::ChartCaptureSource;
+    use crate::chart_context::ChartScreenshot;
     use crate::llm_client::{ContentBlock, LlmResponse, ScriptedClient, StopReason, ToolChoice};
     use crate::tools::MarketDataSource;
     use analytics_core::types::{Candle, Trade};
@@ -5053,5 +5159,80 @@ invalidation: []
             "owed duty keeps the choice open: {:?}",
             answer_phase.tool_choice
         );
+    }
+
+    /// Answers an id only once it has been asked `needed + 1` times, so a poller
+    /// that finishes one capture before starting the next never sees any of the
+    /// later ones -- which is the whole difference this function exists for.
+    /// `needed: usize::MAX` never answers, which is how the miss test is taken.
+    struct SlowSource {
+        counts: std::sync::Mutex<std::collections::HashMap<String, usize>>,
+        asked: std::sync::Mutex<Vec<String>>,
+        needed: usize,
+    }
+
+    impl SlowSource {
+        fn new(needed: usize) -> Self {
+            Self {
+                counts: std::sync::Mutex::new(std::collections::HashMap::new()),
+                asked: std::sync::Mutex::new(Vec::new()),
+                needed,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChartCaptureSource for SlowSource {
+        async fn take(&self, capture_id: &str) -> Option<ChartScreenshot> {
+            let mut counts = self.counts.lock().expect("lock poisoned");
+            let count = counts.entry(capture_id.into()).or_insert(0);
+            *count += 1;
+            self.asked.lock().expect("lock poisoned").push(capture_id.into());
+            if *count > self.needed {
+                return Some(ChartScreenshot {
+                    media_type: "image/png".into(),
+                    data: "p".into(),
+                    label: Some(format!("{capture_id} shot")),
+                });
+            }
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn six_captures_are_waited_on_together_not_one_after_another() {
+        let source = SlowSource::new(1); // each id lands on its second ask
+        let mut outstanding = vec![
+            CaptureRequest { id: "a".into(), timeframe: "1w".into(), marked: true },
+            CaptureRequest { id: "b".into(), timeframe: "1d".into(), marked: true },
+        ];
+        let settled = poll_captures(
+            &source,
+            &mut outstanding,
+            4,
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(settled.len(), 2, "both frames settle in one loop");
+        assert!(outstanding.is_empty());
+        assert!(settled.iter().all(|(_, shot)| shot.is_some()), "{settled:?}");
+        // Interleaved: a serial poller would read ["a","a","a",.. ,"b",..].
+        let order = source.asked.lock().expect("lock poisoned").clone();
+        assert_eq!(order, vec!["a", "b", "a", "b"], "round-robin, not one then the other");
+    }
+
+    #[tokio::test]
+    async fn a_frame_that_never_answers_is_reported_not_dropped() {
+        let source = SlowSource::new(usize::MAX);
+        let mut outstanding = vec![CaptureRequest {
+            id: "c".into(),
+            timeframe: "5m".into(),
+            marked: true,
+        }];
+        let settled = poll_captures(&source, &mut outstanding, 2, std::time::Duration::ZERO).await;
+        assert_eq!(settled.len(), 1, "the run still owes the model an answer about it");
+        assert!(settled[0].1.is_none());
+        assert!(outstanding.is_empty(), "a missed frame is not asked again next turn");
     }
 }
