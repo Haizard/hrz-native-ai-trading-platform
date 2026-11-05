@@ -567,6 +567,14 @@ const PRICE_KEYS: &[&str] = &[
     "l",
     "c",
     "price_level",
+    // Zone edges, under the names the tools actually emit: `detect_zones` and
+    // the box/region rows answer with `top`/`bottom`, `price_low`/`price_high`.
+    // A thesis leg must be citable from the reported area, not only from the
+    // midpoint someone chose to quote.
+    "top",
+    "bottom",
+    "price_low",
+    "price_high",
     "level",
     "nearest_above",
     "nearest_below",
@@ -965,6 +973,25 @@ mod tests {
             "high": 104500.0, "low": 101500.0,
         }));
         range
+    }
+
+    #[test]
+    fn a_reported_zone_edge_is_a_citable_price() {
+        // `detect_zones` answers with "top"/"bottom", and a thesis level taken
+        // straight from one used to fail grounding because the folding list did
+        // not know those keys held prices -- which is how single invented
+        // prices crept in to "simplify" a reported zone.
+        let mut range = PriceRange::new();
+        range.observe_result(&json!({
+            "zones": [{ "kind": "demand", "top": 103400.0, "bottom": 102900.0 }],
+        }));
+        assert!(!range.is_empty(), "a zone edge must feed the range");
+        assert_eq!(range.min(), Some(102900.0));
+        assert_eq!(range.max(), Some(103400.0));
+
+        let mut t = thesis(Bias::Long, 103150.0, 102000.0, 106000.0);
+        t.entry = PriceZone::new(102900.0, 103400.0);
+        t.finalize(&range).expect("the edges came from the tool");
     }
 
     #[test]
