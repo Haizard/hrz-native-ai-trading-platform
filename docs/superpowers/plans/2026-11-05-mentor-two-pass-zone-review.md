@@ -64,7 +64,8 @@ card showing `undefined` or three zero-height bands. The engine's zone
 
 **Files:** modify `crates/ai-agent/src/thesis.rs` (`:152-156` fields, `:218-311`
 `finalize`, `:319-371` narrative, `:526-659` schema+parse, `:721-880` tests),
-`crates/ai-agent/src/agent.rs` (`:3377-3379` `synthesize_stand_aside`),
+`crates/ai-agent/src/agent.rs` (`:3377-3379` `synthesize_stand_aside`, `:3470`
+the scripted `thesis_call` keys),
 `crates/ai-agent/src/agent_memory.rs` (`:240-256` prose, `:342` assertion,
 `:369-371` test JSON), `crates/ai-agent/src/lib.rs:89-91`,
 `tools/agent-cli/src/main.rs:467-470`, `frontend/app/app.js`
@@ -406,6 +407,19 @@ fn parse_zone(value: Option<&Value>) -> Option<PriceZone> {
         t.risk_reward
     );
 ```
+
+And in the same step, the agent's own scripted submission: `agent.rs`'s test
+helper `thesis_call` (`:3466-3478`) sends the three old keys on line 3470. It
+keeps its three-f64 signature and its callers -- every mentor and answer-phase
+test drives it, so a renamed wire with an unreadable `entry_price` key is a
+module of failures rather than one -- the line becomes
+
+```rust
+            "entry": entry, "stop": stop, "target": target,
+```
+
+which is the tolerant path (`parse_zone` accepts a bare number and makes a point
+zone), so the existing numbers stay the numbers the grounding checks cite.
 
 - [ ] **Step 7: Run it and expect the compile errors to name the test helper.**
   `cargo test -p ai-agent thesis` → the `thesis()` helper (`:741-743`) still
