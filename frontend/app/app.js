@@ -10268,13 +10268,18 @@ function applyAgentFrame(frame, turn) {
 // - The card sits on a pane of the symbol under review, and the chart below it
 //   is never retargeted. Watching the agent work is not a reason to move the
 //   user's screen.
-// - No picture, no card. The transcript already names the read; a caption
-//   beside an empty frame would claim the agent is looking at something it is
-//   not being shown.
+// - A rung whose picture is not already in hand is photographed for the card
+//   (a pane showing it, else an offscreen render). Only a series that does not
+//   exist shows nothing, because a caption beside a frame the agent could not
+//   have looked at is a claim about a picture nobody has.
 // ---------------------------------------------------------------------------
 const AI_REVIEW_DWELL_MS = 900;
 const aiReviewQueue = [];
 let aiReviewTimer = 0;
+let aiReviewBusy = false;
+// Bumped whenever a run ends. A rung whose picture is still being rendered has
+// no right to paint itself after the answer already landed.
+let aiReviewGeneration = 0;
 
 /// The tools that change what sits on the chart. The shell re-fetches the
 /// drawing list when one of them answers, so the agent's marks appear while it
@@ -10282,7 +10287,10 @@ let aiReviewTimer = 0;
 const AI_DRAWING_TOOLS = new Set(["create_drawing", "update_drawing", "delete_drawing"]);
 
 function showAiReviewFrame(turn, progress) {
-  const symbol = progress.symbol || turn.symbol;
+  // Uppercased because every chart-side comparison -- pane symbols, the
+  // coverage table, offscreen renders -- is keyed on the uppercase instrument
+  // name, while a question can name its symbol any way the user typed it.
+  const symbol = String(progress.symbol || turn.symbol || "").toUpperCase();
   const timeframe = String(progress.timeframe || "");
   if (!symbol || !timeframe) return;
   // A single read has no ladder to be a rung of, so it is not counted: "1/1"
@@ -10318,15 +10326,33 @@ function enqueueAiReview(frame) {
 }
 
 function pumpAiReview() {
-  if (aiReviewTimer) return;
+  if (aiReviewBusy || aiReviewTimer) return;
   const frame = aiReviewQueue.shift();
   if (!frame) return;
-  const host = frame.image ? reviewHost(frame.symbol) : null;
-  paintAiReviewCard(host, frame);
-  aiReviewTimer = setTimeout(() => {
-    aiReviewTimer = 0;
-    pumpAiReview();
-  }, AI_REVIEW_DWELL_MS);
+  aiReviewBusy = true;
+  const generation = aiReviewGeneration;
+  const finish = (image) => {
+    aiReviewBusy = false;
+    // The run can end, or a newer rung can arrive, while this one's picture is
+    // being made. Painting into either case puts a stale frame on a chart whose
+    // agent has already answered.
+    if (generation !== aiReviewGeneration) return;
+    paintAiReviewCard(image ? reviewHost(frame.symbol) : null, { ...frame, image });
+    aiReviewTimer = setTimeout(() => {
+      aiReviewTimer = 0;
+      pumpAiReview();
+    }, AI_REVIEW_DWELL_MS);
+  };
+  if (frame.image) {
+    finish(frame.image);
+    return;
+  }
+  // Nothing attached for this rung. Photograph it now rather than showing
+  // nothing: the ladder of pictures is attached only while the chart-attach
+  // toggle is on, so a review that stayed silent without it would look like a
+  // feature that does not work. A series that does not exist still yields no
+  // picture, and no picture is still no card.
+  captureSeries(frame.symbol, frame.timeframe).then(finish, () => finish(null));
 }
 
 /// Which chart carries the card: a pane of the symbol under review -- the
@@ -10362,6 +10388,7 @@ function clearAiReviewCards() {
 /// agent read three minutes ago is a lie about what is happening now.
 function endAiReview() {
   aiReviewQueue.length = 0;
+  aiReviewGeneration += 1;
   if (aiReviewTimer) {
     clearTimeout(aiReviewTimer);
     aiReviewTimer = 0;

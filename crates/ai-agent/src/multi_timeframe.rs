@@ -558,11 +558,23 @@ pub async fn analyze_ladder(
     ladder: &TimeframeLadder,
     config: &MarketStateConfig,
     lookback: usize,
+    progress: &dyn crate::progress::ProgressSink,
 ) -> Result<LadderView, AgentError> {
     let lookback = lookback.max(2);
     let mut frames = Vec::new();
+    let total = ladder.len();
 
-    for timeframe in ladder.timeframes() {
+    for (index, timeframe) in ladder.timeframes().iter().enumerate() {
+        // Named before the read, not after: this is the one await per timeframe
+        // and the shell uses the moment to put that rung's picture on the
+        // chart, so an announcement made when the read is already over is a
+        // caption for something the user watched happen.
+        progress.report(crate::progress::Progress::ReviewFrame {
+            symbol: symbol.to_string(),
+            timeframe: timeframe.to_string(),
+            index: index + 1,
+            total,
+        });
         let latest = match data.latest_candle_time(symbol, *timeframe).await? {
             Some(time) => time,
             None => continue,
@@ -730,6 +742,7 @@ mod tests {
             &TimeframeLadder::default(),
             &MarketStateConfig::default(),
             200,
+            &crate::progress::NoProgress,
         )
         .await
         .unwrap();
@@ -743,6 +756,54 @@ mod tests {
         );
     }
 
+    /// The read that an ask actually performs is this one -- the model is
+    /// handed the ladder already, so an announcement living only in the
+    /// `analyze_multi_timeframe` tool would never reach the shell. The user
+    /// watches the agent work down the ladder, so each rung has to be named
+    /// as it is read, coarse to fine, with the counter the card prints.
+    #[tokio::test]
+    async fn the_ladder_read_announces_every_rung_as_it_reads_it() {
+        let source = ladder_source(None);
+        let sink = crate::progress::Collected::default();
+        let view = analyze_ladder(
+            &source,
+            "BTCUSDT",
+            &TimeframeLadder::default(),
+            &MarketStateConfig::default(),
+            200,
+            &sink,
+        )
+        .await
+        .unwrap();
+        assert_eq!(view.frames.len(), 4);
+
+        let rungs: Vec<(String, usize, usize)> = sink
+            .steps()
+            .iter()
+            .filter_map(|step| match step {
+                crate::progress::Progress::ReviewFrame {
+                    symbol,
+                    timeframe,
+                    index,
+                    total,
+                } => {
+                    assert_eq!(symbol, "BTCUSDT");
+                    Some((timeframe.clone(), *index, *total))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rungs,
+            vec![
+                ("1d".into(), 1, 4),
+                ("4h".into(), 2, 4),
+                ("1h".into(), 3, 4),
+                ("5m".into(), 4, 4),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn one_missing_timeframe_does_not_sink_the_ladder() {
         let source = ladder_source(Some(Timeframe::H1));
@@ -752,6 +813,7 @@ mod tests {
             &TimeframeLadder::default(),
             &MarketStateConfig::default(),
             200,
+            &crate::progress::NoProgress,
         )
         .await
         .unwrap();
@@ -770,6 +832,7 @@ mod tests {
             &ladder,
             &MarketStateConfig::default(),
             200,
+            &crate::progress::NoProgress,
         )
         .await
         .unwrap_err();
@@ -785,6 +848,7 @@ mod tests {
             &TimeframeLadder::default(),
             &MarketStateConfig::default(),
             200,
+            &crate::progress::NoProgress,
         )
         .await
         .unwrap();
@@ -807,6 +871,7 @@ mod tests {
             &TimeframeLadder::default(),
             &MarketStateConfig::default(),
             200,
+            &crate::progress::NoProgress,
         )
         .await
         .unwrap();

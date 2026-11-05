@@ -919,6 +919,7 @@ impl Agent {
             &ladder,
             &self.config.market_state,
             lookback,
+            progress,
         )
         .await?;
 
@@ -3727,10 +3728,23 @@ mod tests {
             ),
             "{steps:?}"
         );
+        // Reading the ladder takes a database round trip per timeframe, and
+        // that pass is where the agent actually looks at the market -- the
+        // model is handed the finished ladder, so it never asks for it again.
+        // Each rung is therefore named as it is read, coarse to fine, which is
+        // what puts the picture of each timeframe on the chart in turn.
+        let rungs: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Progress::ReviewFrame { timeframe, .. } => Some(timeframe.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rungs, vec!["1d", "4h", "1h", "5m"], "{steps:?}");
         // Then the model is called, and the call is announced. The fixture
         // answers on its first turn, so that turn is an analysis turn.
         assert_eq!(
-            steps.get(1),
+            steps.last(),
             Some(&Progress::Thinking {
                 turn: 1,
                 total: DEFAULT_MAX_TURNS + ANSWER_TURNS,
