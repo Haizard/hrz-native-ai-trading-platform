@@ -1778,6 +1778,34 @@ pub enum DrawingPart {
         /// Whether to fill it as well as outline it.
         filled: bool,
     },
+    /// A price zone: a band of prices that means something.
+    ///
+    /// `Rect` is a shape; a zone is a *level with a height*, and the treatment
+    /// `docs/31` and `docs/46` ask for is four things a `Rect` cannot carry -- a
+    /// border with its own weight, a solid sub-band for the part price has not
+    /// traded through yet, and the two edges as numbers. The engine supplies the
+    /// geometry and the formatted labels, because the price scale lives here:
+    /// a shell that printed its own edge prices would be a second scale, which
+    /// is the bug `drawThesis` used to have.
+    Zone {
+        /// Left edge.
+        x: f64,
+        /// Top edge -- the **higher** price's y, since canvas y runs down.
+        y: f64,
+        /// Width.
+        w: f64,
+        /// Height.
+        h: f64,
+        /// Where the untested part of the band starts. `None` means nothing in
+        /// this span has traded into the zone, so all of it is untested and the
+        /// shell fills from `x`. Left of it is the faded, spent portion.
+        fresh_from: Option<f64>,
+        /// The upper edge, formatted. Ready to draw, like every other string
+        /// the engine emits.
+        top_label: String,
+        /// The lower edge, formatted.
+        bottom_label: String,
+    },
 }
 
 /// A point in plot fractions: across the plot, and down it.

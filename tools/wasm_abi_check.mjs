@@ -826,6 +826,9 @@ check(
 
 const segment = (drawing) => drawing.parts.find((part) => part.shape === "segment");
 const handles = (drawing) => drawing.parts.filter((part) => part.shape === "handle");
+// `zone` is taken by the region helper above, so the part reader is named for
+// what it is: a part-shape reader, next to the other two.
+const zonePart = (drawing) => drawing && drawing.parts.find((p) => p.shape === "zone");
 const line = (drawn.drawings ?? [])[0];
 
 if (line) {
@@ -1022,6 +1025,60 @@ check(
     halfDrawn.note.includes("takes 2 points"),
   halfDrawn.note ?? "(no note)"
 );
+
+// A `rect` crosses the wire as a `zone`, and the two numbers a trader reads off
+// it cross with it. The shell cannot format a price -- that is the scene's job,
+// and a second price scale in JavaScript is the bug this contract exists to
+// prevent -- so the labels have to arrive ready to draw, and `fresh_from` has to
+// arrive as a number or as nothing rather than as an absent key the shell reads
+// as zero.
+const boxed = build({
+  candles: candles(120),
+  width: 900,
+  height: 420,
+  drawings: [
+    {
+      id: "z1",
+      kind: "rect",
+      points: [
+        { unit: "fraction", x: 0.2, y: 0.3 },
+        { unit: "fraction", x: 0.7, y: 0.6 },
+      ],
+      label: "demand",
+      selected: false,
+    },
+  ],
+});
+const boxedDrawing = (boxed.drawings ?? [])[0];
+check(
+  "a rect arrives as a zone part, not a rect",
+  Boolean(boxedDrawing) &&
+    Boolean(zonePart(boxedDrawing)) &&
+    !boxedDrawing.parts.some((p) => p.shape === "rect"),
+  boxedDrawing ? JSON.stringify(boxedDrawing.parts.map((p) => p.shape)) : JSON.stringify(boxed.drawings)
+);
+if (zonePart(boxedDrawing)) {
+  const z = zonePart(boxedDrawing);
+  check(
+    "and it carries both edge prices, formatted in Rust",
+    typeof z.top_label === "string" &&
+      z.top_label.length > 0 &&
+      typeof z.bottom_label === "string" &&
+      z.bottom_label.length > 0 &&
+      z.top_label !== z.bottom_label,
+    `${JSON.stringify(z.top_label)} / ${JSON.stringify(z.bottom_label)}`
+  );
+  check(
+    "and it says where its untested part begins, as a number or as nothing",
+    typeof z.fresh_from === "number" || z.fresh_from === null,
+    JSON.stringify(z.fresh_from)
+  );
+  check(
+    "and its one name still arrives as a text part beside the box",
+    boxedDrawing.parts.some((p) => p.shape === "text" && p.text === "demand"),
+    JSON.stringify(boxedDrawing.parts.map((p) => p.shape))
+  );
+}
 
 // A list that mixes units is not a shape: it is a client that turned a pixel
 // into a timestamp somewhere the engine never agreed to.

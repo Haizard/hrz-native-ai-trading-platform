@@ -121,6 +121,46 @@ pub fn ms(candle: &Candle) -> f64 {
     (candle.open_time / 1_000_000) as f64
 }
 
+/// Where the untested part of a price band begins, in canvas x.
+///
+/// The last bar that traded into the band, plus one bar: what a zone has
+/// already given back is everything to the left of that, which is the shape of
+/// a supply or demand area in every reference this project cites. `None` is not
+/// "unknown" -- it means no bar touched the band, so the whole band is fresh
+/// and the caller fills from its left edge.
+///
+/// Takes the span in milliseconds rather than as two points because both
+/// callers have a time range and neither has it in the shape the other uses: a
+/// `rect` has its two anchors, a full-width band has the window.
+///
+/// Reads [`Geometry::candles`] (the traded series, not the drawn one) for the
+/// same reason every other measurement here does: switching the chart to
+/// Heikin-Ashi must not move a level.
+pub(super) fn fresh_edge(
+    geometry: Geometry<'_>,
+    from_ms: f64,
+    to_ms: f64,
+    price_hi: f64,
+    price_lo: f64,
+) -> Option<f64> {
+    let last_test = geometry
+        .bars_between((from_ms, 0.0), (to_ms, 0.0))
+        .iter()
+        .rev()
+        .find(|candle| candle.high >= price_lo && candle.low <= price_hi)?;
+    let bar_width_ms = geometry.frame.bar_nanos as f64 / 1_000_000.0;
+    let plot = geometry.frame.plot;
+    // Clamped to the plot: a zone dragged to the right edge has no untested
+    // part left to show, and a sub-band drawn past the plot is a paint bug.
+    Some(
+        geometry
+            .frame
+            .x_at_ms(ms(last_test) + bar_width_ms)
+            .min(plot.x + plot.w)
+            .max(plot.x),
+    )
+}
+
 /// The slope of the line through two pixel positions.
 ///
 /// A zero run is reported as a vertical line rather than as a division clamped to a
@@ -432,6 +472,11 @@ mod completeness_gate {
                 DrawingPart::Handle { x, y, .. } => {
                     assert!(x.is_finite() && y.is_finite(), "{kind:?} has NaN in handle");
                 }
+                DrawingPart::Zone { x, y, w, h, .. } => {
+                    for value in [x, y, w, h] {
+                        assert!(value.is_finite(), "{kind:?} emitted a non-finite zone edge: {value}");
+                    }
+                }
             }
         }
     }
@@ -609,6 +654,86 @@ mod completeness_gate {
         assert!(
             format!("{closed:?}") != format!("{open:?}"),
             "closed was not read by polyline"
+        );
+    }
+
+    #[test]
+    fn a_rect_is_a_zone_that_carries_its_own_edge_prices_and_a_name() {
+        // 20 M5 bars closing 100.00 -> 119.00, so the band 101..103 is traded
+        // through: bar 3 (close 103, low 102.75) is the last touch inside the
+        // box, and everything right of it is what price has not tested yet.
+        let stage = Stage::ramp(20, 100.0, 1.0);
+        let options = crate::drawing::DrawingOptions::default();
+        let points = [(stage.ms(2), 103.0), (stage.ms(10), 101.0)];
+        let geometry = crate::draw::Geometry {
+            text: Some("demand"),
+            ..stage.geometry(&points, &options)
+        };
+        let parts = parts(DrawingKind::Rect, false, geometry);
+        let zone = parts
+            .iter()
+            .find(|part| matches!(part, DrawingPart::Zone { .. }))
+            .expect("a rect draws a zone");
+        let DrawingPart::Zone {
+            top_label,
+            bottom_label,
+            fresh_from,
+            y,
+            h,
+            ..
+        } = zone
+        else {
+            unreachable!()
+        };
+        assert_eq!(top_label, "103.00");
+        assert_eq!(bottom_label, "101.00");
+        assert!(fresh_from.is_some(), "a tested zone has a spent portion");
+        assert!(*h > 0.0);
+        // Canvas y runs down, so the *higher* price is the smaller y. A zone
+        // whose top is its low edge is a band drawn one price off.
+        assert!(*y < stage.frame.y_at(101.0));
+        assert!(
+            parts.iter().any(|part| matches!(part, DrawingPart::Text { text, .. } if text == "demand")),
+            "the label is drawn beside the box, not lost"
+        );
+    }
+
+    #[test]
+    fn a_band_the_series_never_touched_is_fresh_from_its_left_edge() {
+        // flat(10, 100.0) trades 99.75..100.25 under a 0..200 window, so a band
+        // at 120..130 has nothing tested in it. `None` is the answer, and the
+        // shell reads it as "fill the whole thing solid".
+        let stage = Stage::flat(10, 100.0);
+        let options = crate::drawing::DrawingOptions::default();
+        let parts = parts(
+            DrawingKind::Rect,
+            false,
+            stage.geometry(&[(stage.ms(1), 130.0), (stage.ms(8), 120.0)], &options),
+        );
+        let DrawingPart::Zone { fresh_from, .. } = &parts[0] else {
+            panic!("expected a zone, got {:?}", parts[0]);
+        };
+        assert!(fresh_from.is_none());
+    }
+
+    #[test]
+    fn a_price_range_is_the_same_zone_part_as_a_rect() {
+        // Two kinds, one treatment: a supply/demand area drawn as a full-width
+        // band must not read differently from the same area dragged as a box.
+        let stage = Stage::ramp(20, 100.0, 1.0);
+        let options = crate::drawing::DrawingOptions::default();
+        let parts = parts(
+            DrawingKind::PriceRange,
+            false,
+            stage.geometry(&[(stage.ms(2), 103.0), (stage.ms(10), 101.0)], &options),
+        );
+        assert!(
+            parts.iter().any(|part| matches!(part, DrawingPart::Zone { .. })),
+            "price_range still draws a Rect: {parts:?}"
+        );
+        assert!(
+            !parts.iter().any(|part| matches!(part, DrawingPart::Text { .. })),
+            "the left-edge labels are the part's tags now"
         );
     }
 }

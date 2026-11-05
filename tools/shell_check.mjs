@@ -3972,6 +3972,112 @@ if (anchorOne) {
   }
 }
 
+// --- a rectangle is drawn as a zone ------------------------------------------
+//
+// The reference the owner benchmarks (TradingView / LuxAlgo / MT5) draws a price
+// zone as a bordered box with a quiet fill, one name, and its two edges printed
+// at the *right*, where a price is read -- not as a stripe across the plot and
+// not as a solid block. The engine emits that as one `zone` part carrying the
+// formatted labels; these checks read the real wasm's part off the scene and
+// then ask whether the shell painted it, so a renderer that re-derived its own
+// price scale would fail here rather than on someone's screen.
+
+console.log("\na rectangle is drawn as a zone");
+
+pickTool("rect");
+const zoneGeomBefore = painted.geom.length;
+const zoneTextBefore = painted.text.length;
+pointer("pointerdown", 240, 300);
+await settle();
+pointer("pointermove", 560, 170);
+await settle();
+pointer("pointerup", 560, 170);
+await settle();
+await settle();
+
+const zoneDrawing = lastScene().drawings.find((d) => d.kind === "rect");
+const zoneShape = zoneDrawing && zoneDrawing.parts.find((p) => p.shape === "zone");
+check(
+  "the engine answers a dragged rectangle with a zone, not a rect",
+  Boolean(zoneShape) && !zoneDrawing.parts.some((p) => p.shape === "rect"),
+  zoneDrawing ? JSON.stringify(zoneDrawing.parts.map((p) => p.shape)) : "no rect drawing on the scene"
+);
+
+// Everything after this reads *this gesture's* paint: `painted` holds every
+// rectangle the run has filled, including the candles and the thesis bands, and
+// an unsliced `some` would pass on a shape that has nothing to do with the box.
+const zoneGeom = painted.geom.slice(zoneGeomBefore);
+const zoneText = painted.text.slice(zoneTextBefore);
+const spentEdge = zoneShape ? zoneShape.fresh_from ?? zoneShape.x : 0;
+const onBox = (x, y) => Math.abs(x - zoneShape.x) < 0.6 && Math.abs(y - zoneShape.y) < 0.6;
+
+if (zoneShape) {
+  check(
+    "the border is the zone: one box stroked at its own extent",
+    zoneGeom.some(
+      ([op, x, y, w, h]) =>
+        op === "strokeRect" &&
+        onBox(x - 0.5, y - 0.5) &&
+        Math.abs(w - (zoneShape.w - 1)) < 0.6 &&
+        Math.abs(h - (zoneShape.h - 1)) < 0.6
+    ),
+    `box ${zoneShape.x},${zoneShape.y} ${zoneShape.w}x${zoneShape.h} · ${zoneGeom
+      .filter(([op]) => op === "strokeRect")
+      .slice(-3)
+      .join(" | ")}`
+  );
+  check(
+    "and the fill is two tones: the spent part quiet, the untested part solid",
+    zoneGeom.some(
+      ([op, x, y, w, h]) =>
+        op === "fillRect" &&
+        onBox(x, y) &&
+        Math.abs(w - (spentEdge - zoneShape.x)) < 0.6 &&
+        Math.abs(h - zoneShape.h) < 0.6
+    ) &&
+      zoneGeom.some(
+        ([op, x, y, w, h]) =>
+          op === "fillRect" &&
+          Math.abs(x - spentEdge) < 0.6 &&
+          Math.abs(y - zoneShape.y) < 0.6 &&
+          Math.abs(w - (zoneShape.x + zoneShape.w - spentEdge)) < 0.6 &&
+          Math.abs(h - zoneShape.h) < 0.6
+      ),
+    `fresh_from ${zoneShape.fresh_from} · fills ${zoneGeom
+      .filter(([op, x]) => op === "fillRect" && onBox(x, zoneShape.y))
+      .slice(-4)
+      .join(" | ")}`
+  );
+}
+
+const zoneLabels = zoneShape ? [zoneShape.top_label, zoneShape.bottom_label] : [];
+check(
+  "a dragged rectangle is drawn as a zone with its edge prices",
+  zoneGeom.some(([op, , , w]) => op === "strokeRect" && w > 20) &&
+    // The two prices this fixture's drag lands on (240,300 to 560,170 over the
+    // stub series), written out rather than read back off the part: the check
+    // fails if the engine's own edges stop being these, and the detail prints
+    // what they became.
+    zoneLabels.join(",") === "885.88,848.77" &&
+    zoneLabels.every((label) => zoneText.includes(label)),
+  `labels on the box: ${JSON.stringify(zoneLabels)} · text: ${zoneText.slice(-6).join(" | ")}`
+);
+
+// The part is only half the promise: a zone the user cannot grab is a decoration.
+// The hit test reads part shapes, so the new one has to be inside-the-box like a
+// rect, or the shape the drawing tool made would be unmovable by its body.
+pickTool("cursor");
+pointer("pointerdown", 400, 240);
+await settle();
+pointer("pointerup", 400, 240);
+await settle();
+await settle();
+check(
+  "a zone is grabbable by its body",
+  lastRequest().drawings.some((d) => d.id === (zoneDrawing && zoneDrawing.id) && d.selected),
+  JSON.stringify(lastRequest().drawings.map((d) => `${d.id}:${d.selected}`))
+);
+
 // --- a click with no drag ----------------------------------------------------
 //
 // The tool is a drag, so a click puts both anchors at one point. That is a shape

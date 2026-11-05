@@ -594,6 +594,9 @@ const CHART_PALETTE_DARK = {
   text: "#8a93a6",
   vwap: "#edb541",
   poc: "#d6dbe4",
+  // The plate a zone's price tag writes on: the canvas field, so the number
+  // reads as the axis reads and not as a sticker over the candles.
+  zoneTag: "#0a0d12",
   vah: "#787b86",
   val: "#787b86",
   entry: "#4a9eff",
@@ -758,6 +761,9 @@ const CHART_PALETTE_LIGHT = {
   text: "#5f6b7a",
   vwap: "#b45309",
   poc: "#1f2937",
+  // The light theme's canvas field (`--bg-canvas` at `tokens.css:111`), so the
+  // tag plate means the same thing on both.
+  zoneTag: "#f6f8fa",
   vah: "#6b7686",
   val: "#6b7686",
   entry: "#2563eb",
@@ -3335,6 +3341,44 @@ function createChartPane(root, hooks = {}) {
             ctx.strokeRect(part.x + 0.5, part.y + 0.5, part.w - 1, part.h - 1);
             break;
 
+          case "zone": {
+            // The border is the zone and the fill is its shading -- docs/31's
+            // point, and the difference between a level and a smear. Only the
+            // colour's alpha changes, so no hue leaves the palette.
+            const spent = part.fresh_from ?? part.x;
+            ctx.globalAlpha = drawing.selected ? 0.2 : 0.1;
+            ctx.fillRect(part.x, part.y, Math.max(0, spent - part.x), part.h);
+            ctx.globalAlpha = drawing.selected ? 0.32 : 0.22;
+            ctx.fillRect(spent, part.y, Math.max(0, part.x + part.w - spent), part.h);
+            ctx.globalAlpha = 1;
+            ctx.save();
+            ctx.lineWidth = drawing.selected ? 2 : 1.5;
+            ctx.strokeRect(part.x + 0.5, part.y + 0.5, part.w - 1, part.h - 1);
+            ctx.restore();
+
+            // The two edge prices, just inside the right edge -- where the
+            // trader reads a price. The engine formatted them and placed the
+            // box; this only paints, so the scale stays in Rust. This is the
+            // same plate the crosshair price rides (`:1259-1265`), kept inside
+            // the plot instead of in the gutter, which is the part that is out
+            // of scope here.
+            const tag = (text, y) => {
+              ctx.font = "600 10px ui-monospace, monospace";
+              const w = ctx.measureText(text).width + 8;
+              const bx = part.x + part.w - w - 2;
+              const by = Math.min(Math.max(y - 7, part.y), part.y + part.h - 14);
+              ctx.globalAlpha = 0.85;
+              ctx.fillRect(bx, by, w, 14);
+              ctx.globalAlpha = 1;
+              ctx.fillStyle = COLORS.zoneTag;
+              ctx.fillText(text, bx + 4, by + 10);
+              ctx.fillStyle = colour;
+            };
+            tag(part.top_label, part.y);
+            tag(part.bottom_label, part.y + part.h);
+            break;
+          }
+
           case "ellipse":
             // The engine's circle, arc and fib arcs arrive here. `half` is the
             // engine's word for "upper arc only" and has to be spent on the path
@@ -4930,7 +4974,7 @@ function createChartPane(root, hooks = {}) {
         if (part.shape === "segment" && distanceToSegment(at, part) <= GRAB_RADIUS) {
           return { drawing: drawing.id, anchor: null };
         }
-        if (part.shape === "rect" && insideRect(at, part)) {
+        if ((part.shape === "rect" || part.shape === "zone") && insideRect(at, part)) {
           return { drawing: drawing.id, anchor: null };
         }
         // A polygon's body is its inside, not a line: a triangle grabbed by

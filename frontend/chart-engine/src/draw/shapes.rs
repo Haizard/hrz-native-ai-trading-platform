@@ -12,25 +12,41 @@
 
 use crate::drawing::DrawingPart;
 
-use super::Geometry;
+use super::{fresh_edge, Geometry};
 
 /// The rectangle with two anchors at opposite corners.
 ///
 /// Corner order is not guaranteed -- a drag up-and-left has its first point at
 /// the bottom right -- so the box is normalised from the min and the absolute
 /// span rather than assumed.
+///
+/// A `rect` is a zone: `docs/46`'s doctrine, and the reason the part is a
+/// `Zone` and not a `Rect`.
 #[must_use]
 pub fn rect(geometry: Geometry<'_>) -> Vec<DrawingPart> {
     let Some(box_) = corners(geometry) else {
         return Vec::new();
     };
-    vec![DrawingPart::Rect {
+    let price_hi = geometry.price(0).max(geometry.price(1));
+    let price_lo = geometry.price(0).min(geometry.price(1));
+    let mut parts = vec![DrawingPart::Zone {
         x: box_.0,
         y: box_.1,
         w: box_.2,
         h: box_.3,
-        filled: true,
-    }]
+        fresh_from: fresh_edge(geometry, geometry.points[0].0, geometry.points[1].0, price_hi, price_lo),
+        top_label: format!("{price_hi:.2}"),
+        bottom_label: format!("{price_lo:.2}"),
+    }];
+    // The name goes where the reference puts it: beside the box, not inside it.
+    if let Some(label) = geometry.text {
+        parts.push(DrawingPart::Text {
+            x: box_.0 + 4.0,
+            y: box_.1 - 4.0,
+            text: label.to_string(),
+        });
+    }
+    parts
 }
 
 /// The triangle with one point per vertex.

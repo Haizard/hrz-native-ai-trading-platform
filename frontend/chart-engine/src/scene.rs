@@ -9141,16 +9141,22 @@ mod tests {
         }
     }
 
-    /// The first rectangle's four numbers.
+    /// The first box's four numbers.
+    ///
+    /// A `rect` drawing emits a `Zone` (task 3: the rectangle *is* the level the
+    /// user placed), and a measurement still emits a `Rect`, so the box this
+    /// helper reads is whichever of the two the kind drew. The four numbers mean
+    /// the same thing in both: left, top, width, height.
     fn first_rect(drawing: &SceneDrawing) -> (f64, f64, f64, f64) {
         drawing
             .parts
             .iter()
             .find_map(|part| match part {
                 DrawingPart::Rect { x, y, w, h, .. } => Some((*x, *y, *w, *h)),
+                DrawingPart::Zone { x, y, w, h, .. } => Some((*x, *y, *w, *h)),
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("no rect in {drawing:?}"))
+            .unwrap_or_else(|| panic!("no rect or zone in {drawing:?}"))
     }
 
     fn rect(a1: Anchor, a2: Anchor) -> Drawing {

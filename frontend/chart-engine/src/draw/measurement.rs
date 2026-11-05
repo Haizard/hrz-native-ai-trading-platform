@@ -15,7 +15,7 @@
 use crate::drawing::DrawingPart;
 
 use super::shapes::corners;
-use super::Geometry;
+use super::{fresh_edge, Geometry};
 
 /// The price/distance ruler: an empty box, guides to both axes, and the delta.
 #[must_use]
@@ -116,36 +116,31 @@ fn bar_count(geometry: Geometry<'_>, t1: f64, t2: f64) -> i64 {
 
 /// A horizontal band between two price levels, spanning the full plot width.
 ///
-/// The price band is the zone itself: a filled rectangle from the left to right
-/// plot edge, between the lower and upper prices.
+/// The price band is the zone itself, and it is drawn as one: the same `Zone`
+/// part the rectangle gets, across the whole plot. Its edge prices used to be
+/// two `Text`s at the left; they are the part's own tags now, at the right,
+/// because that is where a price is read.
 #[must_use]
 pub fn price_band(geometry: Geometry<'_>) -> Vec<DrawingPart> {
     let plot = geometry.frame.plot;
     let y0 = geometry.y(0);
     let y1 = geometry.y(1);
-    let top = y0.min(y1);
-    let h = (y1 - y0).abs();
     let price_lo = geometry.price(0).min(geometry.price(1));
     let price_hi = geometry.price(0).max(geometry.price(1));
-    vec![
-        DrawingPart::Rect {
-            x: plot.x,
-            y: top,
-            w: plot.w,
-            h,
-            filled: true,
-        },
-        DrawingPart::Text {
-            x: plot.x + 4.0,
-            y: top - 4.0,
-            text: format!("{price_hi:.2}"),
-        },
-        DrawingPart::Text {
-            x: plot.x + 4.0,
-            y: top + h + 12.0,
-            text: format!("{price_lo:.2}"),
-        },
-    ]
+    // The band spans the window, so the span to test is the window: `from` and
+    // `to` are nanoseconds and `fresh_edge` counts in the milliseconds a
+    // drawing carries, which is the unit seam `ms` exists for.
+    let left_ms = (geometry.frame.from / 1_000_000) as f64;
+    let right_ms = (geometry.frame.to / 1_000_000) as f64;
+    vec![DrawingPart::Zone {
+        x: plot.x,
+        y: y0.min(y1),
+        w: plot.w,
+        h: (y1 - y0).abs(),
+        fresh_from: fresh_edge(geometry, left_ms, right_ms, price_hi, price_lo),
+        top_label: format!("{price_hi:.2}"),
+        bottom_label: format!("{price_lo:.2}"),
+    }]
 }
 
 /// A vertical band between two time points, spanning the full plot height.
