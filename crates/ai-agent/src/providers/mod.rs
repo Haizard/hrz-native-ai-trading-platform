@@ -247,6 +247,12 @@ pub const ENV_BASE_URL: &str = "AI_BASE_URL";
 pub const ENV_TIMEOUT_SECS: &str = "AI_TIMEOUT_SECS";
 /// Ordered backup providers used after the primary is unavailable or out of quota.
 pub const ENV_FALLBACK_ORDER: &str = "AI_FALLBACK_ORDER";
+/// Environment variable naming the Grok fallback model id (optional).
+pub const ENV_GROK_MODEL: &str = "GROK_MODEL";
+/// Environment variable carrying the Grok fallback API token (optional).
+pub const ENV_GROK_API_TOKEN: &str = "GROK_API_TOKEN";
+/// Environment variable overriding Grok's default base URL (optional).
+pub const ENV_GROK_BASE_URL: &str = "GROK_BASE_URL";
 
 /// Build the configured Cloudflare and Gemini backups without exposing their
 /// credentials. Missing credentials simply make that provider unavailable.
@@ -271,6 +277,13 @@ pub fn fallback_clients_from_env(
                 let model = std::env::var("GEMINI_MODEL")
                     .unwrap_or_else(|_| provider.default_model().into());
                 (model, key, provider.default_base_url().into())
+            }
+            ProviderId::Grok => {
+                let token = std::env::var("GROK_API_TOKEN").ok()?;
+                let model = std::env::var(ENV_GROK_MODEL)
+                    .unwrap_or_else(|_| provider.default_model().into());
+                let base = std::env::var(ENV_GROK_BASE_URL).unwrap_or_else(|_| provider.default_base_url().into());
+                (model, token, base)
             }
             _ => return None,
         };
