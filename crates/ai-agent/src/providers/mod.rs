@@ -254,35 +254,51 @@ pub const ENV_GROK_API_TOKEN: &str = "GROK_API_TOKEN";
 /// Environment variable overriding Grok's default base URL (optional).
 pub const ENV_GROK_BASE_URL: &str = "GROK_BASE_URL";
 
-/// Build the configured Cloudflare and Gemini backups without exposing their
-/// credentials. Missing credentials simply make that provider unavailable.
+/// The providers tried, in order, when `AI_FALLBACK_ORDER` is unset.
+///
+/// Listing a provider here costs nothing when its credentials are absent --
+/// `fallback_clients_from_env` drops it -- so the chain grows without the
+/// operator having to set the variable to match.
+pub const DEFAULT_FALLBACK_ORDER: &str = "cloudflare,gemini,grok";
+
+/// Build the configured Cloudflare, Gemini and Grok backups without exposing
+/// their credentials. Missing credentials simply make that provider unavailable.
 pub fn fallback_clients_from_env(
     exclude: Option<ProviderId>,
 ) -> Vec<std::sync::Arc<dyn crate::llm_client::LlmClient>> {
-    let order = std::env::var(ENV_FALLBACK_ORDER).unwrap_or_else(|_| "cloudflare,gemini".into());
+    let order = std::env::var(ENV_FALLBACK_ORDER)
+        .unwrap_or_else(|_| DEFAULT_FALLBACK_ORDER.into());
+    fallback_clients_from(&order, exclude, |name| std::env::var(name).ok())
+}
+
+fn fallback_clients_from(
+    order: &str,
+    exclude: Option<ProviderId>,
+    var: impl Fn(&str) -> Option<String>,
+) -> Vec<std::sync::Arc<dyn crate::llm_client::LlmClient>> {
     order.split(',').filter_map(|name| {
         let provider = ProviderId::from_name(name.trim())?;
         if Some(provider) == exclude { return None; }
         let (model, key, base_url) = match provider {
             ProviderId::Cloudflare => {
-                let account = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok()?;
-                let key = std::env::var("CLOUDFLARE_API_TOKEN").ok()?;
-                let model = std::env::var("CLOUDFLARE_AI_MODEL")
-                    .unwrap_or_else(|_| provider.default_model().into());
+                let account = var("CLOUDFLARE_ACCOUNT_ID")?;
+                let key = var("CLOUDFLARE_API_TOKEN")?;
+                let model = var("CLOUDFLARE_AI_MODEL")
+                    .unwrap_or_else(|| provider.default_model().into());
                 let base = format!("https://api.cloudflare.com/client/v4/accounts/{}/ai/v1", account.trim());
                 (model, key, base)
             }
             ProviderId::Gemini => {
-                let key = std::env::var("GEMINI_API_KEY").ok()?;
-                let model = std::env::var("GEMINI_MODEL")
-                    .unwrap_or_else(|_| provider.default_model().into());
+                let key = var("GEMINI_API_KEY")?;
+                let model = var("GEMINI_MODEL").unwrap_or_else(|| provider.default_model().into());
                 (model, key, provider.default_base_url().into())
             }
             ProviderId::Grok => {
-                let token = std::env::var("GROK_API_TOKEN").ok()?;
-                let model = std::env::var(ENV_GROK_MODEL)
-                    .unwrap_or_else(|_| provider.default_model().into());
-                let base = std::env::var(ENV_GROK_BASE_URL).unwrap_or_else(|_| provider.default_base_url().into());
+                let token = var(ENV_GROK_API_TOKEN)?;
+                let model = var(ENV_GROK_MODEL)
+                    .unwrap_or_else(|| provider.default_model().into());
+                let base = var(ENV_GROK_BASE_URL)
+                    .unwrap_or_else(|| provider.default_base_url().into());
                 (model, token, base)
             }
             _ => return None,
@@ -534,6 +550,95 @@ mod tests {
         };
         assert!(err.to_string().contains(ENV_BASE_URL), "{err}");
         drop(guard);
+    }
+
+    /// A Grok token turns Grok into a real rung of the chain: it is not the
+    /// only way to reach an LLM, it is the third one. Before this the builder
+    /// matched Cloudflare and Gemini and dropped everything else, so a
+    /// deployment that named `grok` in `AI_FALLBACK_ORDER` got no client and
+    /// no warning.
+    #[test]
+    fn a_configured_grok_token_makes_grok_a_fallback() {
+        let clients = fallback_clients_from(
+            "cloudflare,gemini,grok",
+            None,
+            |name| (name == ENV_GROK_API_TOKEN).then(|| "k".into()),
+        );
+        assert_eq!(clients.len(), 1, "only Grok has credentials here");
+        assert!(clients[0].name().starts_with("grok("), "{}", clients[0].name());
+    }
+
+    /// Grok's model and endpoint are overridable, and default to the
+    /// provider's own when the operator has no opinion.
+    #[test]
+    fn grok_defaults_to_xai_and_honours_its_overrides() {
+        let with_defaults = fallback_clients_from(
+            "grok",
+            None,
+            |name| (name == ENV_GROK_API_TOKEN).then(|| "k".into()),
+        );
+        assert_eq!(with_defaults[0].name(), format!("grok({})", ProviderId::Grok.default_model()));
+
+        let with_model = fallback_clients_from("grok", None, |name| match name {
+            ENV_GROK_API_TOKEN => Some("k".into()),
+            ENV_GROK_MODEL => Some("grok-4.7".into()),
+            _ => None,
+        });
+        assert_eq!(with_model[0].name(), "grok(grok-4.7)");
+        assert!(
+            with_model[0].supports_image_input(),
+            "a Grok 4.x rung has to be usable by the chart reviews that ask for pictures"
+        );
+    }
+
+    /// The old text-only Grok is not a vision rung: a run that photographs
+    /// charts would otherwise hand six pictures to a model that cannot read
+    /// them and get a provider error back for every one.
+    #[test]
+    fn a_text_only_grok_is_not_counted_as_a_vision_rung() {
+        let clients = fallback_clients_from(
+            "grok",
+            None,
+            |name| (name == ENV_GROK_API_TOKEN).then(|| "k".into()),
+        );
+        assert!(!clients[0].supports_image_input(), "grok-3 reads no pictures");
+    }
+
+    /// Missing credentials are not an error: the provider is absent from the
+    /// chain and everything else still builds. This is what makes Grok safe to
+    /// list in the default order before any deployment has a Grok token.
+    #[test]
+    fn a_fallback_without_credentials_is_dropped_not_fatal() {
+        let clients = fallback_clients_from(DEFAULT_FALLBACK_ORDER, None, |_| None);
+        assert!(clients.is_empty(), "no configured provider has a key");
+
+        let only_gemini = fallback_clients_from(
+            DEFAULT_FALLBACK_ORDER,
+            None,
+            |name| (name == "GEMINI_API_KEY").then(|| "k".into()),
+        );
+        assert_eq!(only_gemini.len(), 1);
+        assert!(only_gemini[0].name().starts_with("gemini("));
+    }
+
+    /// A provider is never its own backup: the primary is excluded so a
+    /// quota error does not retry the identical call.
+    #[test]
+    fn the_primary_provider_is_not_its_own_fallback() {
+        let all_three = |name: &str| {
+            matches!(
+                name,
+                "GEMINI_API_KEY" | "CLOUDFLARE_ACCOUNT_ID" | "CLOUDFLARE_API_TOKEN"
+            )
+            .then(|| "k".into())
+        };
+        let with_grok = |name: &str| {
+            if name == ENV_GROK_API_TOKEN { Some("k".into()) } else { all_three(name) }
+        };
+        assert_eq!(fallback_clients_from(DEFAULT_FALLBACK_ORDER, None, with_grok).len(), 3);
+        let clients = fallback_clients_from(DEFAULT_FALLBACK_ORDER, Some(ProviderId::Grok), with_grok);
+        assert_eq!(clients.len(), 2, "grok excluded from its own chain");
+        assert!(clients.iter().all(|c| !c.name().starts_with("grok(")));
     }
 
     /// The lock every env-mutating test holds for its whole body.

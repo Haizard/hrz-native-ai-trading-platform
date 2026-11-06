@@ -493,6 +493,9 @@ impl LlmClient for OpenAiCompatClient {
                     || model.contains("claude-opus")
                     || model.contains("gemini")
                     || model.contains("llama-4-scout")
+                    // Grok 4.x takes pictures without saying so in the id;
+                    // `grok-3` and earlier genuinely cannot, so they stay out.
+                    || model.starts_with("grok-4")
                     || model.contains("vision")
             }
         }
