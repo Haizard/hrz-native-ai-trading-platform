@@ -529,6 +529,10 @@ const backend = {
   nextId: 1,
   requests: [],
   failCreate: null, // a status code, to exercise the failure path
+  // Series the venue answers with no candles for, as `SYMBOL/timeframe`. The
+  // capture checks need a *genuinely* empty series: dropping the thin-cache guard
+  // must not also drop the rule against photographing a chart that is not there.
+  noHistory: new Set(),
   calls: [],
   // The dashboard's one batch, `GET /tickers?limit=1000`: ten majors and sixty
   // alts, volumes descending (which is the order the route really returns),
@@ -1005,7 +1009,16 @@ window.fetch = async (path, options = {}) => {
     // timeframe onto the scene, so a stub that always answered "BTCUSDT/5m"
     // would make two panes on two instruments indistinguishable -- and telling
     // them apart is what the second pane has to be checked for.
-    return json(200, { symbol, timeframe, candles: candlesFor(200, symbol, timeframe) });
+    return json(200, {
+      symbol,
+      timeframe,
+      // A series the venue has none of, when a check says so: the answer is an
+      // empty window, not a missing route, which is exactly what a real cold
+      // symbol with no history looks like on the wire.
+      candles: backend.noHistory.has(`${symbol}/${timeframe}`)
+        ? []
+        : candlesFor(200, symbol, timeframe),
+    });
   }
 
   // One rising and one falling, so the rail's edge tint is exercised in both
@@ -1691,6 +1704,37 @@ for (const file of pageScripts) {
 // account has no snapshot, so without a route the shell opens on Dashboard
 // and every chart pane is behind a hidden section.
 window.history.replaceState(null, "", "#/charts");
+
+// The one colour the shell reads out of the stylesheet rather than from its own
+// palette: a zone's price tag sits on a chip of the canvas field, and the field
+// is defined in `tokens.css` as `--bg-canvas`. jsdom fetches no stylesheet, so
+// without this the shell's read would come back empty and every plate in these
+// checks would be painted `transparent` -- a harness gap, not a page defect, and
+// one that would quietly make the plate colour check unable to fail.
+//
+// Only the two declarations the shell actually asks for are injected, and their
+// values are lifted out of `tokens.css` here rather than retyped: a check that
+// carried its own copy of the hex could not notice the stylesheet moving. The
+// rest of the token file stays out on purpose -- feeding the whole cascade in
+// would change what several other `getComputedStyle` reads here answer, and this
+// file's job is to change as little of the page's world as it can.
+const tokensCss = await readFile(join(root, "frontend/app/styles/tokens.css"), "utf8");
+/// The `--bg-canvas` one selector declares, or null when it does not declare it.
+const fieldOf = (selector) => {
+  const at = tokensCss.indexOf(selector);
+  if (at < 0) return null;
+  const body = tokensCss.slice(at, tokensCss.indexOf("}", at));
+  return (/--bg-canvas:\s*([^;]+)/.exec(body) || [])[1]?.trim() ?? null;
+};
+const DARK_FIELD = fieldOf(":root");
+const LIGHT_FIELD = fieldOf('[data-theme="light"]');
+{
+  const node = document.createElement("style");
+  node.textContent =
+    `:root { --bg-canvas: ${DARK_FIELD}; }` +
+    `[data-theme="light"] { --bg-canvas: ${LIGHT_FIELD}; }`;
+  document.head.appendChild(node);
+}
 
 const script = document.createElement("script");
 script.textContent = shell;
@@ -2388,6 +2432,16 @@ check(
   `${document.documentElement.dataset.theme} · ${paletteNow().up} · ${paletteNow().grid}`
 );
 check("and the dark palette is the one the chart shipped with", darkUp === "#2ebd85", darkUp);
+// The one palette entry that is not the chart's colour at all: a zone's tag chip
+// is the page's background, so it is *read* from the theme instead of being
+// written down per column. This is what proves the read runs -- a palette that
+// fell back to painting nothing would still pass every fixed-hex check above,
+// because the fallback is the same string in both themes.
+check(
+  "and the zone's tag plate takes the light theme's own field, because it is read from it",
+  paletteNow().zoneTagPlate === LIGHT_FIELD,
+  `plate ${paletteNow().zoneTagPlate}, --bg-canvas reads ${LIGHT_FIELD}`
+);
 
 document.getElementById("moreChartSettings").click();
 await settle();
@@ -4194,6 +4248,36 @@ if (zoneShape) {
       zoneLabels.map((label) => tagAt(label, zoneTextBefore))
     )} · plate ${paletteNow().zoneTagPlate} · rect ${paletteNow().rect}`
   );
+  // The plate's colour has one owner. `tokens.css` is the file that writes
+  // colours down, and the field the chart sits on is declared there, so a copy
+  // of that hex in `app.js` is a second owner -- the one that keeps painting
+  // last year's background the day the token moves. The literals sat inside the
+  // palette tables, which is exactly where `component_check` cannot see: that
+  // gate reads `components.css` and nothing else, so nothing but this line
+  // watches the shell's own colours.
+  check(
+    "the app keeps no copy of the canvas field's colour, because the stylesheet owns it",
+    // Both halves are load-bearing: without the first, a renamed token in the
+    // stylesheet would make `includes(null)` answer false and this would pass on
+    // nothing having been read at all.
+    Boolean(DARK_FIELD) &&
+      Boolean(LIGHT_FIELD) &&
+      !shell.includes(DARK_FIELD) &&
+      !shell.includes(LIGHT_FIELD),
+    `tokens.css says dark ${DARK_FIELD} / light ${LIGHT_FIELD}; app.js still holds: ${
+      shell
+        .split("\n")
+        .map((line, i) => (line.includes(DARK_FIELD) || line.includes(LIGHT_FIELD) ? `${i + 1}: ${line.trim()}` : null))
+        .filter(Boolean)
+        .join(" | ") || "nothing"
+    }`
+  );
+  check(
+    "and the plate is painted with the field the theme declares, not with a colour of its own",
+    paletteNow().zoneTagPlate === DARK_FIELD && fieldPlates(zoneGeom).length === tagPlates.length,
+    `plate painted ${paletteNow().zoneTagPlate}, --bg-canvas is ${DARK_FIELD} · ` +
+      `${fieldPlates(zoneGeom).length}/${tagPlates.length} plates in the field colour`
+  );
 }
 
 // A box whose span ends on the last bar that traded into the band. `fresh_edge`
@@ -5947,6 +6031,266 @@ check(
   "and it does not leave the Ask button stuck",
   !askButton.disabled
 );
+
+// --- a cold cache is not a missing series ------------------------------------
+
+console.log("\na cold cache is not a missing series");
+
+// `/symbols` answers with what this gateway process has buffered from the live
+// feed. It is not the database and it is not the venue: on a freshly started
+// gateway the coarse rungs read `1w:0 1d:0 4h:0 1h:0 15m:1` there, while
+// `/candles` for those very rungs answers with two hundred bars, nearly all of
+// them fetched from the venue. The capture path used the first number to decide
+// whether a chart could be photographed, so a lesson that promises six rungs
+// photographed one, its marked pass found nothing to re-look at, and nothing on
+// the page said so.
+//
+// `ensureCoverage` reaches the same state by an honest route in the browser: a
+// symbol the search finds is charted with a ladder of zeroes, "because `/candles`
+// fetches history on demand, so coverage is not a permission". So the page is put
+// on exactly that kind of symbol, and asked the two questions that matter. Does a
+// rung nobody has buffered still get photographed -- and does a series that
+// genuinely has no candles still get *nothing*, the guarantee the old guard was
+// standing in for and which has to outlive it?
+
+/// The ladder a review reads a market down, spelled out here rather than read
+/// out of the app: a check that asks the app which rungs it intended would pass
+/// on the very shrink it exists to notice.
+const LADDER = ["1w", "1d", "4h", "1h", "15m", "5m"];
+const COLD = "SOLUSDT";
+
+// What the sections after this one inherit. The book section below flips its pane
+// between the two instruments it knows and counts the flips, and the wall expects
+// exactly one cell off the second one's series, so the two runs here hand the
+// chart back rather than leaving it on an instrument of their own choosing -- the
+// same courtesy the marked capture pays the reader's own layer switch.
+const asFound = {
+  symbol: selectIn(PANE, "symbol"),
+  timeframe: selectIn(PANE, "timeframe"),
+};
+
+window.HRZApp.setActiveSymbol(COLD);
+await waitFor(() => selectIn(PANE, "symbol") === COLD, `the chart to move to ${COLD}`);
+// A rung of the ladder, so the primary picture is one of the six rather than a
+// seventh view nobody asked for.
+window.HRZApp.setActiveTimeframe("5m");
+await waitFor(() => selectIn(PANE, "timeframe") === "5m", "the chart to land on 5m");
+
+/// How many candles the page believes this rung holds, read off its own select:
+/// `fillTimeframes` labels every option `1w · 0`, which is the cache's claim in
+/// the exact words the shell has to act on.
+const bufferedOn = (frame) => {
+  const option = [...paneNode().querySelectorAll(".timeframe option")].find((o) => o.value === frame);
+  if (!option) return null;
+  const label = option.textContent;
+  const at = label.lastIndexOf("·");
+  const shown = at < 0 ? "" : label.slice(at + 1).trim();
+  return /^\d+k$/.test(shown) ? Number(shown.slice(0, -1)) * 1000 : Number(shown);
+};
+check(
+  `and the page holds ${COLD} with every rung buffered empty`,
+  LADDER.every((frame) => bufferedOn(frame) === 0),
+  LADDER.map((frame) => `${frame}:${bufferedOn(frame)}`).join(" ")
+);
+
+/// The cards mounted since now, of one pass. Bounded rather than a `waitFor`:
+/// a capture that never lands is a defect to report, not a run to end.
+const cardsFor = async (caption, ms = 4000) => {
+  const found = [];
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline && found.length === 0) {
+    await settle();
+    found.push(...reviewCardTitles().filter((title) => title.includes(caption)));
+  }
+  return found;
+};
+
+const askFrames = () =>
+  (socketsFor("/ws/agent").at(-1)?.sent ?? [])
+    .map((raw) => {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    })
+    .filter((frame) => frame && typeof frame.question === "string");
+
+// One rung, asked for by hand: the marked pass of a lesson re-photographs a
+// specific timeframe, and this is the single-series path that answers it.
+deliver(agentSocket, {
+  type: "progress",
+  payload: {
+    stage: "ui_command",
+    action: "capture_chart",
+    symbol: COLD,
+    timeframe: "1d",
+    capture_id: "cap-cold-1d",
+    extra: { action: "capture_chart", symbol: COLD, timeframe: "1d", capture_id: "cap-cold-1d", marked: true },
+  },
+});
+const coldRung = await cardsFor(`AI REVIEW · MARKED · ${COLD} · 1D`);
+check(
+  `a rung the gateway has not buffered is still photographed (${COLD} 1d)`,
+  coldRung.length === 1,
+  `cards: ${reviewCardTitles().join(", ") || "(none)"} · the page's own select says 1d holds ${bufferedOn("1d")} candles`
+);
+
+// The whole ladder, on the path a question takes: the primary is the chart in
+// front of the reader and the rest are rendered for the rungs nothing shows.
+document.getElementById("attachChart").click();
+const framesBeforeLadder = askFrames().length;
+questionBox.value = "read this market top down";
+askButton.click();
+// Bounded rather than `waitFor`: the ladder is captured *before* the question
+// leaves the page, so a shell that cannot photograph its rungs must fail this
+// check rather than end the run.
+const ladderDeadline = Date.now() + 20000;
+while (Date.now() < ladderDeadline && askFrames().length === framesBeforeLadder) await settle();
+const ladderFrame = askFrames().at(-1);
+const ladderImages = [
+  ...(ladderFrame?.chart?.screenshot ? [ladderFrame.chart.screenshot] : []),
+  ...(ladderFrame?.chart?.screenshots ?? []),
+];
+const ladderLabels = ladderImages.map((image) => String(image.label || "")).join(", ");
+check(
+  "and a lesson's first pass photographs all six rungs, not the one the cache happens to hold",
+  LADDER.every((frame) => ladderLabels.includes(`${frame} chart`)),
+  `${ladderImages.length} picture(s): ${ladderLabels || "(none)"} · every rung of ${COLD} reports 0 buffered candles`
+);
+deliver(socketsFor("/ws/agent").at(-1), {
+  type: "data",
+  payload: { thesis: { symbol: COLD, direction: "long" } },
+});
+await settle();
+document.getElementById("attachChart").click();
+
+// The mirror, and the half that must not regress: a series the venue has no
+// candles for yields nothing at all. Not a blank plot, not a card, not a picture
+// on the wire -- a chart that does not exist cannot be analysed, and an honest
+// empty answer beats a confident empty frame.
+backend.noHistory.add(`${COLD}/1w`);
+const requestsBeforeEmpty = engine.requests.length;
+deliver(agentSocket, {
+  type: "progress",
+  payload: {
+    stage: "ui_command",
+    action: "capture_chart",
+    symbol: COLD,
+    timeframe: "1w",
+    capture_id: "cap-cold-1w",
+    extra: { action: "capture_chart", symbol: COLD, timeframe: "1w", capture_id: "cap-cold-1w", marked: true },
+  },
+});
+// Past `/candles`' own three cold-start retries, so the absence is the route's
+// answer and not a race with it.
+await new Promise((resolve) => setTimeout(resolve, 2000));
+const emptyCards = reviewCardTitles().filter((title) => title.includes(`${COLD} · 1W`));
+const emptyScenes = engine.requests
+  .slice(requestsBeforeEmpty)
+  .filter((request) => seriesOf(request) === `${COLD}/1w`);
+check(
+  "and a series that truly has no candles is photographed as nothing, not as an empty plot",
+  emptyCards.length === 0 && emptyScenes.length === 0,
+  `cards: ${emptyCards.join(", ") || "(none)"} · scenes built for ${COLD}/1w: ${emptyScenes.length}`
+);
+backend.noHistory.clear();
+
+window.endAiReview();
+await settle();
+
+// --- the marked picture of a chart nobody is looking at ----------------------
+
+// The pane the marked pass photographs is usually not the one on screen. Turning
+// the AI layer on asks for a repaint, but `render` returns early for a pane the
+// observer says is off screen -- so the canvas keeps the frame it drew before the
+// run started: the plain chart, uploaded under a MARKED caption, and the agent
+// told it has looked at its own marks again when it has looked at a stale one.
+// An unseen pane is therefore captured the way an unseen rung is.
+
+window.HRZApp.setActiveSymbol("BTCUSDT");
+await waitFor(() => selectIn(PANE, "symbol") === "BTCUSDT", "the first chart back on BTCUSDT");
+const panesBeforeBorrow = paneNodes().length;
+window.HRZApp.newPane();
+await waitFor(() => paneNodes().length === panesBeforeBorrow + 1, "the second chart");
+const borrowed = paneNodes()[paneNodes().length - 1];
+window.HRZApp.setActiveTimeframe("1h");
+await waitFor(() => selectIn(panesBeforeBorrow, "timeframe") === "1h", "the second chart on 1h");
+// The run goes back to the chart the reader is on, so the 1h pane is the one the
+// capture will find -- and the one that is not on screen.
+window.HRZApp.chartSymbol("BTCUSDT");
+await settle();
+const heardOffScreen = window.__intersect(borrowed, false);
+await settle();
+
+const requestsBeforeBorrow = engine.requests.length;
+deliver(agentSocket, {
+  type: "progress",
+  payload: {
+    stage: "ui_command",
+    action: "capture_chart",
+    symbol: "BTCUSDT",
+    timeframe: "1h",
+    capture_id: "cap-offscreen-1h",
+    extra: {
+      action: "capture_chart",
+      symbol: "BTCUSDT",
+      timeframe: "1h",
+      capture_id: "cap-offscreen-1h",
+      marked: true,
+    },
+  },
+});
+const offScreenCard = await cardsFor("AI REVIEW · MARKED · BTCUSDT · 1H");
+// A scene request for that series carrying the AI drawings can only come from a
+// render that actually ran: the off-screen pane answers `render()` with an early
+// return, so a capture taken from its canvas builds nothing at all.
+const markedBorrow = engine.requests
+  .slice(requestsBeforeBorrow)
+  .filter(
+    (request) =>
+      seriesOf(request) === "BTCUSDT/1h" && request.drawings.some((d) => d.created_by === "ai")
+  );
+check(
+  "and a marked capture of a chart that is off screen paints the marks rather than the last frame it drew",
+  heardOffScreen === 1 && markedBorrow.length > 0 && offScreenCard.length === 1,
+  `${heardOffScreen} observer(s) heard it leave · ${markedBorrow.length} scene(s) built with the AI drawings for BTCUSDT/1h · cards: ${
+    reviewCardTitles().join(", ") || "(none)"
+  }`
+);
+
+// The chart back as the reader left it: in view, and closed down to the one pane
+// the later sections count on.
+window.__intersect(borrowed, true);
+await settle();
+borrowed.querySelector(".close").click();
+await waitFor(() => paneNodes().length === panesBeforeBorrow, "the borrowed chart to close");
+window.endAiReview();
+await settle();
+
+// And back on the instrument it was found on. This is pane state, not a claim
+// about the shell, so it is stated as a precondition the run stops on rather than
+// as a check that would read as a product defect: the book section below flips its
+// pane between the two instruments and counts the flips, and the wall takes the
+// second one's series as the cell that leaves the screen. Hand it a chart on the
+// wrong instrument and both of those report a failure the shell never caused.
+if (selectIn(PANE, "symbol") !== asFound.symbol) {
+  const movedBack = paneNode().querySelector(".symbol");
+  movedBack.value = asFound.symbol;
+  change(movedBack);
+}
+if (selectIn(PANE, "timeframe") !== asFound.timeframe) {
+  const tfBack = paneNode().querySelector(".timeframe");
+  tfBack.value = asFound.timeframe;
+  change(tfBack);
+}
+await waitFor(() => selectIn(PANE, "symbol") === asFound.symbol, `the chart back on ${asFound.symbol}`);
+await waitFor(
+  () => selectIn(PANE, "timeframe") === asFound.timeframe,
+  `the chart back on ${asFound.timeframe}`
+);
+await settle();
+await settle();
 
 // --- a lesson says which look it is on ---------------------------------------
 //

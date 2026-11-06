@@ -594,10 +594,11 @@ const CHART_PALETTE_DARK = {
   text: "#8a93a6",
   vwap: "#edb541",
   poc: "#d6dbe4",
-  // The plate a zone's price tag sits on: the canvas field (`--bg-canvas` at
-  // `tokens.css:19`), so the number reads as the axis reads. The ink is the
-  // zone's own drawing colour -- the same pill `drawZoneLabel` gives a name.
-  zoneTagPlate: "#0a0d12",
+  // The plate a zone's price tag sits on is the canvas field, which is the
+  // page's colour and not the chart's -- so it is not written here. `chartPalette`
+  // reads it from the theme's own `--bg-canvas`, which is where the field is
+  // defined; a copy of that hex in this file is a second owner of one fact, and
+  // the one that goes stale.
   vah: "#787b86",
   val: "#787b86",
   entry: "#4a9eff",
@@ -762,9 +763,8 @@ const CHART_PALETTE_LIGHT = {
   text: "#5f6b7a",
   vwap: "#b45309",
   poc: "#1f2937",
-  // The light theme's canvas field (`--bg-canvas` at `tokens.css:111`), so the
-  // zone's tag plate means the same thing on both.
-  zoneTagPlate: "#f6f8fa",
+  // The plate is the light theme's canvas field, read from the stylesheet by
+  // `chartPalette` -- see the note in the dark column.
   vah: "#6b7686",
   val: "#6b7686",
   entry: "#2563eb",
@@ -895,6 +895,17 @@ function chartPalette(
   const palette = { ...(theme === "light" ? CHART_PALETTE_LIGHT : CHART_PALETTE_DARK) };
   if (settings.cvd) Object.assign(palette, CHART_CVD);
   if (!settings.grid) palette.grid = "rgba(0, 0, 0, 0)";
+  // A zone's price tag sits on a chip of the canvas field, and the field belongs
+  // to the page: `tokens.css` names it once, as `--bg-canvas`. A canvas cannot
+  // take `var(--bg-canvas)` (see the note above the palettes), so the theme is
+  // asked for its resolved value here -- the way the concept previews read their
+  // colours -- instead of keeping a second copy of the hex that goes stale the
+  // day the token moves. `applyChartPalette` only ever builds the palette for
+  // the theme on screen, so the resolved value and the column above are always
+  // the same theme's. With no stylesheet loaded there is no field to match, and
+  // painting nothing is the honest answer -- the ink stays the zone's own colour.
+  palette.zoneTagPlate =
+    getComputedStyle(document.documentElement).getPropertyValue("--bg-canvas").trim() || "transparent";
   return palette;
 }
 
@@ -8020,6 +8031,14 @@ function createChartPane(root, hooks = {}) {
     /// -- both read-only, both for the chart tests.
     barCount: () => candles.length,
     gliding: () => kinetic !== null,
+    /// Whether this pane is on screen at all -- the observer's answer, kept
+    /// read-only so the page never holds a second opinion about it.
+    ///
+    /// A capture needs it because an unseen pane does not repaint: `render`
+    /// returns early for one, so its canvas is the last frame drawn *before*
+    /// whoever asked looked away. `captureSeries` would otherwise photograph
+    /// that stale frame and caption it as the chart as it is now.
+    isVisible: () => visible,
 
     /// Handle a key that is about this pane, and say whether it was used.
     key(event) {
@@ -9497,9 +9516,9 @@ function executeUiCommand(cmd) {
 }
 
 /// One series' picture, taken from wherever it can be had honestly: a pane
-/// already showing that symbol and timeframe, otherwise an offscreen render of
-/// its candle history. Null when the symbol has no such series -- photographing
-/// a chart that does not exist is not an option.
+/// already showing that symbol and timeframe *and on screen*, otherwise an
+/// offscreen render of its candle history. Null when the render has no candles
+/// -- photographing a chart that does not exist is not an option.
 ///
 /// `marked` is which pass of a review this is: the picture of the chart *with
 /// the agent's own shapes on it*. It decides whether the AI layer is on while
@@ -9509,7 +9528,15 @@ async function captureSeries(symbol, timeframe, { marked = false } = {}) {
   const openPane = panes.find(
     (pane) => pane.symbol() === symbol && pane.timeframe() === timeframe
   );
-  if (openPane) {
+  // Only a pane that is *in view* may be photographed from its own canvas.
+  // `render` returns early for a pane the observer says is off screen, so that
+  // canvas holds the frame drawn before it was scrolled away -- and a marked
+  // capture is exactly the case that shows up empty, because `setAiLayerOn`
+  // repaints through `scheduleRender` into a render that never happens. The
+  // card would then say MARKED over a plain chart, and the run would believe it
+  // had re-looked at its own marks. An unseen pane is captured the way an
+  // absent series is: built now, offscreen, from the candles and the drawings.
+  if (openPane && openPane.isVisible()) {
     // A beat even for a pane already on it: the chart repaints continuously,
     // and a capture taken mid-frame reads to a vision model as a smear.
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -9526,9 +9553,17 @@ async function captureSeries(symbol, timeframe, { marked = false } = {}) {
       openPane.setAiLayerOn(wasOn);
     }
   }
-  const entry = coverage.find((instrument) => instrument.symbol === symbol);
-  const frame = entry && entry.timeframes.find((f) => f.timeframe === timeframe);
-  if (!frame || frame.candles === 0) return null;
+  // Nothing open and in view shows it, so render it -- and do *not* ask
+  // `coverage` first whether the series exists. Those counts are this gateway
+  // process's live-feed buffer, not the database and not the venue, and on a
+  // freshly started gateway the coarse rungs read zero there while `/candles`
+  // answers the same timeframe with two hundred bars; `ensureCoverage` already
+  // says it in one line -- "coverage is not a permission". Reading it as one is
+  // what made a lesson photograph one rung instead of six, because it asked a
+  // cache a question only the draw can answer. `renderOffscreen` is the one
+  // that knows: it answers null when the series has no candles, so a symbol and
+  // timeframe that truly do not exist still produce nothing -- never a blank
+  // picture dressed as analysis.
   return renderOffscreen(symbol, timeframe, { marked });
 }
 
@@ -12241,12 +12276,15 @@ async function captureLadder(symbol) {
       if (shot) { shots.push(shot); taken.add(tf); }
       continue;
     }
-    // Nothing open shows it. Only render one if the symbol actually has the
-    // series: a blank picture of a timeframe that does not exist would be a lie
-    // dressed as analysis.
-    const entry = coverage.find((instrument) => instrument.symbol === symbol);
-    const frame = entry && entry.timeframes.find((f) => f.timeframe === tf);
-    if (!frame || frame.candles === 0) continue;
+    // Nothing open shows it, so render it, and let the render be the one that
+    // says whether the series can be drawn. `coverage` used to answer that here
+    // and could not: its counts are this gateway process's live-feed buffer, so
+    // on a freshly started one every coarse rung reads zero while `/candles`
+    // serves two hundred bars for that same timeframe. A cold cache therefore
+    // dropped five of the six rungs and the lesson quietly read the market off
+    // one picture. `renderOffscreen` returns null when it has no candles, so a
+    // timeframe the symbol truly does not have still produces nothing -- a blank
+    // picture of a chart that does not exist would be a lie dressed as analysis.
     try {
       const shot = await renderOffscreen(symbol, tf);
       if (shot) { shots.push(shot); taken.add(tf); }
@@ -12287,6 +12325,13 @@ async function renderOffscreen(symbol, timeframe, { marked = false } = {}) {
     // Bars, then one synchronous render+draw. A fresh pane has no viewport, so
     // the engine fits -- which is the view an analysis wants.
     await pane.refresh();
+    // The honest question, asked of the render rather than of a cache: are there
+    // any bars? `barCount` is the length of the series the pane actually loaded,
+    // so it is zero exactly when `/candles` had nothing for this symbol and
+    // timeframe -- the one case in which a picture would be of an empty plot.
+    // Anything else (a thin live buffer, a symbol the page has never charted)
+    // has bars, and a chart with bars in it is worth photographing.
+    if (pane.barCount() === 0) return null;
     pane.draw();
     return captureChart(pane.canvas, timeframe);
   } finally {
