@@ -273,6 +273,7 @@ mod tests {
                     now: 0,
                     equity: 10_000.0,
                     position: None,
+                    registry_concepts: BTreeMap::new(),
                 },
                 &mut FakeMarket::default(),
             )
@@ -299,6 +300,7 @@ mod tests {
                     now: 1_000,
                     equity: 10_000.0,
                     position: None,
+                    registry_concepts: BTreeMap::new(),
                 },
                 &mut market,
             )
@@ -328,6 +330,7 @@ mod tests {
                     now: 1_000,
                     equity: 10_000.0,
                     position: None,
+                    registry_concepts: BTreeMap::new(),
                 },
                 &mut FakeMarket::default(),
             )
@@ -360,6 +363,7 @@ mod tests {
                     now: 1_000,
                     equity: 10_000.0,
                     position: None,
+                    registry_concepts: BTreeMap::new(),
                 },
                 &mut market,
             )
