@@ -1014,6 +1014,11 @@ impl Agent {
             .drawings
             .as_ref()
             .is_some_and(|d| d.writer().is_some());
+        // Whether the run can photograph the user's screen at all. The teaching
+        // prompt promises a second look, and promising it to a run with no
+        // screen attached is the same broken promise the drawing text refuses to
+        // make for a run with no writer.
+        let can_look = request.captures.is_some();
         let skill_requires_drawing = skills.iter().any(|s| {
             s.rules
                 .iter()
@@ -1042,6 +1047,7 @@ impl Agent {
             request.chart.as_ref(),
             memories.as_deref(),
             can_draw,
+            can_look,
             request.teaching,
         );
         // Screenshots ride on the first user message, primary view first. It is
@@ -2406,6 +2412,7 @@ fn ask_system_prompt(
     chart: Option<&crate::chart_context::ChartContext>,
     memories: Option<&[crate::agent_memory::MemoryRow]>,
     can_draw: bool,
+    can_look: bool,
     teaching: bool,
 ) -> String {
     let mut out = String::new();
@@ -2541,8 +2548,34 @@ fn ask_system_prompt(
                  `get_candles`), space the points so the outline is legible, \
                  and label an illustrative sketch as an illustration. A sketch \
                  is a teaching aid, never market evidence, and must never be \
-                 cited as a level.\n\n",
+                 cited as a level.\n",
             );
+            // The second look is promised only when there is a screen to take
+            // it from -- the same discipline as the drawing text above, which
+            // says nothing about marks a host with no writer cannot make.
+            out.push_str(if can_look {
+                "Two passes, in this order, when a screen is attached:\n\
+                 PASS 1 -- the plain look. The screenshots riding this question \
+                 are every timeframe before anything is drawn on them. Read them \
+                 top-down and name what each one shows; the numbers behind them \
+                 come from the data tools, as always.\n\
+                 MARK -- draw what you just described, as objects, one point at \
+                 a time.\n\
+                 PASS 2 -- call `review_marked_charts`. It photographs every \
+                 timeframe of the ladder again, now carrying your zones, and the \
+                 images arrive with that call's results captioned `PASS 2 · <TF> \
+                 · marked`. Confirm the trend, the entry, the target and the stop \
+                 against THOSE frames, not the plain ones: a level that reads \
+                 somewhere else once it is drawn next to the candles is a level \
+                 you have to move, and moving it is the lesson. A frame that did \
+                 not arrive is named as missing -- never describe a chart you \
+                 were not shown.\n\
+                 Only then submit the thesis.\n\n"
+            } else {
+                "There is no screen attached to this run, so there is no second \
+                 pass: nothing you draw can be photographed back to you. Teach \
+                 from the plain frames and the tool numbers, and say so.\n\n"
+            });
         } else {
             out.push_str(
                 "## Teaching mode\n\
@@ -2550,7 +2583,10 @@ fn ask_system_prompt(
                  top-down and explain each resolution in plain words. You \
                  cannot draw on their chart in this session -- say which \
                  objects you would have marked (the level, the zone, the slope) \
-                 instead of pretending the marks exist.\n\n",
+                 instead of pretending the marks exist. With nothing drawn \
+                 there is no second pass to look at: `review_marked_charts` \
+                 would photograph the same plain charts, so do not spend a turn \
+                 on it.\n\n",
             );
         }
     }
@@ -5230,11 +5266,59 @@ invalidation: []
         );
     }
 
-    /// The toggle off is the ordinary run: no lesson, and no drawing duty the
-    /// skill never asked for. Without this half, "mentor" would be a flag that
-    /// silently changed every question.
+    /// The two passes are a promise the shell renders and the duty enforces,
+    /// and a model that is never told the order will not guess it. Asserted on
+    /// the prompt the orchestrator actually sent, as the drawing assertions are.
+    ///
+    /// A screen is attached here, and that is the point: the order below is the
+    /// order a lesson can actually run, and a lesson with nothing to photograph
+    /// is told exactly that instead -- asserted in the test after this one. The
+    /// marked pass then really runs, so Task 8's duty is discharged and this
+    /// test stays about the words the model was handed.
     #[tokio::test]
-    async fn an_ordinary_question_gets_no_lesson_prompt() {
+    async fn a_lesson_is_told_to_look_twice() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer);
+        let captures = crate::captures::CapturesContext::new(Arc::new(AnsweringCaptures));
+        let mut responses: Vec<LlmResponse> = (0..AgentConfig::default().max_turns - 1)
+            .map(|i| read_call(&format!("r{i}")))
+            .collect();
+        responses.push(draw_call("d1"));
+        responses.push(marked_call("m1"));
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        let llm = Arc::new(ScriptedClient::new(responses));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        let request = AskRequest::new("BTCUSDT", "walk me through this chart")
+            .with_drawings(drawings)
+            .with_captures(captures)
+            .with_teaching(true);
+        agent
+            .ask(&request, &source)
+            .await
+            .expect("the lesson completes");
+
+        let system = system_prompt_of(&llm);
+        assert!(
+            system.contains("Two passes, in this order"),
+            "a lesson with no stated order: {system}"
+        );
+        assert!(
+            system.contains("PASS 1") && system.contains("PASS 2"),
+            "the passes have to be nameable, or the model cannot say which it is on"
+        );
+        assert!(
+            system.contains("review_marked_charts"),
+            "the second pass must be named as the tool it is: {system}"
+        );
+    }
+
+    /// The other side of the promise: with no screen there is no second look,
+    /// and a lesson told to take one would hunt for a call that shows it the
+    /// same plain charts again.
+    #[tokio::test]
+    async fn a_lesson_with_no_screen_is_told_there_is_no_second_pass() {
         let source = Fixture::new();
         let writer = Arc::new(RecordingWriter::default());
         let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer);
@@ -5243,8 +5327,81 @@ invalidation: []
         )]));
         let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
 
+        let request = AskRequest::new("BTCUSDT", "walk me through this chart")
+            .with_drawings(drawings)
+            .with_teaching(true);
         agent
-            .ask(&AskRequest::new("BTCUSDT", "is this level holding"), &source)
+            .ask(&request, &source)
+            .await
+            .expect("the lesson completes");
+
+        let system = system_prompt_of(&llm);
+        assert!(
+            !system.contains("Two passes, in this order"),
+            "a second pass promised to a run with nothing to photograph: {system}"
+        );
+        assert!(
+            system.contains("no second pass"),
+            "the run must be told why it has only one look: {system}"
+        );
+    }
+
+    /// And with no writer at all, the lesson must not go looking for marks it
+    /// never drew: the fallback says plainly that `review_marked_charts` would
+    /// photograph the same plain charts.
+    #[tokio::test]
+    async fn a_lesson_that_cannot_draw_is_told_not_to_look() {
+        let source = Fixture::new();
+        // A drawings context with no writer: the run can name objects but not
+        // put them on the chart, so the teaching prompt takes its second branch.
+        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user");
+        let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
+            100_100.0, 100_000.0, 100_400.0,
+        )]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        agent
+            .ask(
+                &AskRequest::new("BTCUSDT", "walk me through this chart")
+                    .with_drawings(drawings)
+                    .with_teaching(true),
+                &source,
+            )
+            .await
+            .expect("the lesson completes");
+
+        let system = system_prompt_of(&llm);
+        assert!(
+            system.contains("do not spend a turn"),
+            "a lesson with nothing drawn must be told there is nothing to re-look at: {system}"
+        );
+        assert!(
+            system.contains("review_marked_charts"),
+            "and named the tool it is not to call: {system}"
+        );
+    }
+
+    /// The toggle off is the ordinary run: no lesson, and no drawing duty the
+    /// skill never asked for. Without this half, "mentor" would be a flag that
+    /// silently changed every question.
+    #[tokio::test]
+    async fn an_ordinary_question_gets_no_lesson_prompt() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        // Attached, not just built: the ordinary run on a host with a writer is
+        // the case that could leak the lesson's prompt through the drawing text,
+        // so it has to be the case this test runs.
+        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer);
+        let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
+            100_100.0, 100_000.0, 100_400.0,
+        )]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        agent
+            .ask(
+                &AskRequest::new("BTCUSDT", "is this level holding").with_drawings(drawings),
+                &source,
+            )
             .await
             .expect("the thesis lands");
 
@@ -5252,6 +5409,10 @@ invalidation: []
         assert!(
             !system.contains("Teaching mode"),
             "teaching leaked into a question that did not ask for it"
+        );
+        assert!(
+            !system.contains("Two passes, in this order"),
+            "the lesson's run shape leaked into an ordinary question: {system}"
         );
     }
 

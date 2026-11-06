@@ -10368,6 +10368,12 @@ function showAiReviewFrame(turn, progress) {
   // A single read has no ladder to be a rung of, so it is not counted: "1/1"
   // on a one-frame question reads like a ladder that lost its other rungs.
   const counter = progress.total > 1 ? ` · ${progress.index}/${progress.total}` : "";
+  // A lesson shows the same six timeframes twice, and the two passes mean
+  // opposite things: one is the chart as it is, the other is the chart with the
+  // agent's marks on it. Only a teaching run has a second pass, so only it needs
+  // the first one labelled -- an ordinary multi-timeframe review is one pass and
+  // would be captioned as if it were missing the other.
+  const pass = turn.teaching ? " · PLAIN" : "";
   if (progress.marked) {
     // The marked picture is taken by the `capture_chart` request that follows
     // this frame (Task 7), and that handler owns the card -- it is the one
@@ -10382,7 +10388,7 @@ function showAiReviewFrame(turn, progress) {
     symbol,
     timeframe,
     image: reviewImageFor(turn, symbol, timeframe),
-    caption: `AI REVIEW · ${symbol.toUpperCase()} · ${timeframe.toUpperCase()}${counter}`,
+    caption: `AI REVIEW${pass} · ${symbol.toUpperCase()} · ${timeframe.toUpperCase()}${counter}`,
   });
 }
 
@@ -12000,7 +12006,17 @@ async function ask() {
 
   // The symbol rides the turn: the agent draws on it, and when the run ends
   // -- answer or notice -- the panes showing it must re-fetch their drawings.
-  const turn = { question, symbol: activeSymbol(), steps: [], answer: null, error: null };
+  const turn = {
+    question,
+    symbol: activeSymbol(),
+    // The run keeps the flag it was asked with. Reading the module-level
+    // `mentorMode` from the review code would caption a lesson's frames plain
+    // the moment the user flips the chip off mid-run.
+    teaching: mentorMode,
+    steps: [],
+    answer: null,
+    error: null,
+  };
   turns.push(turn);
   asking = true;
   el("question").value = "";

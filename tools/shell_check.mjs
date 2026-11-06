@@ -5939,6 +5939,85 @@ check(
   !askButton.disabled
 );
 
+// --- a lesson says which look it is on ---------------------------------------
+//
+// The mentor chip is the only thing that turns the two passes on, so the label
+// the plain rung carries has to come from the chip and nothing else: a lesson's
+// first card says PLAIN, because a second one is coming, and an ordinary
+// question's says nothing at all -- which is what the two-pass checks above
+// already prove about a run asked with the chip off. This section is placed
+// after them for the same reason the attach section is: asking with mentor on
+// turns chart attachment on for the run, and a chip left flipped would change
+// what every later section asks for.
+console.log("\nthe mentor chip");
+
+const mentorChip = document.getElementById("mentorMode");
+const attachChip = document.getElementById("attachChart");
+let mentorFrames = [];
+try {
+  mentorChip.click();
+  questionBox.value = "teach me this setup";
+  askButton.click();
+  await settle();
+  const mentorSocket = socketsFor("/ws/agent").at(-1);
+  mentorFrames = (mentorSocket?.sent ?? []).map((raw) => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  });
+  // The run closes first, exactly as the two-pass section above does: a ladder
+  // frame is a thing the shell renders while the answer is in flight, and the
+  // card it mounts has to outlive the turn to be read.
+  deliver(mentorSocket, {
+    type: "data",
+    payload: { thesis: { symbol: askedSymbol, direction: "long" } },
+  });
+  await settle();
+  window.endAiReview();
+  await settle();
+  deliver(mentorSocket, {
+    type: "progress",
+    payload: {
+      stage: "review_frame",
+      symbol: openSymbol,
+      timeframe: openTimeframe,
+      index: 1,
+      total: 6,
+      marked: false,
+    },
+  });
+  await settle();
+} catch (e) {
+  mentorFrames = [{ crashed: String((e && e.message) || e) }];
+}
+
+check(
+  "the lesson asks with its teaching flag on the wire",
+  mentorFrames.some((frame) => frame && frame.teaching === true),
+  `${mentorFrames.filter((f) => f && typeof f.question === "string").length} question(s) sent`
+);
+check(
+  "a lesson labels its first pass plain",
+  reviewCardTitles().some((title) => title.includes("AI REVIEW · PLAIN")),
+  reviewCardTitles().join(" | ")
+);
+check(
+  "and the label sits inside that pass's own caption",
+  reviewCardTitles().some((title) =>
+    title.includes(`AI REVIEW · PLAIN · ${openSymbol} · ${openTimeframe.toUpperCase()}`)
+  ),
+  reviewCardTitles().join(" | ")
+);
+
+// Both chips back the way they were found. Mentor mode turns attachment on for
+// the run, and the sections below read an ordinary question's packet.
+if (mentorChip.getAttribute("aria-pressed") !== "false") mentorChip.click();
+if (attachChip.getAttribute("aria-pressed") === "true") attachChip.click();
+window.endAiReview();
+await settle();
+
 // --- the scanner ---------------------------------------------------------------
 //
 // `GET /scan` shipped with eight route tests and no reader. Nothing in this file
