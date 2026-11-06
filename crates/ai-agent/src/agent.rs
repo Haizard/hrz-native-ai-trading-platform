@@ -987,6 +987,19 @@ impl Agent {
             });
         }
 
+        // The chart the user is looking at is a source of prices on the same
+        // footing as the ladder. The prompt prints its visible axis and the
+        // levels the user drew on it at the model as facts about the screen it
+        // was asked about, so a band built without them refuses the very numbers
+        // the shell displayed -- and the harvest already knows `price_low`,
+        // `price_high` and `price`. This is a guard against a model inventing a
+        // level, not against a client lying about its own chart: a packet that
+        // reports a fictional axis widens its own band, and the shell that sent
+        // it is the only one that could have been fooled.
+        if let Some(chart) = &request.chart {
+            range.observe_result(&serde_json::to_value(chart)?);
+        }
+
         // Tools must be available before the prompt so the capability summary
         // can be built. The prompt will receive the full list but filter it to
         // exposed tools.
@@ -1741,7 +1754,24 @@ impl Agent {
                         }]));
                         continue;
                     }
-                    return Err(err);
+                    // ...and on the last turn there is no turn to fix it in, so
+                    // the choice is between a validator string and an answer
+                    // that says it has no plan. Every other ending this loop
+                    // has is the second kind. The read is delivered, the levels
+                    // `finalize` refused are named in it, and the card is left
+                    // with no plan rather than an unverified one.
+                    tracing::warn!(target: "ai_agent", %err, "thesis ungroundable on the last turn; delivering the read without the plan");
+                    trace.push(ToolTrace {
+                        tool: SUBMIT_THESIS.into(),
+                        args: call.input.clone(),
+                        result: json!({
+                            "accepted": false,
+                            "error": err.to_string(),
+                            "downgraded": "stand-aside",
+                        }),
+                    });
+                    thesis.provenance = trace.clone();
+                    thesis.stand_aside(&err.to_string());
                 }
 
                 if thesis.narrative.trim().is_empty() {
@@ -4069,23 +4099,85 @@ mod tests {
         );
     }
 
+    /// A level the shell shows on the user's chart is a level the run may cite.
+    ///
+    /// `ChartContext::render` prints the visible price axis and the user's own
+    /// drawn marks at the model as facts about the chart they are looking at, so
+    /// a band built from the data window alone refuses numbers the shell
+    /// displayed a moment earlier. The live failure this closes quoted a weekly
+    /// low as `entry.low` and was rejected for lying under a single-rung ladder.
     #[tokio::test]
-    async fn a_thesis_citing_prices_no_tool_reported_is_rejected() {
+    async fn a_level_shown_on_the_users_chart_is_ground() {
+        let source = Fixture::new();
+        // Repeated because a rejected thesis is handed back for correction: the
+        // run has to survive every attempt for `expect` below to mean
+        // "the level was accepted", not "the loop stopped early".
+        let agent = agent(
+            vec![
+                thesis_call(60_000.0, 59_000.0, 62_000.0);
+                DEFAULT_MAX_TURNS + ANSWER_TURNS
+            ],
+        );
+        let chart = crate::chart_context::ChartContext {
+            price_low: Some(60_000.0),
+            price_high: Some(81_000.0),
+            ..Default::default()
+        };
+
+        let answer = agent
+            .ask(
+                &AskRequest::new("BTCUSDT", "can I bid this weekly low?").with_chart(chart),
+                &source,
+            )
+            .await
+            .expect("a level the chart shows is a level the run may cite");
+
+        assert_eq!(answer.thesis.direction, crate::thesis::Bias::Long);
+        assert_eq!(answer.thesis.entry.low, 60_000.0);
+    }
+
+    /// A thesis the run cannot ground is still not a reason to go silent.
+    ///
+    /// The levels are withheld -- that is what grounding is for -- but the run's
+    /// read is not, and a validator string is not an answer. Same posture as the
+    /// marked-review duty on the last turn: the record says what could not be
+    /// confirmed instead of the run saying nothing at all.
+    #[tokio::test]
+    async fn a_thesis_citing_prices_no_tool_reported_is_withheld_not_lost() {
         let source = Fixture::new();
         // 250_000 is nowhere near the 100k-ish fixture. Repeated because a
-        // rejected thesis is now handed back for correction rather than
-        // failing on the spot -- so the bad level has to survive every
-        // attempt for the error to reach the caller.
-        let agent = agent(vec![
-            thesis_call(250_000.0, 249_000.0, 253_000.0);
-            DEFAULT_MAX_TURNS + ANSWER_TURNS
-        ]);
+        // rejected thesis is now handed back for correction -- so the bad level
+        // has to survive every attempt for the last turn to be reached.
+        let agent = agent(
+            vec![
+                thesis_call(250_000.0, 249_000.0, 253_000.0);
+                DEFAULT_MAX_TURNS + ANSWER_TURNS
+            ],
+        );
 
-        let err = agent
+        let answer = agent
             .ask(&AskRequest::new("BTCUSDT", "long setup"), &source)
             .await
-            .unwrap_err();
-        assert!(matches!(err, AgentError::Ungrounded(_)), "got {err}");
+            .expect("a run never ends on a validator error");
+
+        assert!(
+            !answer.thesis.direction.is_directional(),
+            "an ungroundable plan must not be published as a plan: {:?}",
+            answer.thesis.direction
+        );
+        assert_eq!(answer.thesis.entry, PriceZone::default());
+        assert_eq!(answer.thesis.risk_reward, 0.0);
+        assert!(
+            answer.thesis.narrative.contains("250000"),
+            "the refused level has to be named, not quietly dropped: {}",
+            answer.thesis.narrative
+        );
+        assert!(
+            answer.trace.iter().any(|row| row.tool == SUBMIT_THESIS
+                && row.result.get("accepted").is_some_and(|v| v == false)),
+            "the provenance must record the withheld plan: {:?}",
+            answer.trace
+        );
     }
 
     fn named_call(name: &str) -> LlmResponse {

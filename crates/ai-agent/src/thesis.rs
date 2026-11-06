@@ -462,6 +462,39 @@ impl TradeThesis {
         Ok(())
     }
 
+    /// Withhold the plan and keep the read.
+    ///
+    /// Used when a submitted thesis fails grounding on the run's last turn: the
+    /// levels it proposed may not reach a card, so they become the zeroed band a
+    /// directionless thesis carries -- the same shape [`Bias::None`] leaves --
+    /// and the narrative keeps the analysis, with the refusal stated ahead of it.
+    /// The numbers that could not be reconciled are written out rather than
+    /// dropped: a reader has to be able to see what was refused.
+    pub fn stand_aside(&mut self, reason: &str) {
+        let proposed = format!(
+            "entry {}, stop {}, target {}",
+            self.entry.describe(),
+            self.stop.describe(),
+            self.target.describe()
+        );
+        self.direction = Bias::None;
+        self.entry = PriceZone::default();
+        self.stop = PriceZone::default();
+        self.target = PriceZone::default();
+        self.risk_reward = 0.0;
+        let first = format!(
+            "No plan is given: {reason}. The levels proposed ({proposed}) could not be \
+             reconciled with the charts this run read."
+        );
+        let words = self.narrative.trim();
+        self.narrative = if words.is_empty() {
+            first
+        } else {
+            format!("{first}\n\n{words}")
+        };
+        self.invalidation = format!("stand-aside: {reason}");
+    }
+
     /// A deterministic narrative, used when the model cannot be asked for one.
     ///
     /// Every sentence is built from the structured fields, so this is a valid
