@@ -182,27 +182,49 @@ impl crate::llm_client::LlmClient for FallbackClient {
         let needs_vision = request.messages.iter().flat_map(|message| &message.content).any(
             |block| matches!(block, crate::llm_client::ContentBlock::Image { .. }),
         );
-        let mut last_error = None;
-        let mut attempted = 0usize;
+        let mut failures = Vec::new();
+        let mut skipped = Vec::new();
         for client in &self.clients {
             if needs_vision && !client.supports_image_input() {
+                skipped.push(client.name());
                 continue;
             }
-            attempted += 1;
             match client.complete(request.clone()).await {
                 Ok(response) => return Ok(response),
                 Err(error) => {
                     tracing::warn!(target: "ai_agent", provider = client.name(), "AI provider failed; trying next configured provider");
-                    last_error = Some(format!("{}: {error}", client.name()));
+                    failures.push(format!("{}: {error}", client.name()));
                 }
             }
         }
-        if attempted == 0 && needs_vision {
-            return Err(AgentError::Llm(
-                "the configured AI providers cannot process image input; configure a vision-capable Gemini or Cloudflare model".into(),
-            ));
+        // Every rung answered, so what is worth keeping is which one answered
+        // how. The last failure alone reads as "gemini is broken" in a chain
+        // where gemini was the third try, and the operator cannot tell a
+        // provider that refused from one that was never offered the request.
+        if failures.is_empty() {
+            if skipped.is_empty() {
+                return Err(AgentError::Llm("no AI provider is configured".into()));
+            }
+            return Err(AgentError::Llm(format!(
+                "the configured AI providers cannot process image input; the request asked \
+                 for a picture and {} cannot read one. Configure a vision-capable model (a \
+                 gemini-* or Cloudflare llama-4-scout rung, or a Grok 4.x).",
+                skipped.join(", ")
+            )));
         }
-        Err(AgentError::Llm(last_error.unwrap_or_else(|| "no AI provider is configured".into())))
+        let mut message = if failures.len() == 1 {
+            failures.into_iter().next().unwrap_or_default()
+        } else {
+            format!(
+                "all {} configured providers failed -- {}",
+                failures.len(),
+                failures.join(" | ")
+            )
+        };
+        if !skipped.is_empty() {
+            message.push_str(&format!(" ({} skipped for want of image input)", skipped.join(", ")));
+        }
+        Err(AgentError::Llm(message))
     }
 
     fn name(&self) -> &str { &self.name }
@@ -452,6 +474,142 @@ pub fn from_deployment_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm_client::{ContentBlock, LlmRequest, LlmResponse, Message, StopReason, Usage};
+    use crate::llm_client::LlmClient as _;
+
+    /// One rung of a chain, named, that either answers or refuses.
+    struct Rung {
+        label: &'static str,
+        vision: bool,
+        /// `Some(text)` answers with it; `None` fails the call.
+        answer: Option<&'static str>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::llm_client::LlmClient for Rung {
+        async fn complete(&self, _request: LlmRequest) -> Result<LlmResponse, AgentError> {
+            match self.answer {
+                Some(text) => Ok(LlmResponse {
+                    message: Message::assistant(text),
+                    stop_reason: StopReason::EndTurn,
+                    usage: Usage::default(),
+                }),
+                None => Err(AgentError::Llm(format!("{} is out of quota", self.label))),
+            }
+        }
+        fn supports_image_input(&self) -> bool { self.vision }
+        fn name(&self) -> &str { self.label }
+    }
+
+    fn chain(rungs: Vec<Rung>) -> FallbackClient {
+        FallbackClient::new(
+            rungs.into_iter()
+                .map(|rung| std::sync::Arc::new(rung) as std::sync::Arc<dyn crate::llm_client::LlmClient>)
+                .collect(),
+        )
+    }
+
+    fn text_request() -> LlmRequest {
+        LlmRequest {
+            system: None,
+            messages: vec![Message::user("what is the POC?")],
+            tools: Vec::new(),
+            tool_choice: None,
+            max_tokens: 512,
+            temperature: 0.0,
+        }
+    }
+
+    fn picture_request() -> LlmRequest {
+        let mut request = text_request();
+        request.messages.push(Message {
+            role: crate::llm_client::Role::User,
+            content: vec![
+                ContentBlock::Text("read this chart".into()),
+                ContentBlock::Image { media_type: "image/png".into(), data: "eA==".into() },
+            ],
+        });
+        request
+    }
+
+    /// The whole point of the chain: a provider that fails is not the end of
+    /// the run, it is the start of the next rung.
+    #[tokio::test]
+    async fn a_failing_provider_moves_the_request_to_the_next_one() {
+        let client = chain(vec![
+            Rung { label: "first", vision: true, answer: None },
+            Rung { label: "second", vision: true, answer: Some("the POC is 103250") },
+        ]);
+        let response = client.complete(text_request()).await.expect("second rung answers");
+        assert_eq!(response.text(), "the POC is 103250");
+    }
+
+    /// Every rung refusing names every rung. Before this the message carried
+    /// only the last failure, so a three-provider chain reported "third is out
+    /// of quota" and the operator had no way to see the other two had been
+    /// tried -- which is exactly what makes a failover look absent.
+    #[tokio::test]
+    async fn a_chain_that_all_fails_names_every_rung_that_refused() {
+        let client = chain(vec![
+            Rung { label: "first", vision: true, answer: None },
+            Rung { label: "second", vision: true, answer: None },
+        ]);
+        let err = client.complete(text_request()).await.expect_err("nothing answered");
+        let message = err.to_string();
+        assert!(message.contains("first"), "{message}");
+        assert!(message.contains("second"), "{message}");
+        assert!(message.contains("all 2 configured providers failed"), "{message}");
+    }
+
+    /// A picture cannot be handed to a text-only rung. It is skipped, and the
+    /// refusal says so rather than blaming the providers that were tried.
+    #[tokio::test]
+    async fn a_picture_skips_a_rung_that_cannot_read_one_and_says_so() {
+        let client = chain(vec![
+            Rung { label: "blind", vision: false, answer: Some("never reached") },
+            Rung { label: "sighted", vision: true, answer: None },
+        ]);
+        let err = client.complete(picture_request()).await.expect_err("sighted refused");
+        let message = err.to_string();
+        assert!(message.contains("sighted is out of quota"), "{message}");
+        assert!(!message.contains("never reached"), "{message}");
+        assert!(message.contains("skipped for want of image input"), "{message}");
+        assert!(message.contains("blind"), "{message}");
+    }
+
+    /// A picture with no rung that can read it is a configuration problem, and
+    /// the answer has to name the fix, not the exception.
+    #[tokio::test]
+    async fn a_picture_with_no_vision_rung_says_what_to_configure() {
+        let client = chain(vec![
+            Rung { label: "blind(a)", vision: false, answer: Some("never reached") },
+        ]);
+        let err = client.complete(picture_request()).await.expect_err("no eyes anywhere");
+        let message = err.to_string();
+        assert!(message.contains("cannot process image input"), "{message}");
+        assert!(message.contains("blind(a)"), "{message}");
+        assert!(message.contains("vision-capable"), "{message}");
+    }
+
+    /// One rung alone keeps its own message -- the chain must not invent a
+    /// count for a provider that never had a neighbour.
+    #[tokio::test]
+    async fn a_single_provider_reports_its_own_failure_plainly() {
+        let client = chain(vec![Rung { label: "lonely", vision: true, answer: None }]);
+        let err = client.complete(text_request()).await.expect_err("one rung, refusing");
+        let message = err.to_string();
+        assert!(message.contains("lonely"), "{message}");
+        assert!(!message.contains("configured providers failed"), "{message}");
+        assert!(!message.contains("skipped"), "{message}");
+    }
+
+    /// An empty chain is not a silent success.
+    #[tokio::test]
+    async fn an_empty_chain_says_nothing_is_configured() {
+        let client = FallbackClient::new(Vec::new());
+        let err = client.complete(text_request()).await.expect_err("no rungs at all");
+        assert!(err.to_string().contains("no AI provider is configured"), "{err}");
+    }
 
     #[test]
     fn wire_names_round_trip() {
