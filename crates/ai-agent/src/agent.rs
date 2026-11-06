@@ -917,6 +917,26 @@ impl Agent {
                 None => TimeframeLadder::default(),
             },
         };
+        // A lesson is shown six charts, so a lesson reads six rungs -- and the
+        // client's array may only *promote* rungs into that ladder, never
+        // replace it. The desk sends `timeframes: [activeTimeframe()]` with
+        // every question, and honouring that literally on a teaching run left
+        // the ladder one rung wide: the marked pass then kept "all six" as "all
+        // one", and the grounding band was built from a single resolution while
+        // the answer claimed to have re-checked six pictures. The ordinary
+        // question keeps the ladder its client asked for; widening it is a cost
+        // decision nobody has made yet.
+        let ladder = if request.teaching {
+            TimeframeLadder::new(
+                crate::multi_timeframe::MARKED_LADDER
+                    .iter()
+                    .copied()
+                    .chain(ladder.timeframes().iter().copied())
+                    .collect(),
+            )
+        } else {
+            ladder
+        };
         let ladder = match chart_anchor {
             Some(anchor) if !ladder.timeframes().contains(&anchor) => {
                 let mut timeframes = ladder.timeframes().to_vec();
@@ -1132,7 +1152,13 @@ impl Agent {
             // ladder read announces each timeframe *before* it runs and the
             // shell can put that frame's picture on screen while the model is
             // still reading it. `ask` passes `NoProgress`, which discards.
-            .with_progress(progress);
+            .with_progress(progress)
+            // The marked review photographs this run's ladder, so which rungs
+            // are photographed is the run's fact to hand over, not a list the
+            // model types into a tool argument. A lesson that re-checked two of
+            // six pictures could not say it had re-checked its own work, and
+            // the promise the lesson is sold on is that it did.
+            .with_review_ladder(&ladder);
         // The chart the user is looking at sets the DEFAULT data window: a
         // tool call without its own limit on this symbol+timeframe reads the
         // candles the user sees -- leftmost visible bar through the newest --
@@ -1300,8 +1326,19 @@ impl Agent {
             // then wrote the plan from the plain pictures is the exact failure
             // the two-pass review exists to prevent, and the model will do it:
             // the analysis is finished as far as its numbers go.
-            let marked_review_owed =
-                request.teaching && ctx.captures.is_some() && marked_frames_seen == 0;
+            //
+            // Both halves of the promise have to hold, or the duty asks for a
+            // lie. A screen with nothing on it to review is not a second look:
+            // with no drawing writer the prompt tells the model in plain words
+            // not to spend a turn on `review_marked_charts`, and a duty still
+            // owed there answered the first submit with "call it and read the
+            // six frames" -- so the model obeyed, photographed six charts it
+            // had drawn on none of, and discharged the review with exactly the
+            // false claim the review exists to catch.
+            let marked_review_owed = request.teaching
+                && can_draw
+                && can_look
+                && marked_frames_seen == 0;
             let duties_owed = drawing_owed || marked_review_owed;
             let (turn_tools, tool_choice) = if answering {
                 if duties_owed {
@@ -1522,42 +1559,75 @@ impl Agent {
                     if let Some(single) = result.content.get("ui_command") {
                         commands.push(single.clone());
                     }
+                    // A marked capture is a frame of the second look, so it is
+                    // announced the way the plain read announces its rung:
+                    // before the photograph is taken, so the user watches pass
+                    // two arrive instead of seeing six charts change at once at
+                    // the end. Announced *here* rather than by the tool because
+                    // this is the place that knows which instrument the run is
+                    // about: the tool only ever had what the model typed, and a
+                    // model that typed nothing put `symbol = ""` on the wire --
+                    // a review card captioned `AI REVIEW ·  · 4h`, which the
+                    // shell happened to hide but which is a lie either way.
+                    let marked_capture = |command: &serde_json::Value| {
+                        command
+                            .get("action")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("capture_chart")
+                            && command
+                                .get("marked")
+                                .and_then(serde_json::Value::as_bool)
+                                == Some(true)
+                    };
+                    let marked_total = commands
+                        .iter()
+                        .filter(|command| marked_capture(command))
+                        .count();
+                    let mut marked_seen = 0_usize;
                     for command in commands {
                         let action = command
                             .get("action")
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or_default()
                             .to_string();
+                        let symbol = command
+                            .get("symbol")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string);
+                        let timeframe = command
+                            .get("timeframe")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string);
                         if action == "capture_chart" {
                             if let Some(id) = command
                                 .get("capture_id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string)
                             {
+                                let marked = marked_capture(&command);
                                 pending_captures.push(CaptureRequest {
                                     id,
-                                    timeframe: command
-                                        .get("timeframe")
-                                        .and_then(serde_json::Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                    marked: command
-                                        .get("marked")
-                                        .and_then(serde_json::Value::as_bool)
-                                        .unwrap_or(false),
+                                    timeframe: timeframe.clone().unwrap_or_default(),
+                                    marked,
                                 });
+                                if marked {
+                                    marked_seen += 1;
+                                    progress.report(Progress::ReviewFrame {
+                                        symbol: symbol
+                                            .clone()
+                                            .unwrap_or_else(|| request.symbol.clone()),
+                                        timeframe: timeframe.clone().unwrap_or_default(),
+                                        index: marked_seen,
+                                        total: marked_total,
+                                        marked: true,
+                                    });
+                                }
                             }
                         }
                         progress.report(Progress::UiCommand {
                             action,
-                            symbol: command
-                                .get("symbol")
-                                .and_then(serde_json::Value::as_str)
-                                .map(str::to_string),
-                            timeframe: command
-                                .get("timeframe")
-                                .and_then(serde_json::Value::as_str)
-                                .map(str::to_string),
+                            symbol,
+                            timeframe,
                             capture_id: command
                                 .get("capture_id")
                                 .and_then(serde_json::Value::as_str)
@@ -3750,6 +3820,85 @@ mod tests {
         }
     }
 
+    /// Candles whose price level depends on the resolution being read: the
+    /// daily and weekly live around 130_000, everything finer around 100_000.
+    ///
+    /// A source where every rung prices the same cannot tell a six-rung read
+    /// from a one-rung read, because the grounding band it produces is
+    /// identical either way. Separating the rungs by more than the band's
+    /// generosity (25% above the highest price seen) is what makes a test
+    /// against this source answer the question "which rungs did this run
+    /// actually look at?".
+    struct RungSeparated {
+        now: i64,
+    }
+
+    impl RungSeparated {
+        fn new() -> Self {
+            Self {
+                now: 1_700_000_000_000_000_000,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MarketDataSource for RungSeparated {
+        async fn candles(
+            &self,
+            symbol: &str,
+            timeframe: Timeframe,
+            from_ns: i64,
+            to_ns: i64,
+        ) -> Result<Vec<Candle>, AgentError> {
+            let width = timeframe.nanos();
+            let mut t = self.now - 400 * width;
+            let mut i = 0_usize;
+            let mut out = Vec::new();
+            while t < to_ns {
+                let base = if timeframe >= Timeframe::D1 {
+                    130_000.0
+                } else {
+                    100_000.0
+                };
+                let price = base + (i % 40) as f64 * 10.0;
+                if t >= from_ns {
+                    out.push(Candle {
+                        symbol: symbol.into(),
+                        timeframe,
+                        open_time: t,
+                        open: price,
+                        high: price + 25.0,
+                        low: price - 25.0,
+                        close: price + 5.0,
+                        volume: 100.0,
+                        buy_volume: 60.0,
+                        sell_volume: 40.0,
+                    });
+                }
+                t += width;
+                i += 1;
+            }
+            Ok(out)
+        }
+
+        async fn trades(
+            &self,
+            _symbol: &str,
+            _from_ns: i64,
+            _to_ns: i64,
+        ) -> Result<Vec<Trade>, AgentError> {
+            Ok(Vec::new())
+        }
+
+        async fn latest_candle_time(
+            &self,
+            _symbol: &str,
+            timeframe: Timeframe,
+        ) -> Result<Option<i64>, AgentError> {
+            Ok(Some(timeframe.bucket_of(self.now)))
+        }
+    }
+
     fn thesis_call(entry: f64, stop: f64, target: f64) -> LlmResponse {
         let input = json!({
             "symbol": "BTCUSDT", "timeframe": "5m", "direction": "long",
@@ -5570,6 +5719,218 @@ invalidation: []
                     && row.result["skipped"] == serde_json::json!(true)),
             "a duty that discharged must not be recorded as skipped: {:?}",
             answer.thesis.provenance
+        );
+    }
+
+    /// A lesson reads the six rungs it is shown, however narrowly the client
+    /// asked. The desk sends `timeframes: [activeTimeframe()]` with every
+    /// question, and honouring that on a teaching run left the ladder one rung
+    /// wide: the marked pass then kept "all six re-photographed" as "all one",
+    /// and the lesson's numbers came from a single resolution while the answer
+    /// described six charts.
+    ///
+    /// The ordinary question is asserted in the same test, because the scope of
+    /// the fix is the scope of the promise: widening every run's data reads is
+    /// a cost decision the owner has not made, so a client array still replaces
+    /// the ladder when nobody asked for a lesson.
+    #[tokio::test]
+    async fn a_teaching_run_reads_the_whole_ladder_however_narrowly_the_client_asks() {
+        let source = Fixture::new();
+
+        let lesson = agent(vec![thesis_call(100_100.0, 100_000.0, 100_400.0)])
+            .ask(
+                &AskRequest::new("BTCUSDT", "walk me through this chart")
+                    .with_timeframes(vec!["5m".into()])
+                    .with_teaching(true),
+                &source,
+            )
+            .await
+            .expect("the lesson completes");
+        let read: Vec<Timeframe> = lesson
+            .ladder
+            .frames
+            .iter()
+            .map(|frame| frame.timeframe)
+            .collect();
+        assert_eq!(
+            read,
+            crate::multi_timeframe::MARKED_LADDER.to_vec(),
+            "a lesson is shown six charts, so a lesson reads six rungs -- the client's rung \
+             joins that ladder instead of replacing it"
+        );
+
+        let ordinary = agent(vec![thesis_call(100_100.0, 100_000.0, 100_400.0)])
+            .ask(
+                &AskRequest::new("BTCUSDT", "is this level holding")
+                    .with_timeframes(vec!["5m".into()]),
+                &source,
+            )
+            .await
+            .expect("the question completes");
+        assert_eq!(
+            ordinary.ladder.frames.len(),
+            1,
+            "no lesson was asked for, so the ladder the client named is the ladder it read"
+        );
+    }
+
+    /// The consequence of the six-rung lesson ladder, checked rather than
+    /// assumed: the grounding band is built from what the run read, so a run
+    /// that read six rungs can cite a price only the coarse ones reported.
+    /// Before the ladder was widened, the same citation was refused as
+    /// ungrounded -- the band had never seen the weekly -- which is the
+    /// mismatch the owner was shown live: a lesson about six charts whose plan
+    /// could only ever be priced off one.
+    #[tokio::test]
+    async fn a_teaching_run_cites_a_level_only_the_coarser_rungs_reported() {
+        let source = RungSeparated::new();
+        // The weekly and daily price here sits 30% above the finer rungs -- further
+        // than the band's 25% generosity, so a one-rung read cannot accept it and
+        // a six-rung read must. The second call is what a run gets when the first
+        // is refused: a correction turn, and the level dropped to the fine band.
+        let answer = agent(vec![
+            thesis_call(100_100.0, 100_000.0, 130_000.0),
+            thesis_call(100_100.0, 100_000.0, 100_400.0),
+        ])
+        .ask(
+            &AskRequest::new("BTCUSDT", "walk me through this chart")
+                .with_timeframes(vec!["5m".into()])
+                .with_teaching(true),
+            &source,
+        )
+        .await
+        .expect("the lesson completes");
+
+        assert_eq!(
+            answer.turns, 1,
+            "the lesson was corrected off a level only the coarser rungs reported, so the \
+             band never saw them: {} turn(s), target {}",
+            answer.turns, answer.thesis.target.high
+        );
+        assert_eq!(
+            answer.thesis.target.high, 130_000.0,
+            "the target the lesson read off the weekly and daily frames was withheld"
+        );
+    }
+
+    /// A screen with nothing on it to review is not a second look. With no
+    /// drawing writer the prompt tells the model, in plain words, not to spend
+    /// a turn on `review_marked_charts` -- and the duty used to answer the
+    /// first submission with "call it and read the six frames it returns". The
+    /// model obeyed, photographed six charts it had drawn on none of, and
+    /// discharged a review whose whole purpose was to catch that claim.
+    ///
+    /// Both halves are asserted together, because the defect was never one
+    /// half being wrong: the prose stays as it is, and the duty no longer
+    /// contradicts it.
+    #[tokio::test]
+    async fn a_lesson_that_cannot_draw_is_never_refused_for_the_marked_pass() {
+        let source = Fixture::new();
+        // A reader but no writer, plus an answering screen: the exact shape
+        // that used to end with six plain charts called a marked review.
+        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user");
+        let captures = crate::captures::CapturesContext::new(Arc::new(AnsweringCaptures));
+        let mut responses: Vec<LlmResponse> = (0..AgentConfig::default().max_turns - 1)
+            .map(|i| read_call(&format!("r{i}")))
+            .collect();
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        // Only reached if the duty still refuses: the same submission again.
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        let llm = Arc::new(ScriptedClient::new(responses));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        let answer = agent
+            .ask(
+                &AskRequest::new("BTCUSDT", "teach me this structure")
+                    .with_drawings(drawings)
+                    .with_captures(captures)
+                    .with_teaching(true),
+                &source,
+            )
+            .await
+            .expect("the lesson completes without a second look it could not take");
+
+        assert_eq!(
+            marked_refusals(&llm),
+            0,
+            "the duty demanded a marked pass from a run with nothing marked"
+        );
+        assert!(
+            !answer
+                .thesis
+                .provenance
+                .iter()
+                .any(|row| row.tool == "review_marked_charts"),
+            "a run that cannot have taken a second look must not record one either way: {:?}",
+            answer.thesis.provenance
+        );
+        let system = system_prompt_of(&llm);
+        assert!(
+            system.contains("do not spend a turn"),
+            "and the prose the duty now agrees with still says what it said: {system}"
+        );
+    }
+
+    /// The marked pass announces its rungs the way the plain read does -- one
+    /// per rung, coarse to fine, before the photograph is taken -- and it names
+    /// the instrument the run is actually about. The tool could not know that:
+    /// it only ever had what the model typed, and a model that typed nothing
+    /// announced an empty symbol, so every review card on the user's screen
+    /// claimed to be about no market at all.
+    #[tokio::test]
+    async fn a_marked_review_announces_every_rung_with_the_runs_symbol() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let captures = crate::captures::CapturesContext::new(Arc::new(AnsweringCaptures));
+        let mut responses: Vec<LlmResponse> = (0..AgentConfig::default().max_turns - 1)
+            .map(|i| read_call(&format!("r{i}")))
+            .collect();
+        responses.push(draw_call("d1"));
+        // The call that names nothing: `{"input": {}}`, as a model trusting the
+        // duty's wording sends it.
+        responses.push(marked_call("m1"));
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        let llm = Arc::new(ScriptedClient::new(responses));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+        let progress = crate::progress::Collected::default();
+
+        let request = AskRequest::new("BTCUSDT", "teach me this structure")
+            .with_drawings(
+                DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer),
+            )
+            .with_captures(captures)
+            .with_teaching(true);
+        agent
+            .ask_with_progress(&request, &source, &progress)
+            .await
+            .expect("the lesson completes");
+
+        let frames: Vec<(String, String, usize, usize)> = progress
+            .steps()
+            .into_iter()
+            .filter_map(|step| match step {
+                Progress::ReviewFrame {
+                    symbol,
+                    timeframe,
+                    index,
+                    total,
+                    marked: true,
+                } => Some((symbol, timeframe, index, total)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            frames,
+            vec![
+                ("BTCUSDT".into(), "1w".into(), 1, 6),
+                ("BTCUSDT".into(), "1d".into(), 2, 6),
+                ("BTCUSDT".into(), "4h".into(), 3, 6),
+                ("BTCUSDT".into(), "1h".into(), 4, 6),
+                ("BTCUSDT".into(), "15m".into(), 5, 6),
+                ("BTCUSDT".into(), "5m".into(), 6, 6),
+            ],
+            "one marked announcement per rung, in the order the ladder is read, each naming \
+             the symbol under review"
         );
     }
 

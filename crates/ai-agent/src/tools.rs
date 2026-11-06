@@ -359,6 +359,16 @@ pub struct ToolContext<'a> {
     /// `look_at_chart` report "no screen is attached" rather than request a
     /// capture nothing will ever answer.
     pub captures: Option<&'a dyn crate::captures::ChartCaptureSource>,
+    /// The rungs this run read, when the orchestrator attached them.
+    ///
+    /// `review_marked_charts` photographs these and nothing else. It has to be
+    /// the run's own ladder rather than a list the model types: the plain pass
+    /// the user watched was one picture per rung of this ladder, so a marked
+    /// pass over any other set would not be a second look at the same work --
+    /// and the promise the lesson is sold on is that all of it was looked at
+    /// again. `None` is a tools-only build or a unit test, which falls back to
+    /// the standard ladder rather than photographing nothing.
+    pub review_ladder: Option<crate::multi_timeframe::TimeframeLadder>,
     /// The host's web search (the deployment's SearXNG), when attached.
     ///
     /// `None` makes `search_web` report "web search is not configured" rather
@@ -392,6 +402,7 @@ impl<'a> ToolContext<'a> {
             capabilities: None,
             snapshots: None,
             captures: None,
+            review_ladder: None,
             web_search: None,
             progress: None,
         }
@@ -490,6 +501,16 @@ impl<'a> ToolContext<'a> {
     #[must_use]
     pub fn with_captures(mut self, captures: &'a dyn crate::captures::ChartCaptureSource) -> Self {
         self.captures = Some(captures);
+        self
+    }
+
+    /// Attach the ladder this run read, so the marked review photographs it.
+    #[must_use]
+    pub fn with_review_ladder(
+        mut self,
+        ladder: &crate::multi_timeframe::TimeframeLadder,
+    ) -> Self {
+        self.review_ladder = Some(ladder.clone());
         self
     }
 
@@ -770,8 +791,7 @@ impl ToolRegistry {
                     input_schema: serde_json::json!({
                         "type": "object",
                         "properties": {
-                            "symbol": {"type": "string", "description": "Instrument whose charts to photograph; omit to use the one under analysis. This does not move the user's screen."},
-                            "timeframes": {"type": "array", "items": {"type": "string"}, "description": "Rungs to re-photograph. Omit for the whole ladder this run is reading."}
+                            "symbol": {"type": "string", "description": "Instrument whose charts to photograph; omit to use the one under analysis. This does not move the user's screen."}
                         },
                         "required": []
                     }),
@@ -1781,8 +1801,10 @@ const LOOK_AT_CHART: &str = "Capture a fresh image of a chart and see it yoursel
 const REVIEW_MARKED_CHARTS: &str = "Photograph every timeframe of this analysis again, now \
     carrying the zones and levels you have drawn, and see them before you commit the plan. \
     Call this once, after your drawings are on the chart, in the same turn you would have \
-    written the thesis: the images arrive with this call's results. Omit `timeframes` to \
-    re-photograph the whole ladder. This never moves the user's screen.";
+    written the thesis: the images arrive with this call's results. Which rungs is not a \
+    choice this call makes -- it takes the ladder the analysis read, because a second look \
+    at part of the work is a second look at part of the work. This never moves the user's \
+    screen.";
 
 /// `create_indicator` — build a chart indicator from a description.
 const CREATE_INDICATOR: &str = "Create a chart indicator from a natural-language \
@@ -3043,10 +3065,10 @@ async fn look_at_chart_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
 
 /// `review_marked_charts`: the second pass, asked for as one call.
 ///
-/// Six commands, not six turns. A model that has to ask for each frame
-/// separately spends the run's budget on bookkeeping and gets three of six
-/// before the cap; one call that expands to the ladder is the difference between
-/// a review that looked and a review that described.
+/// One command per rung, not one turn per rung. A model that has to ask for
+/// each frame separately spends the run's budget on bookkeeping and gets three
+/// of six before the cap; one call that expands to the whole ladder is the
+/// difference between a review that looked and a review that described.
 async fn review_marked_charts_tool(
     ctx: &ToolContext<'_>,
     args: &Value,
@@ -3069,63 +3091,37 @@ async fn review_marked_charts_tool(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_uppercase());
 
-    // The six rungs are the default: the plain pass the user watched was these
-    // six, and a marked pass over a different set would not be a second look at
-    // the same work.
-    let rungs: Vec<Timeframe> = match args.get("timeframes").and_then(Value::as_array) {
-        None => crate::multi_timeframe::MARKED_LADDER.to_vec(),
-        Some(list) => {
-            let mut parsed = Vec::with_capacity(list.len());
-            for raw in list {
-                let text = raw.as_str().unwrap_or_default();
-                parsed.push(text.parse::<Timeframe>().map_err(|_| AgentError::InvalidToolArgs {
-                    tool: TOOL.into(),
-                    reason: format!("`timeframes` contains `{text}`, not a resolution the engine accepts"),
-                })?);
-            }
-            parsed
-        }
-    };
-    if rungs.is_empty() {
-        return Err(AgentError::InvalidToolArgs {
-            tool: TOOL.into(),
-            reason: "no timeframes to re-photograph: the list was empty and none parse".into(),
-        });
-    }
-    // Coarse to fine, and deduplicated, whatever the model typed: the six cards
-    // and the six captions the model reads are in the order it thinks in.
-    // `TimeframeLadder::new` already does exactly this (multi_timeframe.rs,
-    // sorting descending by duration because `Timeframe`'s `Ord` is by duration),
-    // so the ladder type is the one place that ordering lives.
-    let rungs = crate::multi_timeframe::TimeframeLadder::new(rungs)
-        .timeframes()
-        .to_vec();
+    // The rungs are the run's own ladder, and there is no argument the model
+    // can pass to narrow it: the plain pass it watched was one picture per rung
+    // of this ladder, so photographing a subset would let a lesson claim it had
+    // re-checked six charts after looking at two. `TimeframeLadder` holds its
+    // rungs coarse to fine already (`multi_timeframe.rs`), which is the order
+    // the analysis was read in and therefore the order the cards arrive in.
+    //
+    // A request that still names `timeframes` is ignored rather than refused:
+    // the ladder is not the model's to choose, and a run whose turn is spent
+    // re-learning that is a run with one less look and the same six pictures.
+    let rungs: Vec<Timeframe> = ctx
+        .review_ladder
+        .as_ref()
+        .filter(|ladder| !ladder.is_empty())
+        .map_or_else(
+            || crate::multi_timeframe::MARKED_LADDER.to_vec(),
+            |ladder| ladder.timeframes().to_vec(),
+        );
 
     let mut commands = Vec::with_capacity(rungs.len());
     let mut frames = Vec::with_capacity(rungs.len());
-    let total = rungs.len();
-    for (index, rung) in rungs.iter().enumerate() {
+    for rung in rungs {
         let timeframe = rung.to_string();
-        // Announced before the photograph is taken, exactly as the plain pass
-        // announces each rung before reading it: the user watches pass two
-        // arrive rather than seeing six charts change at once at the end.
-        if let Some(progress) = ctx.progress {
-            progress.report(crate::progress::Progress::ReviewFrame {
-                symbol: symbol.clone().unwrap_or_default(),
-                timeframe: timeframe.clone(),
-                index: index + 1,
-                total,
-                marked: true,
-            });
-        }
         let capture_id = next_capture_id();
         frames.push(timeframe.clone());
         commands.push(json!({
             "action": "capture_chart",
-            // Cloned, not moved: six commands read the same `Option<String>`, and
-            // the second iteration would be reading a moved value. Null in the
-            // JSON means "the pane the user is on", which is what the shell's
-            // capture handler already does for `look_at_chart`.
+            // Cloned, not moved: every command reads the same `Option<String>`,
+            // and the second iteration would be reading a moved value. Null in
+            // the JSON means "the pane the user is on", which is what the
+            // shell's capture handler already does for `look_at_chart`.
             "symbol": symbol.clone(),
             "timeframe": timeframe,
             "capture_id": capture_id,
@@ -4663,7 +4659,8 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
 
     /// The marked pass is six frames or it is not the marked pass: the product
     /// owner's complaint was that a run marked the charts and then described
-    /// them from memory.
+    /// them from memory. No ladder is attached here, so this is also the
+    /// fallback a tools-only host gets -- the shell's own six, in Rust.
     #[tokio::test]
     async fn review_marked_charts_asks_for_the_whole_ladder_at_once() {
         let fixture = Fixture::rising(40);
@@ -4704,29 +4701,73 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         );
     }
 
+    /// The model does not choose which rungs the second look covers, and this
+    /// is the point rather than an oversight: the owner's rule for a lesson is
+    /// "all six, always". A run that re-checked the two charts it happened to
+    /// name and then reported the plan confirmed against the marked charts was
+    /// discharging the duty with the claim the duty exists to test -- which is
+    /// what an earlier version of this test used to bless.
+    ///
+    /// The ladder attached here is neither the six nor the two the model names,
+    /// so the frames can only have come from the run's own ladder. A request
+    /// naming a subset is ignored instead of refused: the model keeps its turn,
+    /// and a turn spent re-learning that the ladder is not its choice is a turn
+    /// lost from a budget of eight.
     #[tokio::test]
-    async fn a_marked_review_can_narrow_to_the_rungs_the_model_asks_about() {
-        // "re-check just the 4h and the 1h" is a legitimate request, and the
-        // tool that ignores it photographs six charts nobody asked for.
+    async fn a_marked_review_photographs_the_run_ladder_whatever_the_model_names() {
         let fixture = Fixture::rising(40);
         let screen = SilentScreen;
-        let ctx = ToolContext::new(&fixture).with_captures(&screen);
+        let ladder = crate::multi_timeframe::TimeframeLadder::from_strs(
+            &["5m", "1h", "3m", "1w", "1d", "4h", "15m"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<String>>(),
+        );
+        let ctx = ToolContext::new(&fixture)
+            .with_captures(&screen)
+            .with_review_ladder(&ladder);
 
         let out = review_marked_charts_tool(
             &ctx,
             &json!({"symbol": "BTCUSDT", "timeframes": ["1h", "4h"]}),
         )
         .await
-        .expect("two frames");
+        .expect("the whole ladder is photographed, however the model names it");
         let got: Vec<&str> = out["ui_commands"]
             .as_array()
             .expect("a list")
             .iter()
             .map(|c| c["timeframe"].as_str().expect("a timeframe"))
             .collect();
-        // Coarse first, whatever order the model typed: the cards and the
-        // captions have to match the order the analysis was read in.
-        assert_eq!(got, vec!["4h", "1h"]);
+        assert_eq!(
+            got,
+            vec!["1w", "1d", "4h", "1h", "15m", "5m", "3m"],
+            "every rung of the run's ladder, coarse to fine -- the two the model named are \
+             in it because the ladder has them, not because it asked"
+        );
+        assert_eq!(
+            out["frames"].as_array().expect("frames").len(),
+            got.len(),
+            "the run is told which frames it asked for"
+        );
+    }
+
+    /// The parameter is gone from what the model is *told*, not only from what
+    /// the tool obeys: a schema still advertising `timeframes` would keep
+    /// inviting a narrowing this run cannot grant, and every invitation taken
+    /// is a turn spent on a parameter that does nothing.
+    #[test]
+    fn the_marked_review_advertises_no_way_to_narrow_it() {
+        let schema = ToolRegistry::market_analysis()
+            .specs()
+            .into_iter()
+            .find(|spec| spec.name == "review_marked_charts")
+            .expect("the marked review is registered")
+            .input_schema;
+        assert!(
+            schema["properties"].get("timeframes").is_none(),
+            "the marked review must not offer to photograph part of the ladder: {schema}"
+        );
     }
 
     #[tokio::test]
@@ -4738,50 +4779,6 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
             .expect_err("nothing to photograph");
         assert!(matches!(err, AgentError::ToolFailed { .. }), "got {err}");
         assert!(err.to_string().contains("no screen"), "got {err}");
-    }
-
-    /// The same six announcements, one per rung, in ladder order and marked --
-    /// the overlay has to show pass two arriving rather than six charts changing
-    /// at once at the end.
-    #[tokio::test]
-    async fn a_marked_review_announces_its_rungs_in_order() {
-        let fixture = Fixture::rising(40);
-        let screen = SilentScreen;
-        let sink = crate::progress::Collected::default();
-        let ctx = ToolContext::new(&fixture)
-            .with_captures(&screen)
-            .with_progress(&sink);
-
-        review_marked_charts_tool(&ctx, &json!({"symbol": "BTCUSDT"}))
-            .await
-            .expect("the marked pass is requested");
-
-        let frames: Vec<(String, usize, usize, bool)> = sink
-            .steps()
-            .into_iter()
-            .filter_map(|step| match step {
-                crate::progress::Progress::ReviewFrame {
-                    timeframe,
-                    index,
-                    total,
-                    marked,
-                    ..
-                } => Some((timeframe, index, total, marked)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            frames,
-            vec![
-                ("1w".into(), 1, 6, true),
-                ("1d".into(), 2, 6, true),
-                ("4h".into(), 3, 6, true),
-                ("1h".into(), 4, 6, true),
-                ("15m".into(), 5, 6, true),
-                ("5m".into(), 6, 6, true),
-            ],
-            "one marked announcement per rung, in the order the ladder is read"
-        );
     }
 
     /// A teaching sketch is a polyline of many anchors, and one drawing with

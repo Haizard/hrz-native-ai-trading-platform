@@ -70,11 +70,12 @@ pub enum Progress {
         /// Which pass this frame belongs to. `false` is the plain look at the
         /// chart; `true` is the look at the chart *the agent has marked*.
         ///
-        /// `#[serde(default)]` so a progress line from a binary older than this
-        /// field still decodes, and the shell treats a missing key as the plain
-        /// pass -- the honest default, because a plain pass is what every run
-        /// before this one was.
-        #[serde(default)]
+        /// Always written, and it is the only way this can be read: `Progress`
+        /// is serialise-only, so the Rust side never meets a line without the
+        /// key and cannot offer one a compatibility for. The decoding happens
+        /// in the shell's JS, and it is the shell that decides what a missing
+        /// key means -- there, the plain pass, which is what every run before
+        /// this field was.
         marked: bool,
     },
     /// The thesis cited a level no tool reported, and the model has been asked
