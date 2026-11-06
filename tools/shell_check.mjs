@@ -5699,6 +5699,15 @@ check(
   captureCards.some((title) => title.includes("AI REVIEW · MARKED · BTCUSDT · 1D")),
   `cards: ${reviewCardTitles().join(", ") || "(none)"}`
 );
+// The step line has to say what the command did. A capture photographs a chart
+// somewhere else and hands the picture to the run; the user's own view never
+// moved, and a line claiming it was "switched" describes something the agent
+// neither did nor asked for.
+check(
+  "and its step line says a photograph was taken, not that the chart moved",
+  stepLines().includes("photographing the BTCUSDT 1d chart"),
+  `steps: ${stepLines().slice(-4).join(" | ") || "(none)"}`
+);
 
 // The same teardown as the section above: this card is the run's last overlay,
 // and the next section reads a chart with nothing on it.

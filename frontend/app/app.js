@@ -9971,10 +9971,18 @@ const STAGE_TEXT = {
       ? `reviewing ${p.marked ? "marked " : ""}${p.timeframe} chart (${p.index}/${p.total})`
       : `reviewing ${p.marked ? "marked " : ""}${p.timeframe} chart`,
   correcting: (p) => `rejected, asking for a correction: ${p.reason}`,
-  ui_command: (p) =>
-    p.action === "open_chart"
-      ? `opening a ${p.symbol || "chart"} ${p.timeframe || ""} chart`
-      : `switching the chart to ${[p.symbol, p.timeframe].filter(Boolean).join(" ")}`,
+  ui_command: (p) => {
+    if (p.action === "open_chart") {
+      return `opening a ${p.symbol || "chart"} ${p.timeframe || ""} chart`;
+    }
+    // A capture photographs the chart the run is already looking at: it moves
+    // nothing on the user's screen, so it must not read as a switch -- the same
+    // distinction the handler below makes when it executes the command.
+    if (p.action === "capture_chart") {
+      return `photographing the ${[p.symbol, p.timeframe].filter(Boolean).join(" ")} chart`;
+    }
+    return `switching the chart to ${[p.symbol, p.timeframe].filter(Boolean).join(" ")}`;
+  },
 };
 
 function progressText(step) {

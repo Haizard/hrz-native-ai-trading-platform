@@ -1324,12 +1324,20 @@ impl Agent {
                                 .cloned(),
                         );
                     }
-                    if marked_review_owed {
+                    if marked_review_owed && !last {
                         // The refusal's instruction is "call review_marked_charts".
                         // A tool set without it makes that impossible to obey, and
                         // the run would spend both answer turns hitting a wall the
                         // gate built -- the record would say the model refused when
                         // the orchestrator never offered the tool.
+                        //
+                        // `!last` because the offer only makes sense while a turn
+                        // remains to submit in afterwards: a model that spends its
+                        // last turn on the review answers nothing, and Task 8's
+                        // refusal is already suppressed there (`if !last` at the
+                        // submit door), so the honest thing on offer is the thesis
+                        // with its "skipped" provenance row -- not a tool call that
+                        // would cost the run its answer.
                         set.extend(
                             tools
                                 .iter()
@@ -1685,13 +1693,18 @@ impl Agent {
                 // last turn would end the run with no answer at all, which
                 // is worse for the user than an answer that records it never
                 // re-checked -- so the record is written either way and only
-                // the refusal is gated on `!last`. Same posture as the
-                // drawing duty and the grounding correction above it. `owed`
-                // is computed at the top of this turn, so a model that called
-                // the review tool in the same response as the submit has
-                // already been shown frames by now -- re-read the counter
-                // rather than the stale bool, or the record would claim a pass
-                // that ran.
+                // the refusal is gated on `!last`.
+                //
+                // The counter is re-read here instead of trusting
+                // `marked_review_owed`, because that bool was computed at the
+                // top of this turn and a marked frame delivered by an *earlier*
+                // turn has discharged the duty in the meantime. It does not
+                // discharge for a review called in the same response as the
+                // submit: the capture rendezvous that turns those requests into
+                // frames runs below, after this block has already returned the
+                // answer, so a run that asked and submitted at once has been
+                // shown nothing -- and the skipped row is the honest record of
+                // that, not a claim about a pass it never saw.
                 if marked_review_owed && marked_frames_seen == 0 && !marked_refusal_used {
                     marked_refusal_used = true;
                     trace.push(ToolTrace {
@@ -5556,6 +5569,77 @@ invalidation: []
                 .any(|row| row.tool == "review_marked_charts"
                     && row.result["skipped"] == serde_json::json!(true)),
             "a duty that discharged must not be recorded as skipped: {:?}",
+            answer.thesis.provenance
+        );
+    }
+
+    /// The other half of the answer-phase offer: the review tool is on the table
+    /// only while a turn remains to submit in afterwards. Spending the last turn
+    /// on a call whose frames arrive after the run is over costs the user their
+    /// answer, when the honest `skipped` provenance row was already going to be
+    /// written at the submit door.
+    #[tokio::test]
+    async fn the_last_answer_turn_stops_offering_the_marked_review() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let captures = crate::captures::CapturesContext::new(Arc::new(AnsweringCaptures));
+        let analysis_turns = AgentConfig::default().max_turns;
+        let mut responses: Vec<LlmResponse> = (0..analysis_turns - 1)
+            .map(|i| read_call(&format!("r{i}")))
+            .collect();
+        responses.push(draw_call("d1"));
+        // First answer turn: straight to the thesis, so the duty is refused --
+        // and the tool that would discharge it has to be the one offered there.
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        // Last answer turn: the same submission again, with the duty still owed.
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        let llm = Arc::new(ScriptedClient::new(responses));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        let request = AskRequest::new("BTCUSDT", "teach me this structure")
+            .with_drawings(
+                DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer),
+            )
+            .with_captures(captures)
+            .with_teaching(true);
+        let answer = agent
+            .ask(&request, &source)
+            .await
+            .expect("the last turn's thesis is accepted, not lost");
+
+        let requests = llm.requests();
+        let owed = requests[analysis_turns].tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>();
+        assert!(
+            owed.contains(&"review_marked_charts"),
+            "a duty with a turn left to discharge it in must offer its tool: {owed:?}"
+        );
+        let last_turn = requests
+            .last()
+            .expect("a run that submits twice sent at least one request");
+        let offered: Vec<&str> = last_turn.tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            offered.contains(&"submit_thesis") && !offered.contains(&"review_marked_charts"),
+            "the last turn is offered a call it cannot answer with: {offered:?}"
+        );
+        // And the submission there is accepted: the answer lands, with the miss
+        // recorded rather than the run ending on a stop the model could not clear.
+        assert!(
+            !answer.thesis.narrative.is_empty(),
+            "the last turn's answer was thrown away"
+        );
+        assert_eq!(
+            marked_refusals(&llm),
+            1,
+            "refused once, on the turn that could still act on it"
+        );
+        assert!(
+            answer
+                .thesis
+                .provenance
+                .iter()
+                .any(|row| row.tool == "review_marked_charts"
+                    && row.result["skipped"] == serde_json::json!(true)),
+            "a lesson that never looked says so on the card: {:?}",
             answer.thesis.provenance
         );
     }
