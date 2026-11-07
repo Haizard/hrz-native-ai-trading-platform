@@ -260,14 +260,11 @@ async function api(path, options = {}) {
   return body;
 }
 
-// The home page's card is the one auth surface now; the workstation's old
-// inline strip is gone from the markup.
-// The card now has two panels (sign-in / create account); each has its own
-// field IDs. Detect the active panel before calling authenticate.
+// Auth lives on two dedicated pages: #/signin and #/signup.
+// Each has its own field IDs and its own status span.
 function homeAuth(register) {
   if (register) {
-    // Register panel: use homeRegEmail / homeRegPassword
-    return authenticate(true, "homeRegEmail", "homeRegPassword", "homeMsg");
+    return authenticate(true, "homeRegEmail", "homeRegPassword", "homeRegMsg");
   }
   return authenticate(false, "homeEmail", "homePassword", "homeMsg");
 }

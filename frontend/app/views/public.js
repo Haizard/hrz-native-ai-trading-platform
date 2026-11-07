@@ -19,7 +19,9 @@
 
   const TOKEN_KEY = "atp.token";
   const HOME = "home";
-  const ROUTES = ["home", "features", "pricing", "community", "docs"];
+  const ROUTES = ["home", "features", "pricing", "community", "docs", "signin", "signup"];
+  // Auth pages don't show the footer or the marketing nav links.
+  const AUTH_PAGES = ["signin", "signup"];
 
   const TITLES = {
     home: "HRZ — AI-native order-flow trading terminal",
@@ -27,6 +29,8 @@
     pricing: "Pricing — HRZ",
     community: "Community — HRZ",
     docs: "Docs — HRZ",
+    signin: "Sign in — HRZ",
+    signup: "Create account — HRZ",
   };
 
   const el = (id) => document.getElementById(id);
@@ -102,10 +106,17 @@
     }
 
     document.title = TITLES[page] || TITLES.home;
-    // `data-public-view`, not `data-public-page`: the page sections are found by
-    // the latter, and a body carrying the same attribute would match first and
-    // hand every "the page's heading" query the home page's hidden h1.
     document.body.dataset.publicView = page;
+    // On the dedicated auth pages hide the header nav + footer so users see
+    // nothing but the auth form — identical to how Vercel, Linear, Notion do it.
+    const isAuth = AUTH_PAGES.includes(page);
+    const pubFooter = document.querySelector(".pubFooter");
+    const publicNav  = document.querySelector(".publicNav");
+    const publicMenuBtn = el("publicMenuBtn");
+    if (pubFooter)    pubFooter.hidden    = isAuth;
+    if (publicNav)    publicNav.hidden    = isAuth;
+    if (publicMenuBtn) publicMenuBtn.hidden = isAuth;
+
     closeMenu({ restoreFocus: false });
 
     const home = el("home");
@@ -123,12 +134,8 @@
     // observer ran at boot when non-home pages were still hidden.
     requestAnimationFrame(reObserveCurrentPage);
 
-    if (pendingAuth && page === HOME) {
-      pendingAuth = false;
-      const pendingOpts = openAuth._pendingOpts || {};
-      openAuth._pendingOpts = null;
-      focusAuth(pendingOpts);
-    }
+    // Focus the first input on auth pages for keyboard users.
+    if (AUTH_PAGES.includes(page)) focusAuthInput();
 
     if (focusPageOnShow) {
       focusPageOnShow = false;
@@ -153,32 +160,14 @@
   function openAuth(opts = {}) {
     if (signedIn()) return;
     closeMenu({ restoreFocus: false });
-    pendingAuth = true;
-    if (current !== HOME) {
-      // Store the opts so we can pass them once the home page is on screen.
-      openAuth._pendingOpts = opts;
-      location.hash = "#/";
-      return;
-    }
-    pendingAuth = false;
-    focusAuth(opts);
+    // Navigate to the dedicated auth page — industry-standard pattern.
+    location.hash = opts.register ? "#/signup" : "#/signin";
   }
 
-  function focusAuth(opts = {}) {
-    const card = el("homeAuth");
-    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (card && card.scrollIntoView) {
-      card.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
-    }
-    // If caller wants to pre-select the register tab, switch it now.
-    if (opts.register) {
-      const tabRegister = el("authTabRegister");
-      if (tabRegister) tabRegister.click();
-      const email = el("homeRegEmail");
-      if (email) { email.focus({ preventScroll: true }); return; }
-    }
-    const email = el("homeEmail");
-    if (email) email.focus({ preventScroll: true });
+  function focusAuthInput() {
+    // Focus the first visible input on whichever auth page is shown.
+    const input = document.querySelector("[data-public-page='signin']:not([hidden]) .authCard__input, [data-public-page='signup']:not([hidden]) .authCard__input");
+    if (input) requestAnimationFrame(() => input.focus({ preventScroll: true }));
   }
 
   /* ---- The mobile menu ---------------------------------------------------- */
@@ -367,41 +356,6 @@
       });
   }
 
-  /* ---- Auth tab switching ------------------------------------------------- */
-
-  function wireAuthTabs() {
-    const tabSignin   = el("authTabSignin");
-    const tabRegister = el("authTabRegister");
-    const panelSignin = el("authPanelSignin");
-    const panelRegister = el("authPanelRegister");
-    if (!tabSignin || !tabRegister) return;
-
-    function activateTab(which) {
-      const isSignin = which === "signin";
-      tabSignin.setAttribute("aria-selected",   String(isSignin));
-      tabRegister.setAttribute("aria-selected",  String(!isSignin));
-      tabSignin.classList.toggle("homeAuth__tab--active",   isSignin);
-      tabRegister.classList.toggle("homeAuth__tab--active", !isSignin);
-      if (panelSignin)   panelSignin.hidden   = !isSignin;
-      if (panelRegister) panelRegister.hidden =  isSignin;
-    }
-
-    tabSignin.addEventListener("click",   () => activateTab("signin"));
-    tabRegister.addEventListener("click", () => activateTab("register"));
-
-    // Sync the separate register email/password fields to the IDs app.js
-    // already reads (homeEmail / homePassword) when the register panel fires.
-    const regEmail = el("homeRegEmail");
-    const regPass  = el("homeRegPassword");
-    if (regEmail) regEmail.addEventListener("input", () => {
-      const src = el("homeEmail");
-      if (src && !el("authPanelSignin").hidden) return; // signin panel active
-      // Keep homeEmail in sync so app.js sign-in path also works if swapped
-    });
-    // app.js reads #homeRegister click; the button is still present in the
-    // register panel and the IDs didn't change, so no further wiring needed.
-  }
-
   /* ---- Scroll-reveal via IntersectionObserver ----------------------------- */
 
   let _scrollRevealIo = null;
@@ -455,14 +409,13 @@
     const menuSignin = el("publicMenuSignin");
     if (menuSignin) menuSignin.addEventListener("click", openAuth);
 
-    // Any CTA marked `data-public-auth` lands on the one auth card. Delegated,
-    // because the pricing cards are replaced whenever the catalog is fetched.
-    // CTAs whose text contains "Create" pre-select the register tab.
+    // Any CTA marked `data-public-auth` navigates to the right auth page.
+    // CTAs whose text contains "Create" / "Start" / "free" → signup page.
     document.addEventListener("click", (event) => {
       const trigger = event.target.closest("[data-public-auth]");
       if (trigger) {
         event.preventDefault();
-        const wantsRegister = /create/i.test(trigger.textContent || "");
+        const wantsRegister = /create|start|free|signup/i.test(trigger.textContent || "");
         openAuth(wantsRegister ? { register: true } : {});
         return;
       }
@@ -530,7 +483,6 @@
     }
 
     wire();
-    wireAuthTabs();
     wireScrollReveal();
     started = true;
     if (!signedIn()) route();
