@@ -137,7 +137,7 @@ impl ProviderId {
             Self::Anthropic => "claude-sonnet-4-5",
             Self::OpenRouter => "openai/gpt-4o",
             Self::DeepSeek => "deepseek-chat",
-            Self::Grok => "grok-3",
+            Self::Grok => "grok-4.7",
             Self::HuggingFace => "meta-llama/Llama-3.3-70B-Instruct",
             Self::Gemini => "gemini-3.8-flash",
             Self::Cloudflare => "@cf/meta/llama-4-scout-17b-16e-instruct",
@@ -273,6 +273,9 @@ pub const ENV_FALLBACK_ORDER: &str = "AI_FALLBACK_ORDER";
 pub const ENV_GROK_MODEL: &str = "GROK_MODEL";
 /// Environment variable carrying the Grok fallback API token (optional).
 pub const ENV_GROK_API_TOKEN: &str = "GROK_API_TOKEN";
+/// Accepted xAI spelling for the deployment Grok API token.
+/// `XAI_API_KEY` is commonly used when provisioning xAI credentials.
+pub const ENV_XAI_API_KEY: &str = "XAI_API_KEY";
 /// Environment variable overriding Grok's default base URL (optional).
 pub const ENV_GROK_BASE_URL: &str = "GROK_BASE_URL";
 
@@ -316,7 +319,7 @@ fn fallback_clients_from(
                 (model, key, provider.default_base_url().into())
             }
             ProviderId::Grok => {
-                let token = var(ENV_GROK_API_TOKEN)?;
+                let token = var(ENV_GROK_API_TOKEN).or_else(|| var(ENV_XAI_API_KEY))?;
                 let model = var(ENV_GROK_MODEL)
                     .unwrap_or_else(|| provider.default_model().into());
                 let base = var(ENV_GROK_BASE_URL)
@@ -723,6 +726,21 @@ mod tests {
             |name| (name == ENV_GROK_API_TOKEN).then(|| "k".into()),
         );
         assert_eq!(clients.len(), 1, "only Grok has credentials here");
+        assert!(
+            clients[0].name().starts_with("grok("),
+            "{}",
+            clients[0].name()
+        );
+    }
+
+    #[test]
+    fn xai_api_key_alias_configures_grok_fallback() {
+        let clients = fallback_clients_from(
+            "cloudflare,gemini,grok",
+            None,
+            |name| (name == ENV_XAI_API_KEY).then(|| "xai-test-key".into()),
+        );
+        assert_eq!(clients.len(), 1);
         assert!(clients[0].name().starts_with("grok("), "{}", clients[0].name());
     }
 
@@ -757,7 +775,11 @@ mod tests {
         let clients = fallback_clients_from(
             "grok",
             None,
-            |name| (name == ENV_GROK_API_TOKEN).then(|| "k".into()),
+            |name| match name {
+                ENV_GROK_API_TOKEN => Some("k".into()),
+                ENV_GROK_MODEL => Some("grok-3".into()),
+                _ => None,
+            },
         );
         assert!(!clients[0].supports_image_input(), "grok-3 reads no pictures");
     }
