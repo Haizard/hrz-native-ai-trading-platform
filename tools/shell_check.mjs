@@ -1291,6 +1291,16 @@ window.fetch = async (path, options = {}) => {
     });
   }
 
+  if (url.startsWith("/auth/login") || url.startsWith("/auth/register")) {
+    // The home card's sign-in. A session-shaped answer, because the shell reads
+    // `res.token` and `res.user.email` off it rather than tolerating `{}`.
+    return json(200, {
+      token: "harness-session-token",
+      user: { id: "harness", email: "harness@example.test" },
+      expires_in: 3600,
+    });
+  }
+
   if (url.startsWith("/auth/me")) {
     // The token the harness wrote is accepted unless a check says otherwise --
     // this is the "the agent is configured, so the refusal was the credential"
@@ -7291,6 +7301,44 @@ check(
     window.location.hash === "#/charts/concepts",
   `open=${panelEl().open} concepts=${panelShown("concepts")} ${window.location.hash}`
 );
+
+// --- signing in finishes the job ---------------------------------------------
+//
+// The home card stores the token and then reloads what belongs to the account.
+// A live run showed "refresh is not defined" where "signed in as ..." belongs:
+// the reload named a function that only exists inside a pane's closure, so the
+// throw was caught and every step after it -- the skill list, the plan, the
+// saved workspace -- was skipped. The token still landed, which is why the page
+// looked signed in while the composer's skill pin stayed empty.
+console.log("\nsigning in");
+
+const signInToken = window.localStorage.getItem(tokenKey);
+const callsBeforeSignIn = backend.calls.length;
+document.getElementById("homeEmail").value = "harness@example.test";
+document.getElementById("homePassword").value = "harness-password";
+document
+  .getElementById("homeSignIn")
+  .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+await settle();
+await settle();
+
+const signInMsg = document.getElementById("homeMsg").textContent;
+check(
+  "signing in reports the session, not an error from its own reload",
+  signInMsg.startsWith("signed in as"),
+  signInMsg
+);
+const afterSignIn = backend.calls.slice(callsBeforeSignIn);
+check(
+  "signing in asks for the account's skill list again",
+  afterSignIn.some((call) => call.url.startsWith("/skills")),
+  `${afterSignIn.length} calls, skills=${afterSignIn.filter((c) => c.url.startsWith("/skills")).length}`
+);
+window.localStorage.setItem(tokenKey, signInToken);
+document.dispatchEvent(
+  new window.CustomEvent("hrz:auth", { detail: { signedIn: true } })
+);
+await settle();
 
 // Last, so it covers the panels above as well: a session that ends must not
 // leave a modal hanging over the home page a signed-out visitor is handed.
