@@ -31,9 +31,14 @@
   const SEARCH_DELAY = 160;
   const SEARCH_SHOWN = 12;
   // Where the groups go, in the order the spec collapses them: Indicators and
-  // Panes under 900px, then View under 720. Symbol, timeframe, Fit and the
-  // panel toggles never collapse.
-  const WIDE_MIN = 900;
+  // Panes under 916px, then View under 720. Symbol, timeframe, Fit and the
+  // panel toggles never collapse. The number is measured, not round: with a
+  // long symbol and every frame shown the wide strip needs 916px, and a lower
+  // threshold left its last control outside the bar -- which the collapse loop
+  // below then answered by hiding two whole groups to save a few pixels. The
+  // loop still corrects the guess when a chip or an unusual symbol makes the
+  // strip wider than this.
+  const WIDE_MIN = 916;
   const TIGHT_BELOW = 720;
   // The priority order from the spec: Indicators and Panes go first, View
   // last -- at the tight width all three are out. More lists them in that
@@ -60,6 +65,8 @@
   let observer = null;
   let framesSig = "";
   let modesSig = "";
+  let settledWidth = -1;
+  let layoutSig = "";
 
   /* ---- Panels -------------------------------------------------------------- */
 
@@ -191,6 +198,18 @@
     }
 
     paintIndicator(current);
+    // The strip's variable-width content is the symbol and the indicator chip.
+    // A different one changes how much room the strip needs at a width that
+    // has not moved, so the settled mode has to be re-chosen -- otherwise a
+    // removed chip leaves the View group in More until the window is resized.
+    const layout = [byId("barSymbolName"), byId("barChip"), byId("barLayers")]
+      .map((part) => (part ? `${part.hidden}|${part.textContent}` : ""))
+      .join("~");
+    if (layout !== layoutSig) {
+      layoutSig = layout;
+      settledWidth = -1;
+      measure();
+    }
     if (state.open === "layersPop") renderLayers(current);
     if (state.open === "framesPop") renderFrames();
     if (state.open) reposition();
@@ -221,28 +240,31 @@
   function paintModes(current) {
     const host = byId("barModes");
     if (!host) return;
-    const sig = current.modes.map((mode) => mode.value).join(",");
+    // A dropdown, not a segmented strip: six labels side by side were the
+    // widest thing in the bar and the reason it had to shed whole groups at
+    // 900px. One value and a list costs about 90px whatever the window is.
+    //
+    // Heikin-Ashi is a real mode with a narrow audience; it stays reachable
+    // through the pane's own chart-type select, and the bar lists it only
+    // while this chart is in it -- so a mode can never be silently applied
+    // by a chart the user is not looking at.
+    const shown = current.modes.filter(
+      (mode) => mode.value !== "heikin_ashi" || mode.value === current.mode
+    );
+    const sig = shown.map((mode) => `${mode.value}:${MODE_LABELS[mode.value] || mode.label}`).join(",");
     if (sig !== modesSig) {
       modesSig = sig;
       host.textContent = "";
-      for (const mode of current.modes) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "hrz-seg__item";
-        button.dataset.mode = mode.value;
-        button.textContent = MODE_LABELS[mode.value] || mode.label;
-        host.appendChild(button);
+      for (const mode of shown) {
+        const option = document.createElement("option");
+        option.value = mode.value;
+        option.textContent = MODE_LABELS[mode.value] || mode.label;
+        host.appendChild(option);
       }
     }
-    for (const button of host.children) {
-      const active = button.dataset.mode === current.mode;
-      button.setAttribute("aria-pressed", String(active));
-      // Heikin-Ashi is a real mode with a narrow audience; it stays reachable
-      // through the pane's own chart-type select, and the bar shows it only
-      // while this chart is in it -- so a mode can never be silently applied
-      // by a chart the user is not looking at.
-      if (button.dataset.mode === "heikin_ashi") button.hidden = !active;
-    }
+    // The select states the chart's mode; the buttons it replaced stated it
+    // with `aria-pressed`, which a `<select>` already carries in `value`.
+    if (host.value !== current.mode) host.value = current.mode;
   }
 
   function paintIndicator(current) {
@@ -474,6 +496,18 @@
     if (more) more.title = state.moved.size ? "More controls" : "More";
   }
 
+  function setMode(node, mode) {
+    if (node.dataset.width === mode) return;
+    node.dataset.width = mode;
+    collapse(mode);
+  }
+
+  function overflows(node) {
+    // A pixel of slack: widths are fractional, and a strip half a pixel over
+    // would otherwise give up a whole group to More for nothing.
+    return node.scrollWidth - node.clientWidth > 1;
+  }
+
   function measure() {
     const node = byId("instrumentBar");
     const column = byId("chartColumn");
@@ -485,10 +519,22 @@
     // that number would move the groups into More on a wide screen and never
     // move them back.
     const width = node.clientWidth || column.clientWidth || 0;
-    const mode = !width || width >= WIDE_MIN ? "wide" : width >= TIGHT_BELOW ? "compact" : "tight";
-    if (node.dataset.width === mode) return;
-    node.dataset.width = mode;
-    collapse(mode);
+    // Already settled at this width and the strip still fits: nothing to do.
+    // The fit is re-checked (one `scrollWidth` read) rather than assumed from
+    // the width alone, because the content changes without the window: an
+    // attached indicator chip is wider than the thresholds guess, and it is
+    // what pushed the chrome group past the strip's right edge.
+    if (settledWidth === width && node.dataset.width && !overflows(node)) return;
+    settledWidth = width;
+    // The width chooses the first rung; the measurement chooses the last one.
+    // One step down moves one more group into More, and the strip does not
+    // scroll, so this is what keeps every control inside the bar.
+    let mode = !width || width >= WIDE_MIN ? "wide" : width >= TIGHT_BELOW ? "compact" : "tight";
+    setMode(node, mode);
+    while (mode !== "tight" && overflows(node)) {
+      mode = mode === "wide" ? "compact" : "tight";
+      setMode(node, mode);
+    }
   }
 
   function observe() {
@@ -527,9 +573,9 @@
       const button = event.target.closest("button[data-frame]");
       if (button && app().setActiveTimeframe) app().setActiveTimeframe(button.dataset.frame);
     });
-    byId("barModes").addEventListener("click", (event) => {
-      const button = event.target.closest("button[data-mode]");
-      if (button && app().setActiveMode) app().setActiveMode(button.dataset.mode);
+    byId("barModes").addEventListener("change", (event) => {
+      const mode = event.currentTarget.value;
+      if (mode && app().setActiveMode) app().setActiveMode(mode);
     });
     byId("barZones").addEventListener("click", () => {
       const on = byId("barZones").getAttribute("aria-pressed") !== "true";

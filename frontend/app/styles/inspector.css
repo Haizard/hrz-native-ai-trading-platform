@@ -544,7 +544,7 @@ table.scan td:nth-child(1) { color: var(--muted); width: 1.5em; }
 #pane-chat[hidden] { display: none; }
 
 #pane-chat .chat-stream { flex: 1; min-height: 0; padding: 12px 12px 4px; }
-.chat-workspace-tools { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow: auto; margin: 0 10px 6px; border: 1px solid var(--line); border-radius: 8px; background: rgba(13, 17, 26, .55); }
+.chat-workspace-tools { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow: auto; margin: 0 12px 6px; border: 1px solid var(--line); border-radius: 8px; background: rgba(13, 17, 26, .55); }
 .chat-workspace-tools > summary { cursor: pointer; padding: 8px 10px; color: var(--muted); font-size: 11px; }
 .chat-workspace-tools[open] > summary { border-bottom: 1px solid var(--line); color: var(--text); }
 .chat-workspace-tools #chatIndicatorWorkbench { min-height: 0; }
@@ -724,10 +724,25 @@ table.scan td:nth-child(1) { color: var(--muted); width: 1.5em; }
   The history card anchors to it (position: relative) and drops over the
   stream, the way the model card rises over the composer.
 */
+/*
+  The inspector's six tabs share a 300-480px column, and a tab label is the
+  one thing in it that cannot wrap: at the default 360px width the strip was
+  40px short and "Details" sat outside the panel. Six pixels a side fits all
+  six at 360; below that the strip scrolls rather than cutting a label in
+  half, and the scrollbar of a 32px-tall strip stays out of sight.
+*/
+#inspectorTabs { overflow-x: auto; scrollbar-width: none; }
+
+#inspectorTabs::-webkit-scrollbar { display: none; }
+
+#inspectorTabs .hrz-tab { padding: 0 6px; }
+
+/* 12px, the same gutter the stream and the composer use, so the head's two
+   buttons line up with the conversation under them. */
 .chat-head {
   position: relative; flex: 0 0 auto;
   display: flex; align-items: center; gap: 4px;
-  padding: 6px 10px; border-bottom: 1px solid var(--border-subtle);
+  padding: 6px 12px; border-bottom: 1px solid var(--border-subtle);
 }
 
 .chat-head button {

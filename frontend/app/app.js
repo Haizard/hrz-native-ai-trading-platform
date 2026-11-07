@@ -262,8 +262,14 @@ async function api(path, options = {}) {
 
 // The home page's card is the one auth surface now; the workstation's old
 // inline strip is gone from the markup.
+// The card now has two panels (sign-in / create account); each has its own
+// field IDs. Detect the active panel before calling authenticate.
 function homeAuth(register) {
-  return authenticate(register, "homeEmail", "homePassword", "homeMsg");
+  if (register) {
+    // Register panel: use homeRegEmail / homeRegPassword
+    return authenticate(true, "homeRegEmail", "homeRegPassword", "homeMsg");
+  }
+  return authenticate(false, "homeEmail", "homePassword", "homeMsg");
 }
 
 // ---------------------------------------------------------------------------
@@ -7135,8 +7141,13 @@ function createChartPane(root, hooks = {}) {
     tools.hidden = false;
     menu.classList.add("open");
     const box = menu.getBoundingClientRect();
-    menu.style.left = `${Math.min(x, window.innerWidth - box.width - 8)}px`;
-    menu.style.top = `${Math.min(y, window.innerHeight - box.height - 8)}px`;
+    // Clamped on all four sides. `Math.min` alone can resolve to a negative
+    // offset whenever the menu is wider or taller than the space between the
+    // click and the window edge, which puts the menu partly off screen instead
+    // of merely tight -- and an off-screen menu is the one failure the user
+    // cannot work around by scrolling.
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - box.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - box.height - 8))}px`;
   }
 
   /// Rebuild the layer-settings popover from the pane's layer state
@@ -17802,9 +17813,12 @@ el("authorChips").addEventListener("click", (event) => {
   el("signinToggle").addEventListener("click", () => {
     if (token()) {
       setToken("");
+    } else if (window.HRZPublic && HRZPublic.openAuth) {
+      // Signed out on any public page: the card lives on Home, so the button
+      // routes there before it focuses the field. Focusing an input on a page
+      // the user is not looking at is indistinguishable from a dead button.
+      HRZPublic.openAuth();
     } else {
-      // Signed out: the home page is already in front (the gate shows it),
-      // so hand the user to its card.
       el("homeEmail").focus();
     }
   });

@@ -199,12 +199,10 @@ impl OpenAiCompatClient {
     }
 }
 
-fn max_tokens_for_provider(provider: super::ProviderId, requested: u32) -> u32 {
-    if provider == super::ProviderId::Groq {
-        requested.min(900)
-    } else {
-        requested
-    }
+fn max_tokens_for_provider(_provider: super::ProviderId, requested: u32) -> u32 {
+    // The agent config is the output budget. Groq's 1K requests/day quota is
+    // not a 1K output-token ceiling; the old 900 cap silently truncated code.
+    requested
 }
 
 fn reasoning_effort_for_request(
@@ -216,7 +214,7 @@ fn reasoning_effort_for_request(
     (provider == super::ProviderId::Groq
         && model == "qwen/qwen3.8-27b"
         && is_light_pine_build)
-        .then_some("none")
+        .then_some("low")
 }
 
 fn compact_groq_indicator_request(mut request: LlmRequest) -> LlmRequest {
@@ -253,20 +251,24 @@ fn compact_groq_indicator_request(mut request: LlmRequest) -> LlmRequest {
     // build, preserve the user's request (including image blocks) and the
     // task-relevant tool(s), replacing the broad prompt with focused guidance.
     if script_build {
+        if let Some(tool) = request.tools.iter_mut().find(|tool| tool.name == "submit_script") {
+            tool.input_schema["properties"]["report"]["description"] =
+                json!("Briefly state what the complete script detects, draws, and any approximation.");
+        }
         request.system = Some(
-            "You write complete, compilable chart indicators in this platform's Light Pine \
-             language. Respond only by calling `submit_script` with `script` and `report`. \
-             Start source with `//@pine_lite version=1 overlay=true`. Use OHLCV series \
-             `open`, `high`, `low`, `close`, `volume`, plus `bar_index` and `time`. Use \
-             typed inputs (`input.float`, `input.int`, `input.bool`, `input.string`), \
-             arithmetic and history indexing, supported `ta.*` functions, `plot`, `plotshape`, \
-             `hline`, `barcolor`, and `color.*`. Keep syntax simple and use only features \
-             the request requires; do not write Pine `indicator()` or `strategy()` wrappers, \
-             orders, network calls, or unsupported Pine constructs. Preserve the user's \
-             requested formulas, defaults, plots and signals. If chart images are supplied, \
-             treat them as visual context, never as numeric data. The platform will compile \
-             and validate the script; report honestly and concisely what it detects, draws, \
-             its defaults, limitations and suggested adjustments."
+            "Write complete indicators in the platform's full Light Pine v1 language. Return \
+             one `submit_script` call with the COMPLETE source and a short report. Start with \
+             `//@pine_lite version=1 overlay=true title=\"...\"`. Use supported grammar: `var`, \
+             typed inputs, functions, arrays (`array.new/push/get/set/size`), bounded `for` \
+             loops, history indexing, `ta.*`, `math.*`, and chart outputs (`plot`, `plotshape`, \
+             `line.new`, `box.new`, `label.new`, `polyline.new`). The script replays from the \
+             first candle each run; keep calculations causal and create persistent drawings only \
+             in the final-bar pass. Treat attached source/documents as the specification and \
+             preserve their algorithm, inputs, plots, and signal meaning. Never replace a complex \
+             request with comments or a generic indicator. If a behavior cannot be expressed, \
+             build the strongest working approximation and name the gap. Do not invent Pine-only \
+             syntax, orders, or network calls. Include at least one chart-visible output. Treat \
+             images as visual context, never as numeric data."
                 .into(),
         );
     } else {
@@ -518,9 +520,8 @@ impl LlmClient for OpenAiCompatClient {
         if self.config.provider == super::ProviderId::Groq {
             request = compact_groq_indicator_request(request);
         }
-        // The Groq on-demand tier currently caps output tokens per minute at
-        // 1,000. Keep each request below that ceiling so a long agent tool
-        // schema does not make even a short response fail before generation.
+        // Keep the configured completion budget. Groq's requests/day quota is
+        // not an output-token cap; 900 previously truncated executable code.
         request.max_tokens = max_tokens_for_provider(self.config.provider, request.max_tokens);
         let mut body = chat_body(&request, &self.config.model_id);
         if let Some(effort) = reasoning_effort_for_request(
@@ -693,14 +694,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn groq_output_budget_stays_under_free_tier_ceiling() {
-        assert_eq!(max_tokens_for_provider(super::super::ProviderId::Groq, 4096), 900);
+    fn groq_script_output_budget_is_not_mistaken_for_the_request_quota() {
+        assert_eq!(max_tokens_for_provider(super::super::ProviderId::Groq, 4096), 4096);
         assert_eq!(max_tokens_for_provider(super::super::ProviderId::Groq, 512), 512);
         assert_eq!(max_tokens_for_provider(super::super::ProviderId::Gemini, 4096), 4096);
     }
 
     #[test]
-    fn groq_qwen_disables_reasoning_for_script_tool_output() {
+    fn groq_qwen_uses_light_reasoning_for_script_generation() {
         let mut req = request();
         req.tools = vec![ToolSpec {
             name: "submit_script".into(),
@@ -714,7 +715,7 @@ mod tests {
                 "qwen/qwen3.8-27b",
                 &req
             ),
-            Some("none")
+            Some("low")
         );
         assert_eq!(
             reasoning_effort_for_request(

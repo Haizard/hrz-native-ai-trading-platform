@@ -244,10 +244,7 @@
   .conceptCard__mark { top: var(--space-2); right: var(--space-2); width: 16px; height: 16px; }
   .conceptCard__pair { padding: 0 var(--space-2) var(--space-2); }
 
-  /* Home is rebuilt in Spec 4; until then it keeps the phone shape it had. */
-  #signin { flex-wrap: wrap; }
-  #signin input { flex: 1 1 140px; min-width: 0; }
-  .homeInner { padding: var(--space-4) var(--space-3); }
-  .marketGrid { grid-template-columns: 1fr; }
-  .homeHero h1 { font-size: 26px; }
+  /* The public site's phone shape is public.css's business. This file only
+     owns the workstation frame; the two used to share the home selectors and
+     the marketing page kept paying for rules written for the old card. */
 }

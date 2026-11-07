@@ -1935,10 +1935,15 @@ check(
   document.querySelector('#barFrames [data-frame="5m"]').getAttribute("aria-pressed")
 );
 check(
-  "and the chart type segmented from the pane's own select",
-  [...document.querySelectorAll("#barModes [data-mode]")].map((b) => b.dataset.mode).join(",") ===
-    "candles,heikin_ashi,bars,line,area,footprint",
-  [...document.querySelectorAll("#barModes [data-mode]")].map((b) => b.dataset.mode).join(",")
+  "and the chart type listed in the bar's own dropdown",
+  [...document.querySelectorAll("#barModes option")].map((o) => o.value).join(",") ===
+    "candles,bars,line,area,footprint",
+  [...document.querySelectorAll("#barModes option")].map((o) => o.value).join(",")
+);
+check(
+  "showing the pane's own chart type",
+  document.getElementById("barModes").value === "candles",
+  document.getElementById("barModes").value
 );
 
 document.querySelector('#barFrames [data-frame="1h"]').click();
@@ -1959,7 +1964,8 @@ check(
   document.querySelector('#barFrames [data-frame="1h"]').getAttribute("aria-pressed")
 );
 
-document.querySelector('#barModes [data-mode="bars"]').click();
+document.getElementById("barModes").value = "bars";
+document.getElementById("barModes").dispatchEvent(new window.Event("change", { bubbles: true }));
 await settle();
 check(
   "pressing a chart type moves the pane's own select",
@@ -2065,7 +2071,8 @@ check("and More stops offering moved controls", document.getElementById("moreSec
 // assume the first chart on 5m, candles, zones off.
 document.querySelector('#barFrames [data-frame="5m"]').click();
 await settle();
-document.querySelector('#barModes [data-mode="candles"]').click();
+document.getElementById("barModes").value = "candles";
+document.getElementById("barModes").dispatchEvent(new window.Event("change", { bubbles: true }));
 await settle();
 check(
   "and the bar restored the chart the later checks assume",

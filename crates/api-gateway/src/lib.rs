@@ -723,16 +723,30 @@ fn read_frontend(name: &str) -> Result<Vec<u8>, StatusCode> {
 
 /// The workstation at `/`.
 ///
+/// `no-cache`, like the assets it loads. The shell names its styles and scripts
+/// by path with no content hash in them, so a browser that reused a stored copy
+/// could pair an old shell with new scripts -- which reads as "my changes are
+/// not showing up" even after a refresh. This was the only frontend route that
+/// carried no cache header and no validator at all, so a heuristic cache was
+/// free to do exactly that.
+///
 /// # Errors
 /// 404 when the shell is not present beside the binary.
-pub async fn app_index() -> Result<axum::response::Html<String>, StatusCode> {
+pub async fn app_index() -> Result<axum::response::Response, StatusCode> {
     let bytes = read_frontend("index.html")?;
-    String::from_utf8(bytes)
-        .map(axum::response::Html)
-        .map_err(|e| {
-            warn!("frontend/app/index.html is not valid UTF-8: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+    let html = String::from_utf8(bytes).map_err(|e| {
+        warn!("frontend/app/index.html is not valid UTF-8: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        html,
+    )
+        .into_response())
 }
 
 /// The shell's script at `/app.js`.

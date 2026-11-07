@@ -933,7 +933,21 @@ pub(crate) async fn generate_script(
         };
 
         match pine_lite::vet(&source) {
-            Ok((header, _script)) => {
+            Ok((header, script)) => {
+                if !script_has_chart_output(&script.items) {
+                    last_report = "the script compiled but contains no chart-visible output; include at least one plot, marker, level, or drawing".to_string();
+                    report(
+                        &progress,
+                        GenerationEvent::Repairing { attempt, errors: vec![last_report.clone()] },
+                    );
+                    messages.push(response.message.clone());
+                    messages.push(Message::tool_results(vec![ai_agent::llm_client::ToolResult {
+                        tool_use_id: call.id.clone(),
+                        content: serde_json::Value::String(last_report.clone()),
+                        is_error: true,
+                    }]));
+                    continue;
+                }
                 return Ok(GeneratedScript {
                     source,
                     report: report_text.clone(),
@@ -1009,9 +1023,82 @@ pub(crate) async fn generate_script(
     ))
 }
 
+fn script_has_chart_output(items: &[pine_lite::parse::Item]) -> bool {
+    use pine_lite::parse::{Expr, ExprKind, Item};
+
+    fn expr_has_output(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Call { callee, args } => {
+                matches!(
+                    callee.as_str(),
+                    "plot" | "plotshape" | "plotchar" | "plotarrow" | "plotcandle"
+                        | "plotbar" | "hline" | "barcolor" | "bgcolor" | "fill"
+                        | "line.new" | "linefill.new" | "box.new" | "label.new"
+                        | "polyline.new"
+                ) || args.iter().any(|arg| expr_has_output(&arg.value))
+            }
+            ExprKind::Switch { subject, arms } => {
+                subject.as_deref().is_some_and(expr_has_output)
+                    || arms.iter().any(|(test, value)| {
+                        test.as_ref().is_some_and(expr_has_output) || expr_has_output(value)
+                    })
+            }
+            ExprKind::NaChecked { value } | ExprKind::Un { expr: value, .. } => {
+                expr_has_output(value)
+            }
+            ExprKind::Bin { left, right, .. } => {
+                expr_has_output(left) || expr_has_output(right)
+            }
+            ExprKind::Ternary { cond, then, els } => {
+                expr_has_output(cond) || expr_has_output(then) || expr_has_output(els)
+            }
+            ExprKind::History { base, offset } => {
+                expr_has_output(base) || expr_has_output(offset)
+            }
+            _ => false,
+        }
+    }
+
+    fn items_have_output(items: &[Item]) -> bool {
+        items.iter().any(|item| match item {
+            Item::TypeDef { .. } => false,
+            Item::Assign { expr, .. } | Item::Expr { expr, .. } => expr_has_output(expr),
+            Item::Destructure { call, .. } => expr_has_output(call),
+            Item::Block { exprs, body, els, .. } => {
+                exprs.iter().any(expr_has_output)
+                    || items_have_output(body)
+                    || els.as_deref().is_some_and(items_have_output)
+            }
+            Item::FuncDef { defaults, body, .. } => {
+                defaults.iter().flatten().any(expr_has_output) || items_have_output(body)
+            }
+        })
+    }
+
+    items_have_output(items)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_comment_only_script_is_not_a_successful_indicator() {
+        let source = "//@pine_lite version=1 overlay=true title=\"Empty\"\n// plot(close)\n";
+        let (_, script) = pine_lite::vet(source).expect("comments-only source is syntactically valid");
+        assert!(!script_has_chart_output(&script.items));
+    }
+
+    #[test]
+    fn chart_output_is_found_inside_blocks_and_assigned_drawings() {
+        let source = concat!(
+            "//@pine_lite version=1 overlay=true title=\"Zones\"\n",
+            "if close > open\n",
+            "    zone = box.new(bar_index, high, bar_index + 1, low)\n",
+        );
+        let (_, script) = pine_lite::vet(source).expect("drawing call should pass vet");
+        assert!(script_has_chart_output(&script.items));
+    }
 
     const RSI: &str = concat!(
         "```pine_lite\n",

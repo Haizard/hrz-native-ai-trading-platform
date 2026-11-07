@@ -26,7 +26,13 @@ const MIME = {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
-  let file = path.normalize(path.join(ROOT, url.pathname === "/" ? "index.html" : url.pathname));
+  // The gateway mounts the shell's files at `/assets/{*path}` and strips that
+  // prefix before reading `frontend/app`. This proxy has to strip it too, or
+  // every stylesheet and script asks for a file under `app/assets/` that does
+  // not exist and gets proxied to a gateway that may not be running.
+  const pathname =
+    url.pathname === "/" ? "index.html" : url.pathname.replace(/^\/assets\//, "/");
+  let file = path.normalize(path.join(ROOT, pathname));
   // Static files only from the app directory; anything else proxies.
   if (file.startsWith(ROOT) && fs.existsSync(file) && fs.statSync(file).isFile()) {
     res.writeHead(200, {

@@ -644,7 +644,13 @@
 #chartMenu {
   position: fixed; z-index: 60; display: none;
   flex-direction: column; gap: 4px; align-items: stretch;
-  min-width: 210px; max-height: 80vh; overflow: auto;
+  min-width: 210px;
+  /* Narrow enough to be a menu over a chart, and never wider or taller than
+     the window it opens in -- the clamp in `openMenu` can only place a box it
+     can fit, so a box that cannot fit is a box that lands off screen. */
+  max-width: min(340px, calc(100vw - 16px));
+  max-height: min(80vh, calc(100vh - 16px));
+  overflow: auto;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
   padding: 10px; box-shadow: var(--shadow-2);
 }
@@ -652,10 +658,16 @@
 #chartMenu.open { display: flex; }
 
 #chartMenu select, #chartMenu button { width: 100%; padding: 5px 8px; font-size: 12px; }
+#chartMenu select { max-width: 100%; }
 
 /* The tool row is absolutely positioned inside a pane; hosted here it is a
    plain wrapping row. Its `hidden` is cleared while hosted. */
-#chartMenu .tools { position: static; flex-wrap: wrap; }
+#chartMenu .tools { position: static; flex-wrap: wrap; max-width: 100%; }
+
+/* A tool is a chip, not a slab: the full-width button rule below is for the
+   action rows (Zones, Fit, Reload, Indicators...), and letting it reach the
+   drawing tools turned the palette into a column of bars. */
+#chartMenu .tools button { width: auto; }
 
 #chartMenu .tools[hidden] { display: flex; }
 
@@ -728,6 +740,15 @@
 .tools {
   position: absolute; top: 8px; left: 12px; z-index: 2;
   display: flex; align-items: center; gap: 4px;
+  /*
+    The row is an overlay inside the plot, so it must be as narrow as the plot.
+    Without a width it is a nowrap flex row that resolves to max-content: at
+    820px the full tool set measured 1125px inside a 777px chart, and the
+    overflow was not merely clipped -- a pane clips, so the last tools were
+    unreachable. `calc(100% - 24px)` is the two 12px insets; wrapping is what
+    keeps that a bound rather than a cut.
+  */
+  flex-wrap: wrap; max-width: calc(100% - 24px); row-gap: 4px;
 }
 
 /*

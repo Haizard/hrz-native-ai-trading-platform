@@ -525,10 +525,31 @@
 
   function syncChrome() {
     const signedIn = isSignedIn();
+    // One class on `body` is what public.css reads to take the workstation's
+    // chrome off a marketing page. The alternative -- disabling seven controls
+    // and explaining each -- leaves a signed-out visitor looking at a toolbar
+    // that is mostly "no".
+    document.body.classList.toggle("isSignedIn", signedIn);
     for (const button of destButtons()) button.disabled = !signedIn;
     // The panel triggers are chrome too: a signed-out visitor must not be handed
     // a door into a modal with nothing to load.
     for (const button of panelTriggers()) button.disabled = !signedIn;
+    // The public nav and its phone menu are the other side of the same gate.
+    // public.js paints the pages; this is the one place that says which header
+    // belongs to the session, so the two can never disagree after a sign-out.
+    const publicNav = el("publicNav");
+    if (publicNav) publicNav.hidden = signedIn;
+    const publicMenu = el("publicMenu");
+    if (publicMenu && signedIn) publicMenu.hidden = true;
+    const publicMenuBtn = el("publicMenuBtn");
+    if (publicMenuBtn) {
+      publicMenuBtn.hidden = signedIn;
+      if (signedIn) publicMenuBtn.setAttribute("aria-expanded", "false");
+    }
+    // The skip link is the same promise on both sides of the gate: it has to
+    // land on the content that is actually in front of the user.
+    const skip = document.querySelector(".skipLink");
+    if (skip) skip.setAttribute("href", signedIn ? "#mainView" : "#home");
     // The bottom nav is outside #frame, so the frame's own hide does not reach
     // it: a signed-out phone must not list destinations into a frame that is
     // not there. CSS shows it only below 768; this attribute is the other half.
