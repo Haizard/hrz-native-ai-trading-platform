@@ -481,6 +481,11 @@ impl LlmClient for OpenAiCompatClient {
         let model = self.config.model_id.to_ascii_lowercase();
         match self.config.provider {
             super::ProviderId::Gemini => true,
+            super::ProviderId::Groq => {
+                model.contains("llama-4-scout")
+                    || model == "qwen/qwen3.8-27b"
+                    || model == "meta-models/muse-spark-open"
+            }
             super::ProviderId::Cloudflare => {
                 model.contains("llama-4-scout") || model.contains("llama-3.2-11b-vision")
             }

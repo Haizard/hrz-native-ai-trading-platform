@@ -9,7 +9,7 @@
 //! * **Converse** -- AWS Bedrock ([`bedrock`]), the original provider, whose
 //!   tool-use contract this crate's message types were modelled on;
 //! * **Chat Completions** -- [`openai_compat`], one adapter speaking for
-//!   OpenAI, Anthropic, OpenRouter, DeepSeek, Grok/xAI, HuggingFace and any
+//!   OpenAI, Anthropic, OpenRouter, DeepSeek, Grok/xAI, Groq, HuggingFace and any
 //!   OpenAI-compatible gateway (Codex endpoints, vLLM, LiteLLM, Ollama).
 //!
 //! Adding a vendor that speaks Chat Completions is a [`ProviderId`] variant
@@ -54,6 +54,8 @@ pub enum ProviderId {
     DeepSeek,
     /// xAI Grok.
     Grok,
+    /// Groq inference API.
+    Groq,
     /// HuggingFace Inference providers.
     HuggingFace,
     /// Google Gemini Developer API.
@@ -79,6 +81,7 @@ impl ProviderId {
             "openrouter" => Some(Self::OpenRouter),
             "deepseek" => Some(Self::DeepSeek),
             "grok" | "xai" | "x.ai" => Some(Self::Grok),
+            "groq" | "groqcloud" => Some(Self::Groq),
             "huggingface" | "hf" | "hugging-face" => Some(Self::HuggingFace),
             "gemini" | "google" | "google-ai" => Some(Self::Gemini),
             "cloudflare" | "workers-ai" => Some(Self::Cloudflare),
@@ -97,6 +100,7 @@ impl ProviderId {
             Self::OpenRouter => "openrouter",
             Self::DeepSeek => "deepseek",
             Self::Grok => "grok",
+            Self::Groq => "groq",
             Self::HuggingFace => "huggingface",
             Self::Gemini => "gemini",
             Self::Cloudflare => "cloudflare",
@@ -116,6 +120,7 @@ impl ProviderId {
             Self::OpenRouter => "https://openrouter.ai/api/v1",
             Self::DeepSeek => "https://api.deepseek.com/v1",
             Self::Grok => "https://api.x.ai/v1",
+            Self::Groq => "https://api.groq.com/openai/v1",
             Self::HuggingFace => "https://router.huggingface.co/v1",
             Self::Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
             Self::Cloudflare => "",
@@ -138,6 +143,7 @@ impl ProviderId {
             Self::OpenRouter => "openai/gpt-4o",
             Self::DeepSeek => "deepseek-chat",
             Self::Grok => "grok-4.7",
+            Self::Groq => "meta-llama/llama-4-scout-17b-16e-instruct",
             Self::HuggingFace => "meta-llama/Llama-3.3-70B-Instruct",
             Self::Gemini => "gemini-3.8-flash",
             Self::Cloudflare => "@cf/meta/llama-4-scout-17b-16e-instruct",
@@ -278,15 +284,19 @@ pub const ENV_GROK_API_TOKEN: &str = "GROK_API_TOKEN";
 pub const ENV_XAI_API_KEY: &str = "XAI_API_KEY";
 /// Environment variable overriding Grok's default base URL (optional).
 pub const ENV_GROK_BASE_URL: &str = "GROK_BASE_URL";
+/// Environment variable carrying the Groq fallback API key.
+pub const ENV_GROQ_API_KEY: &str = "GROQ_API_KEY";
+/// Environment variable naming the Groq fallback model id (optional).
+pub const ENV_GROQ_MODEL: &str = "GROQ_MODEL";
 
 /// The providers tried, in order, when `AI_FALLBACK_ORDER` is unset.
 ///
 /// Listing a provider here costs nothing when its credentials are absent --
 /// `fallback_clients_from_env` drops it -- so the chain grows without the
 /// operator having to set the variable to match.
-pub const DEFAULT_FALLBACK_ORDER: &str = "cloudflare,gemini,grok";
+pub const DEFAULT_FALLBACK_ORDER: &str = "cloudflare,gemini,grok,groq";
 
-/// Build the configured Cloudflare, Gemini and Grok backups without exposing
+/// Build the configured Cloudflare, Gemini, Grok and Groq backups without exposing
 /// their credentials. Missing credentials simply make that provider unavailable.
 pub fn fallback_clients_from_env(
     exclude: Option<ProviderId>,
@@ -325,6 +335,12 @@ fn fallback_clients_from(
                 let base = var(ENV_GROK_BASE_URL)
                     .unwrap_or_else(|| provider.default_base_url().into());
                 (model, token, base)
+            }
+            ProviderId::Groq => {
+                let key = var(ENV_GROQ_API_KEY)?;
+                let model = var(ENV_GROQ_MODEL)
+                    .unwrap_or_else(|| provider.default_model().into());
+                (model, key, provider.default_base_url().into())
             }
             _ => return None,
         };
@@ -366,7 +382,7 @@ pub fn from_deployment_env(
         Some(name) => ProviderId::from_name(name).ok_or_else(|| {
             AgentError::NotConfigured(format!(
                 "{ENV_PROVIDER} is `{name}`, which is not a known provider. Known: bedrock, \
-                 openai, anthropic, openrouter, deepseek, grok, huggingface, gemini, cloudflare, openai-compat."
+                 openai, anthropic, openrouter, deepseek, grok, groq, huggingface, gemini, cloudflare, openai-compat."
             ))
         })?,
     };
@@ -392,6 +408,7 @@ pub fn from_deployment_env(
         | ProviderId::OpenRouter
         | ProviderId::DeepSeek
         | ProviderId::Grok
+        | ProviderId::Groq
         | ProviderId::HuggingFace
         | ProviderId::Gemini
         | ProviderId::Cloudflare
@@ -404,6 +421,7 @@ pub fn from_deployment_env(
                     let provider_model_var = match provider {
                         ProviderId::Gemini => Some("GEMINI_MODEL"),
                         ProviderId::Cloudflare => Some("CLOUDFLARE_AI_MODEL"),
+                        ProviderId::Groq => Some(ENV_GROQ_MODEL),
                         _ => None,
                     };
                     provider_model_var.and_then(|name| std::env::var(name).ok())
@@ -422,6 +440,7 @@ pub fn from_deployment_env(
             let provider_key_var = match provider {
                 ProviderId::Gemini => Some("GEMINI_API_KEY"),
                 ProviderId::Cloudflare => Some("CLOUDFLARE_API_TOKEN"),
+                ProviderId::Groq => Some(ENV_GROQ_API_KEY),
                 _ => None,
             };
             let api_key = std::env::var(ENV_API_KEY)
@@ -623,6 +642,7 @@ mod tests {
             ProviderId::OpenRouter,
             ProviderId::DeepSeek,
             ProviderId::Grok,
+            ProviderId::Groq,
             ProviderId::HuggingFace,
             ProviderId::Gemini,
             ProviderId::Cloudflare,
@@ -636,6 +656,8 @@ mod tests {
     fn aliases_and_casing_are_accepted() {
         assert_eq!(ProviderId::from_name("xai"), Some(ProviderId::Grok));
         assert_eq!(ProviderId::from_name("X.AI"), Some(ProviderId::Grok));
+        assert_eq!(ProviderId::from_name("groq"), Some(ProviderId::Groq));
+        assert_eq!(ProviderId::from_name("GroqCloud"), Some(ProviderId::Groq));
         assert_eq!(ProviderId::from_name("Claude"), Some(ProviderId::Anthropic));
         assert_eq!(ProviderId::from_name("  OpenAI "), Some(ProviderId::OpenAi));
         assert_eq!(
@@ -653,6 +675,7 @@ mod tests {
             ProviderId::OpenRouter,
             ProviderId::DeepSeek,
             ProviderId::Grok,
+            ProviderId::Groq,
             ProviderId::HuggingFace,
         ] {
             assert!(provider.default_base_url().starts_with("https://"));
@@ -744,6 +767,25 @@ mod tests {
         assert!(clients[0].name().starts_with("grok("), "{}", clients[0].name());
     }
 
+    #[test]
+    fn configured_groq_key_builds_a_vision_capable_fallback() {
+        let clients = fallback_clients_from(
+            "groq",
+            None,
+            |name| (name == ENV_GROQ_API_KEY).then(|| "groq-test-key".into()),
+        );
+        assert_eq!(clients.len(), 1);
+        assert!(clients[0].name().starts_with("groq("), "{}", clients[0].name());
+        assert!(clients[0].supports_image_input());
+
+        let with_model = fallback_clients_from("groq", None, |name| match name {
+            ENV_GROQ_API_KEY => Some("groq-test-key".into()),
+            ENV_GROQ_MODEL => Some("qwen/qwen3.8-27b".into()),
+            _ => None,
+        });
+        assert!(with_model[0].supports_image_input());
+    }
+
     /// Grok's model and endpoint are overridable, and default to the
     /// provider's own when the operator has no opinion.
     #[test]
@@ -785,8 +827,8 @@ mod tests {
     }
 
     /// Missing credentials are not an error: the provider is absent from the
-    /// chain and everything else still builds. This is what makes Grok safe to
-    /// list in the default order before any deployment has a Grok token.
+    /// chain and everything else still builds. This is what makes providers
+    /// safe to list in the default order before deployment keys are configured.
     #[test]
     fn a_fallback_without_credentials_is_dropped_not_fatal() {
         let clients = fallback_clients_from(DEFAULT_FALLBACK_ORDER, None, |_| None);
@@ -805,19 +847,22 @@ mod tests {
     /// quota error does not retry the identical call.
     #[test]
     fn the_primary_provider_is_not_its_own_fallback() {
-        let all_three = |name: &str| {
+        let baseline = |name: &str| {
             matches!(
                 name,
-                "GEMINI_API_KEY" | "CLOUDFLARE_ACCOUNT_ID" | "CLOUDFLARE_API_TOKEN"
+                "GEMINI_API_KEY"
+                    | "CLOUDFLARE_ACCOUNT_ID"
+                    | "CLOUDFLARE_API_TOKEN"
+                    | ENV_GROQ_API_KEY
             )
             .then(|| "k".into())
         };
         let with_grok = |name: &str| {
-            if name == ENV_GROK_API_TOKEN { Some("k".into()) } else { all_three(name) }
+            if name == ENV_GROK_API_TOKEN { Some("k".into()) } else { baseline(name) }
         };
-        assert_eq!(fallback_clients_from(DEFAULT_FALLBACK_ORDER, None, with_grok).len(), 3);
+        assert_eq!(fallback_clients_from(DEFAULT_FALLBACK_ORDER, None, with_grok).len(), 4);
         let clients = fallback_clients_from(DEFAULT_FALLBACK_ORDER, Some(ProviderId::Grok), with_grok);
-        assert_eq!(clients.len(), 2, "grok excluded from its own chain");
+        assert_eq!(clients.len(), 3, "grok excluded from its own chain");
         assert!(clients.iter().all(|c| !c.name().starts_with("grok(")));
     }
 

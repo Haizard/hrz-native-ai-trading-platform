@@ -156,7 +156,7 @@ pub async fn put(
             "PROVIDER_UNKNOWN",
             format!(
                 "`{}` is not a known provider. Known: bedrock, openai, anthropic, openrouter, \
-                 deepseek, grok, huggingface, gemini, cloudflare, openai-compat.",
+                 deepseek, grok, groq, huggingface, gemini, cloudflare, openai-compat.",
                 body.provider
             ),
         )
