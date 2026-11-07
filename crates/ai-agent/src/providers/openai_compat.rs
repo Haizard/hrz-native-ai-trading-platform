@@ -207,6 +207,18 @@ fn max_tokens_for_provider(provider: super::ProviderId, requested: u32) -> u32 {
     }
 }
 
+fn reasoning_effort_for_request(
+    provider: super::ProviderId,
+    model: &str,
+    request: &LlmRequest,
+) -> Option<&'static str> {
+    let is_light_pine_build = request.tools.iter().any(|tool| tool.name == "submit_script");
+    (provider == super::ProviderId::Groq
+        && model == "qwen/qwen3.8-27b"
+        && is_light_pine_build)
+        .then_some("none")
+}
+
 fn compact_groq_indicator_request(mut request: LlmRequest) -> LlmRequest {
     let user_text = request
         .messages
@@ -510,7 +522,14 @@ impl LlmClient for OpenAiCompatClient {
         // 1,000. Keep each request below that ceiling so a long agent tool
         // schema does not make even a short response fail before generation.
         request.max_tokens = max_tokens_for_provider(self.config.provider, request.max_tokens);
-        let body = chat_body(&request, &self.config.model_id);
+        let mut body = chat_body(&request, &self.config.model_id);
+        if let Some(effort) = reasoning_effort_for_request(
+            self.config.provider,
+            &self.config.model_id,
+            &request,
+        ) {
+            body["reasoning_effort"] = json!(effort);
+        }
         let payload = serde_json::to_vec(&body)?;
         let (url, _origin) = self.config.endpoint();
 
@@ -678,6 +697,33 @@ mod tests {
         assert_eq!(max_tokens_for_provider(super::super::ProviderId::Groq, 4096), 900);
         assert_eq!(max_tokens_for_provider(super::super::ProviderId::Groq, 512), 512);
         assert_eq!(max_tokens_for_provider(super::super::ProviderId::Gemini, 4096), 4096);
+    }
+
+    #[test]
+    fn groq_qwen_disables_reasoning_for_script_tool_output() {
+        let mut req = request();
+        req.tools = vec![ToolSpec {
+            name: "submit_script".into(),
+            description: "Submit script".into(),
+            input_schema: json!({"type":"object"}),
+            exposed_tool: None,
+        }];
+        assert_eq!(
+            reasoning_effort_for_request(
+                super::super::ProviderId::Groq,
+                "qwen/qwen3.8-27b",
+                &req
+            ),
+            Some("none")
+        );
+        assert_eq!(
+            reasoning_effort_for_request(
+                super::super::ProviderId::Groq,
+                "qwen/qwen3.8-27b",
+                &request()
+            ),
+            None
+        );
     }
 
     #[test]
