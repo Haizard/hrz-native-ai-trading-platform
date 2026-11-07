@@ -610,11 +610,9 @@
         <p class="pubEyebrow"><span class="pubDot" aria-hidden="true"></span> Platform</p>
         <h1>Everything between a chart<br />and a filled order.</h1>
         <p class="pubLede">
-          The workstation is not a chart with a chat box bolted on. It is one pipeline:
-          market data, shared analytics, an agent that reads the analytics, and execution
-          that consumes the same strategy document the chart drew.
+          One pipeline: live market data → shared analytics → an AI that reasons over the same structured numbers the chart draws → execution against the same strategy document the chart overlaid.
+          Nothing is guessed. Every number is sourced.
         </p>
-        <!-- Concept indicator decorations -->
         <div class="pageHeroConcepts" aria-hidden="true">
           <span class="phc phc--smc" style="--delay:0.1s">BOS</span>
           <span class="phc phc--of"  style="--delay:0.3s">Footprint</span>
@@ -629,127 +627,662 @@
         </div>
       </header>
 
+      <!-- ============================================================
+           1. ORDER-FLOW CHARTING
+           ============================================================ -->
       <section class="pubFeatureRow" aria-labelledby="featChartTitle">
         <div class="pubFeatureRow__copy">
-          <span class="pubFeatureRow__icon" data-icon="chart" data-icon-size="24"></span>
           <p class="pubKicker">Charting</p>
-          <h2 id="featChartTitle">Order flow, not just candles.</h2>
-          <p>Candles are built from the trade stream, so the buy and sell volume in a bar is the same split delta, CVD and footprint use. Six chart modes, drawings, and a wall of up to 100 synchronized panes.</p>
+          <h2 id="featChartTitle">Order flow reads what candles hide.</h2>
+          <p>Candles are derived from the live trade stream — the same stream feeding footprint, delta and CVD. You are never looking at a proxy: buy volume in a bar is the buy aggression that built it.</p>
           <ul class="tickList">
-            <li>Footprint, delta, CVD, delta-by-size, absorption and VPIN.</li>
-            <li>Volume profile with POC, VAH and VAL; session, structure and forecast variants.</li>
-            <li>90+ concepts across SMC, price action, volume and momentum libraries.</li>
-            <li>Multi-timeframe grids that share one live stream per series.</li>
+            <li><strong>Six chart modes:</strong> candles, footprint, delta, CVD, bid/ask delta-by-size, absorption.</li>
+            <li><strong>Volume profile:</strong> session, structure and forecast variants with POC, VAH, VAL, HVN/LVN and single prints.</li>
+            <li><strong>VPIN &amp; absorption:</strong> real-time toxic order-flow detection and iceberg identification.</li>
+            <li><strong>Up to 100 synchronised panes</strong> sharing one live WebSocket stream per series.</li>
+            <li><strong>90+ concept overlays</strong> — SMC, price action, harmonics, Fibonacci, sessions, statistical and economic events.</li>
           </ul>
         </div>
-        <div class="pubFeatureRow__visual miniChart" aria-hidden="true">
-          <div class="miniChart__head"><span>BTCUSDT · 5m</span><span class="miniChart__live">Live</span></div>
-          <div class="miniChart__rows">
-            <div><span>64,210.5</span><i class="buy" style="--w: 74%"></i></div>
-            <div><span>64,198.0</span><i class="buy" style="--w: 52%"></i></div>
-            <div><span>64,186.5</span><i class="sell" style="--w: 68%"></i></div>
-            <div><span>64,174.0</span><i class="buy" style="--w: 88%"></i></div>
-            <div><span>64,162.5</span><i class="sell" style="--w: 44%"></i></div>
-            <div><span>64,150.0</span><i class="buy" style="--w: 62%"></i></div>
-            <div><span>64,138.5</span><i class="sell" style="--w: 36%"></i></div>
+        <div class="pubFeatureRow__visual" aria-hidden="true">
+          <!-- Footprint mini-chart visual -->
+          <div class="fpChart">
+            <div class="fpChart__head"><span>BTCUSDT · 5m · Footprint</span><span class="miniChart__live">Live</span></div>
+            <div class="fpChart__body">
+              <div class="fpRow fpRow--up">
+                <span class="fpRow__price">64,210</span>
+                <span class="fpRow__buy">312×</span>
+                <div class="fpRow__bar fpRow__bar--buy" style="--w:74%"></div>
+                <span class="fpRow__sell">88×</span>
+              </div>
+              <div class="fpRow fpRow--up">
+                <span class="fpRow__price">64,198</span>
+                <span class="fpRow__buy">224×</span>
+                <div class="fpRow__bar fpRow__bar--buy" style="--w:52%"></div>
+                <span class="fpRow__sell">201×</span>
+              </div>
+              <div class="fpRow fpRow--dn">
+                <span class="fpRow__price">64,186</span>
+                <span class="fpRow__buy">97×</span>
+                <div class="fpRow__bar fpRow__bar--sell" style="--w:68%"></div>
+                <span class="fpRow__sell">389×</span>
+              </div>
+              <div class="fpRow fpRow--up fpRow--poc">
+                <span class="fpRow__price">64,174</span>
+                <span class="fpRow__buy">581×</span>
+                <div class="fpRow__bar fpRow__bar--buy" style="--w:88%"></div>
+                <span class="fpRow__sell">112×</span>
+                <span class="fpRow__poc">POC</span>
+              </div>
+              <div class="fpRow fpRow--dn">
+                <span class="fpRow__price">64,162</span>
+                <span class="fpRow__buy">143×</span>
+                <div class="fpRow__bar fpRow__bar--sell" style="--w:44%"></div>
+                <span class="fpRow__sell">267×</span>
+              </div>
+              <div class="fpRow fpRow--up">
+                <span class="fpRow__price">64,150</span>
+                <span class="fpRow__buy">198×</span>
+                <div class="fpRow__bar fpRow__bar--buy" style="--w:62%"></div>
+                <span class="fpRow__sell">154×</span>
+              </div>
+            </div>
+            <div class="fpChart__foot">
+              <span class="fpLegend fpLegend--buy">Buy aggression</span>
+              <span class="fpLegend fpLegend--sell">Sell aggression</span>
+            </div>
           </div>
-          <div class="miniChart__foot"><span>bid</span><span>ask</span></div>
         </div>
       </section>
 
+      <!-- ============================================================
+           2. CONCEPT INDICATORS — visual cards showing what they render
+           ============================================================ -->
+      <section class="pubSection" aria-labelledby="featConceptsTitle">
+        <header class="pubSectionHead">
+          <p class="pubKicker">Concepts library</p>
+          <h2 id="featConceptsTitle">90+ concepts. 16 families. Each one drawn exactly as it appears on the chart.</h2>
+          <p class="pubSectionHead__sub">These are not decorations — they are the actual shapes the platform paints. Hover a card to see the concept's role.</p>
+        </header>
+
+        <!-- SMC family -->
+        <div class="conceptFamilyBlock">
+          <div class="conceptFamilyBlock__head">
+            <span class="conceptFamilyBlock__pill phc phc--smc">Smart Money Concepts</span>
+            <p>Structure, liquidity and the blocks price is drawn back to.</p>
+          </div>
+          <div class="conceptCardGrid">
+
+            <div class="conceptCard conceptCard--smc">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- BOS: horizontal level run with label -->
+                  <line x1="10" y1="38" x2="110" y2="38" stroke="#26a69a" stroke-width="1.5" stroke-dasharray="4 3"/>
+                  <polyline points="10,52 30,48 45,50 55,38 70,32 90,28 110,22" stroke="#26a69a" stroke-width="1.5" fill="none"/>
+                  <rect x="5" y="32" width="28" height="11" rx="2" fill="#26a69a22" stroke="#26a69a" stroke-width="0.8"/>
+                  <text x="19" y="40.5" text-anchor="middle" fill="#26a69a" font-size="6.5" font-family="monospace" font-weight="700">BOS</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Break of Structure</h4>
+                <p>A confirmed close beyond the last structural high or low, resetting the swing sequence.</p>
+                <span class="conceptCard__shape">level_run</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--smc">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <polyline points="10,20 28,28 40,18 55,32 70,22 85,38 100,28 110,42" stroke="#ef5350" stroke-width="1.5" fill="none"/>
+                  <line x1="50" y1="38" x2="115" y2="38" stroke="#ef5350" stroke-width="1.5" stroke-dasharray="4 3"/>
+                  <rect x="72" y="32" width="36" height="11" rx="2" fill="#ef535022" stroke="#ef5350" stroke-width="0.8"/>
+                  <text x="90" y="40.5" text-anchor="middle" fill="#ef5350" font-size="6" font-family="monospace" font-weight="700">CHoCH</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Change of Character</h4>
+                <p>First violation of the current swing sequence — the earliest signal that the trend may be reversing.</p>
+                <span class="conceptCard__shape">level_run</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--smc">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Order Block: filled lifecycle box -->
+                  <rect x="22" y="18" width="36" height="28" rx="2" fill="#26a69a18" stroke="#26a69a" stroke-width="1.2"/>
+                  <text x="40" y="29" text-anchor="middle" fill="#26a69a" font-size="6" font-family="monospace">Order Block</text>
+                  <text x="40" y="38" text-anchor="middle" fill="#26a69a88" font-size="5.5" font-family="monospace">bullish · OB</text>
+                  <polyline points="78,52 88,40 95,44 105,12" stroke="#26a69a" stroke-width="1.5" fill="none"/>
+                  <circle cx="95" cy="44" r="2.5" fill="#26a69a"/>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Order Block</h4>
+                <p>The last opposing candle before a displacement move — the institutional footprint price revisits to fill.</p>
+                <span class="conceptCard__shape">lifecycle_box</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--smc">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- FVG: gap box between two wicks -->
+                  <line x1="38" y1="10" x2="38" y2="50" stroke="#90a4ae" stroke-width="1" stroke-dasharray="2 2"/>
+                  <line x1="72" y1="10" x2="72" y2="50" stroke="#90a4ae" stroke-width="1" stroke-dasharray="2 2"/>
+                  <rect x="38" y="24" width="34" height="18" rx="2" fill="#26a69a14" stroke="#26a69a" stroke-width="1.2" stroke-dasharray="3 2"/>
+                  <text x="55" y="31" text-anchor="middle" fill="#26a69a" font-size="6" font-family="monospace">FVG</text>
+                  <text x="55" y="39" text-anchor="middle" fill="#26a69a88" font-size="5" font-family="monospace">imbalance</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Fair Value Gap</h4>
+                <p>A three-candle imbalance where the middle bar's body exceeds both adjacent wicks, leaving untested price.</p>
+                <span class="conceptCard__shape">lifecycle_box</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--smc">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Liquidity Sweep: level + spike below + return -->
+                  <line x1="10" y1="42" x2="110" y2="42" stroke="#90a4ae" stroke-width="1.2" stroke-dasharray="4 3"/>
+                  <polyline points="10,38 30,40 55,42 62,52 72,42 90,32 110,24" stroke="#26a69a" stroke-width="1.5" fill="none"/>
+                  <circle cx="62" cy="52" r="3" fill="#ef535044" stroke="#ef5350" stroke-width="1"/>
+                  <text x="62" y="58" text-anchor="middle" fill="#ef5350" font-size="5.5" font-family="monospace">sweep</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Liquidity Sweep</h4>
+                <p>A wick engineered below equal lows (or above equal highs) to harvest stop orders before reversing.</p>
+                <span class="conceptCard__shape">segment</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--smc">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- MSS: level_run label -->
+                  <polyline points="10,45 25,42 40,44 55,32 68,24 80,28 95,18 110,14" stroke="#26a69a" stroke-width="1.5" fill="none"/>
+                  <line x1="50" y1="32" x2="110" y2="32" stroke="#26a69a" stroke-width="1.2" stroke-dasharray="3 3"/>
+                  <rect x="56" y="23" width="30" height="12" rx="2" fill="#26a69a1a" stroke="#26a69a" stroke-width="0.8"/>
+                  <text x="71" y="31.5" text-anchor="middle" fill="#26a69a" font-size="6" font-family="monospace" font-weight="700">MSS</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Market Structure Shift</h4>
+                <p>A decisive close that breaks the entire prior swing sequence, confirming a directional bias change.</p>
+                <span class="conceptCard__shape">level_run</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Order Flow family -->
+        <div class="conceptFamilyBlock">
+          <div class="conceptFamilyBlock__head">
+            <span class="conceptFamilyBlock__pill phc phc--of">Order Flow</span>
+            <p>Aggression read from the tape: delta, CVD, and the bars where it turns.</p>
+          </div>
+          <div class="conceptCardGrid">
+
+            <div class="conceptCard conceptCard--of">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Delta histogram bars -->
+                  <rect x="8"  y="30" width="10" height="20" rx="1" fill="#26a69a88"/>
+                  <rect x="22" y="24" width="10" height="26" rx="1" fill="#26a69a"/>
+                  <rect x="36" y="18" width="10" height="32" rx="1" fill="#26a69a"/>
+                  <rect x="50" y="28" width="10" height="14" rx="1" fill="#ef5350aa"/>
+                  <rect x="64" y="22" width="10" height="20" rx="1" fill="#26a69a88"/>
+                  <rect x="78" y="15" width="10" height="35" rx="1" fill="#26a69a"/>
+                  <rect x="92" y="25" width="10" height="10" rx="1" fill="#ef535088"/>
+                  <line x1="4" y1="50" x2="116" y2="50" stroke="#90a4ae" stroke-width="0.8"/>
+                  <text x="60" y="58" text-anchor="middle" fill="#90a4ae" font-size="5.5" font-family="monospace">Bar Delta</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Bar Delta</h4>
+                <p>Net buy minus sell aggression inside each candle. Positive delta confirms bullish intent; negative flags absorption.</p>
+                <span class="conceptCard__shape">series_histogram</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--of">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- CVD cumulative line -->
+                  <polyline points="8,50 20,44 32,38 42,42 54,34 66,26 78,20 92,14 108,10" stroke="#26a69a" stroke-width="2" fill="none"/>
+                  <polyline points="8,50 20,44 32,38 42,42 54,34 66,26 78,20 92,14 108,10 108,58 8,58" fill="#26a69a18"/>
+                  <text x="60" y="58" text-anchor="middle" fill="#26a69a" font-size="5.5" font-family="monospace">CVD</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Cumulative Volume Delta</h4>
+                <p>Running total of delta across the session. A rising CVD with falling price signals bearish divergence.</p>
+                <span class="conceptCard__shape">series_line</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--of">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Footprint cell grid -->
+                  <g fill="none" stroke="#26a69a44" stroke-width="0.5">
+                    <rect x="10" y="8"  width="100" height="11"/>
+                    <rect x="10" y="19" width="100" height="11"/>
+                    <rect x="10" y="30" width="100" height="11"/>
+                    <rect x="10" y="41" width="100" height="11"/>
+                  </g>
+                  <!-- filled buy cells -->
+                  <rect x="10" y="8"  width="74" height="11" fill="#26a69a22"/>
+                  <rect x="10" y="30" width="88" height="11" fill="#26a69a30"/>
+                  <!-- filled sell cells -->
+                  <rect x="10" y="19" width="52" height="11" fill="#ef535018"/>
+                  <rect x="10" y="41" width="34" height="11" fill="#ef535014"/>
+                  <text x="60" y="7" text-anchor="middle" fill="#90a4ae" font-size="5" font-family="monospace">ask × bid · price level</text>
+                  <text x="55" y="15.5" fill="#26a69a" font-size="6" font-family="monospace">247×</text><text x="85" y="15.5" fill="#90a4ae" font-size="6" font-family="monospace">88×</text>
+                  <text x="55" y="26.5" fill="#ef5350" font-size="6" font-family="monospace">112×</text><text x="85" y="26.5" fill="#90a4ae" font-size="6" font-family="monospace">183×</text>
+                  <text x="55" y="37.5" fill="#26a69a" font-size="6" font-family="monospace">392×</text><text x="85" y="37.5" fill="#90a4ae" font-size="6" font-family="monospace">47×</text>
+                  <text x="55" y="48.5" fill="#ef5350" font-size="6" font-family="monospace">64×</text><text x="85" y="48.5" fill="#90a4ae" font-size="6" font-family="monospace">221×</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Footprint</h4>
+                <p>Ask × bid volume at each price level inside a bar, revealing absorption, imbalances, and stack exhaustion.</p>
+                <span class="conceptCard__shape">footprint_grid</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--of">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Absorption: wide bar that didn't move price -->
+                  <rect x="44" y="22" width="32" height="28" rx="2" fill="#26a69a28" stroke="#26a69a" stroke-width="1.5"/>
+                  <text x="60" y="32" text-anchor="middle" fill="#26a69a" font-size="6" font-family="monospace">Absorption</text>
+                  <text x="60" y="41" text-anchor="middle" fill="#26a69a88" font-size="5.5" font-family="monospace">high vol · low Δ</text>
+                  <polyline points="10,48 30,46 44,44 76,44 90,40 110,30" stroke="#90a4ae" stroke-width="1.2" fill="none"/>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Absorption</h4>
+                <p>High volume with minimal price movement — large passive orders absorbing aggression at a level.</p>
+                <span class="conceptCard__shape">lifecycle_box</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Volume Profile family -->
+        <div class="conceptFamilyBlock">
+          <div class="conceptFamilyBlock__head">
+            <span class="conceptFamilyBlock__pill phc phc--vp">Volume Profile</span>
+            <p>Where interest actually traded: point of control, value area, single prints.</p>
+          </div>
+          <div class="conceptCardGrid">
+
+            <div class="conceptCard conceptCard--vp">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Volume profile histogram (horizontal) -->
+                  <rect x="10" y="8"  width="30" height="7" rx="1" fill="#7c3aed44"/>
+                  <rect x="10" y="16" width="55" height="7" rx="1" fill="#7c3aed66"/>
+                  <rect x="10" y="24" width="80" height="7" rx="1" fill="#7c3aed" opacity="0.7"/>
+                  <rect x="10" y="32" width="95" height="7" rx="1" fill="#7c3aed" opacity="0.9"/>
+                  <rect x="10" y="40" width="60" height="7" rx="1" fill="#7c3aed66"/>
+                  <rect x="10" y="48" width="22" height="7" rx="1" fill="#7c3aed33"/>
+                  <text x="108" y="37" fill="#7c3aed" font-size="6" font-family="monospace" font-weight="700">POC</text>
+                  <line x1="105" y1="36" x2="105" y2="36" stroke="#7c3aed" stroke-width="2"/>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Volume Profile + POC</h4>
+                <p>Horizontal histogram of traded volume at each price level. The POC (Point of Control) is the highest-volume node.</p>
+                <span class="conceptCard__shape">price_band</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--vp">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Value area: VAH/VAL bands -->
+                  <rect x="10" y="16" width="100" height="30" rx="2" fill="#7c3aed12" stroke="#7c3aed" stroke-width="1" stroke-dasharray="4 3"/>
+                  <line x1="8" y1="16" x2="112" y2="16" stroke="#7c3aed" stroke-width="1.2"/>
+                  <line x1="8" y1="46" x2="112" y2="46" stroke="#7c3aed" stroke-width="1.2"/>
+                  <text x="14" y="13" fill="#7c3aed" font-size="6" font-family="monospace" font-weight="700">VAH</text>
+                  <text x="14" y="56" fill="#7c3aed" font-size="6" font-family="monospace" font-weight="700">VAL</text>
+                  <text x="60" y="33" text-anchor="middle" fill="#7c3aed" font-size="6" font-family="monospace">Value Area 70%</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Value Area (VAH / VAL)</h4>
+                <p>The price range containing 70% of session volume. Price accepting outside the value area signals directional intent.</p>
+                <span class="conceptCard__shape">price_band</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--vp">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- VWAP line -->
+                  <polyline points="8,50 20,44 34,38 50,32 64,36 78,28 92,22 108,18" stroke="#7c3aed" stroke-width="2" fill="none"/>
+                  <polyline points="8,50 20,44 34,38 50,32 64,36 78,28 92,22 108,18 108,58 8,58" fill="#7c3aed14"/>
+                  <text x="60" y="10" text-anchor="middle" fill="#7c3aed" font-size="6" font-family="monospace" font-weight="700">VWAP</text>
+                  <!-- std dev bands -->
+                  <polyline points="8,44 20,38 34,32 50,26 64,30 78,22 92,16 108,12" stroke="#7c3aed44" stroke-width="1" stroke-dasharray="3 2" fill="none"/>
+                  <polyline points="8,56 20,50 34,44 50,38 64,42 78,34 92,28 108,24" stroke="#7c3aed44" stroke-width="1" stroke-dasharray="3 2" fill="none"/>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>VWAP + Std Dev Bands</h4>
+                <p>Volume-weighted average price anchored to session open. Bands mark institutional equilibrium zones.</p>
+                <span class="conceptCard__shape">series_line</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Price Action family -->
+        <div class="conceptFamilyBlock">
+          <div class="conceptFamilyBlock__head">
+            <span class="conceptFamilyBlock__pill phc phc--pa">Price Action</span>
+            <p>Breaks, retests and the ranges a level is built from.</p>
+          </div>
+          <div class="conceptCardGrid">
+
+            <div class="conceptCard conceptCard--pa">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Support/Resistance level flip -->
+                  <line x1="8" y1="36" x2="112" y2="36" stroke="#f5a524" stroke-width="1.2" stroke-dasharray="4 3"/>
+                  <polyline points="10,50 28,48 45,36 55,30 68,34 80,28 96,20 110,14" stroke="#f5a524" stroke-width="1.5" fill="none"/>
+                  <circle cx="45" cy="36" r="3" fill="#f5a52444" stroke="#f5a524" stroke-width="1"/>
+                  <text x="14" y="33" fill="#f5a524" font-size="5.5" font-family="monospace">Resistance → Support</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Level Flip</h4>
+                <p>A resistance level reclaimed from below — flipped to support, confirming bullish acceptance at that price.</p>
+                <span class="conceptCard__shape">level_run</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--pa">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Breakout with retest -->
+                  <line x1="8" y1="38" x2="112" y2="38" stroke="#f5a524" stroke-width="1.2"/>
+                  <polyline points="10,52 28,50 40,38 50,28 60,32 65,38 72,30 90,20 110,12" stroke="#f5a524" stroke-width="1.5" fill="none"/>
+                  <text x="60" y="55" text-anchor="middle" fill="#f5a52488" font-size="5.5" font-family="monospace">breakout → retest → continuation</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Breakout &amp; Retest</h4>
+                <p>Clean break of a structural level followed by a return to test the level from above (or below), confirming the shift.</p>
+                <span class="conceptCard__shape">level_run</span>
+              </div>
+            </div>
+
+            <div class="conceptCard conceptCard--pa">
+              <div class="conceptCard__visual">
+                <svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Range contraction box -->
+                  <rect x="30" y="20" width="60" height="30" rx="2" fill="#f5a52412" stroke="#f5a524" stroke-width="1.2" stroke-dasharray="4 3"/>
+                  <polyline points="10,10 28,22 30,28 90,32 92,22 110,10" stroke="#f5a52466" stroke-width="1" fill="none" stroke-dasharray="3 2"/>
+                  <text x="60" y="33" text-anchor="middle" fill="#f5a524" font-size="6" font-family="monospace">Range Contraction</text>
+                  <text x="60" y="41" text-anchor="middle" fill="#f5a52488" font-size="5.5" font-family="monospace">compression → breakout</text>
+                </svg>
+              </div>
+              <div class="conceptCard__body">
+                <h4>Range Contraction</h4>
+                <p>Shrinking bars inside a tightening range signal coiled energy. The breakout bar usually has outsized volume.</p>
+                <span class="conceptCard__shape">lifecycle_box</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <div class="pubCenter">
+          <a class="pubBtn" href="#/features">See all 90+ concepts in the workstation →</a>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           3. AI AGENT — deep dive
+           ============================================================ -->
       <section class="pubFeatureRow pubFeatureRow--reverse" aria-labelledby="featAiTitle">
         <div class="pubFeatureRow__copy">
-          <span class="pubFeatureRow__icon pubFeatureRow__icon--ai" data-icon="sparkles" data-icon-size="24"></span>
           <p class="pubKicker">AI analyst</p>
-          <h2 id="featAiTitle">Multi-timeframe by design.</h2>
-          <p>The agent does not receive a screenshot and guess. It calls the same analytics the chart calls, walks the timeframe ladder, and builds a thesis you can audit.</p>
+          <h2 id="featAiTitle">It calls the tools. It never guesses the numbers.</h2>
+          <p>The AI agent is not a language model looking at your chart. It is an orchestrator: it receives a structured JSON description of the market state — price, delta, CVD, POC, VAH/VAL, swings, liquidity, drawings, skills — and calls tool functions to fetch anything it does not already have.</p>
+          <p>Every number in its response is traceable to a tool call. If a tool did not return a number, the agent cannot state it.</p>
           <ul class="tickList">
-            <li>Structured market state: price, delta, CVD, POC, VAH/VAL, imbalances, swings, liquidity.</li>
-            <li>Your drawings, skills and strategy notes are contextual input, not prompt decoration.</li>
-            <li>Provider-agnostic: platform model, or your own OpenAI, Claude, Grok, DeepSeek or OpenRouter key.</li>
-            <li>Every claim carries the tool result it came from; numbers are never recovered from prose.</li>
+            <li><strong>Multi-timeframe ladder:</strong> 1D → 4H → 1H → 5M context built before forming a view.</li>
+            <li><strong>Skills (methodology docs):</strong> your own trading rules loaded as structured context, not a long system prompt.</li>
+            <li><strong>Explainability:</strong> every signal names the concept that fired, the timeframe it fired on, and the tool result that confirmed it.</li>
+            <li><strong>Provider-agnostic:</strong> platform model (Kimi-K2), or connect your own OpenAI, Claude, Grok, DeepSeek or OpenRouter key.</li>
+            <li><strong>Credit metering:</strong> chart analysis = 3 credits, quick answer = 1, backtest read = 5, strategy generation = 8.</li>
           </ul>
         </div>
-        <div class="pubFeatureRow__visual featureStack" aria-hidden="true">
-          <div class="featureStack__row"><span class="featureStack__badge">1D</span><div><b>Higher low intact</b><i class="upBar" style="--w: 78%"></i></div></div>
-          <div class="featureStack__row"><span class="featureStack__badge">4H</span><div><b>Range, premium half</b><i class="upBar" style="--w: 54%"></i></div></div>
-          <div class="featureStack__row"><span class="featureStack__badge">1H</span><div><b>Sell-side sweep</b><i class="downBar" style="--w: 66%"></i></div></div>
-          <div class="featureStack__row featureStack__row--on"><span class="featureStack__badge">5M</span><div><b>Reclaim + positive delta</b><i class="upBar" style="--w: 92%"></i></div></div>
-          <div class="featureStack__foot">the ladder the agent actually reads</div>
+        <div class="pubFeatureRow__visual agentCard" aria-hidden="true">
+          <div class="agentCard__question">
+            <span class="agentCard__qLabel">You asked</span>
+            <p>"Find me a long setup. Check 4H and 5M. I want a sweep followed by positive delta divergence."</p>
+          </div>
+          <div class="agentCard__calls">
+            <div class="agentCard__call">
+              <span class="agentCard__callIcon">⚙</span>
+              <code>get_volume_profile(symbol, "4H")</code>
+              <span class="agentCard__callResult">POC 64,180 · VAH 64,820 · VAL 63,940</span>
+            </div>
+            <div class="agentCard__call">
+              <span class="agentCard__callIcon">⚙</span>
+              <code>get_order_flow(symbol, "5M")</code>
+              <span class="agentCard__callResult">delta +312 vs −88 prior bar · CVD rising</span>
+            </div>
+            <div class="agentCard__call">
+              <span class="agentCard__callIcon">⚙</span>
+              <code>get_concepts(symbol, "5M", "smc.liquidity_sweep")</code>
+              <span class="agentCard__callResult">sweep @ 63,948 · 14:04 UTC · reclaim confirmed</span>
+            </div>
+          </div>
+          <div class="agentCard__thesis">
+            <span class="agentCard__thesisLabel">Thesis</span>
+            <p><strong>Long.</strong> Sell-side sweep at 63,948 swept equal lows (SSL). Immediate reclaim with +312 delta divergence. 4H POC at 64,180 overhead — that's the first target.</p>
+            <div class="agentCard__levels">
+              <span class="up">Entry 64,015</span>
+              <span class="down">Stop 63,890</span>
+              <span>Target 64,180</span>
+            </div>
+          </div>
         </div>
       </section>
 
+      <!-- ============================================================
+           4. SKILLS — methodology as data
+           ============================================================ -->
+      <section class="pubFeatureRow" aria-labelledby="featSkillsTitle">
+        <div class="pubFeatureRow__copy">
+          <p class="pubKicker">Skills</p>
+          <h2 id="featSkillsTitle">Your methodology, loaded as data — not a prompt.</h2>
+          <p>A Skill is a versioned Markdown document that describes a part of your trading methodology: your entry model, your session bias rules, your risk framework. Skills are retrieved contextually — the agent loads the ones relevant to the current setup, not all of them at once.</p>
+          <ul class="tickList">
+            <li><strong>Versioned:</strong> Skills are immutable revisions. Change a rule, bump the version — old setups still carry the version they fired on.</li>
+            <li><strong>Contextual retrieval:</strong> the agent selects Skills matching the current market condition, not a static system prompt.</li>
+            <li><strong>Platform Skills included:</strong> 20 default Skills covering SMC, order-flow, sessions and risk — active the moment you sign up.</li>
+            <li><strong>Community Skills:</strong> publish a Skill, install someone else's, fork it — you own the fork.</li>
+          </ul>
+        </div>
+        <div class="pubFeatureRow__visual skillPanel" aria-hidden="true">
+          <div class="skillPanel__head">
+            <span class="skillPanel__icon">📄</span>
+            <div>
+              <b>smc-entry-model</b>
+              <span>v4 · active</span>
+            </div>
+          </div>
+          <div class="skillPanel__body">
+            <p class="skillPanel__rule"><span class="skillPanel__ruleNum">1</span>Wait for a confirmed BOS or CHoCH on the execution timeframe.</p>
+            <p class="skillPanel__rule"><span class="skillPanel__ruleNum">2</span>Identify the last bullish Order Block that caused the displacement.</p>
+            <p class="skillPanel__rule"><span class="skillPanel__ruleNum">3</span>Enter on a return to the OB with positive delta confirmation.</p>
+            <p class="skillPanel__rule"><span class="skillPanel__ruleNum">4</span>Stop below the OB low. Target the next liquidity pool.</p>
+          </div>
+          <div class="skillPanel__foot">
+            <span class="skillPanel__tag phc phc--smc">SMC</span>
+            <span class="skillPanel__tag phc phc--of">Order Flow</span>
+            <span>retrieved · 14:04 UTC</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           5. BACKTESTING — deterministic
+           ============================================================ -->
+      <section class="pubFeatureRow pubFeatureRow--reverse" aria-labelledby="featBacktestTitle">
+        <div class="pubFeatureRow__copy">
+          <p class="pubKicker">Backtesting</p>
+          <h2 id="featBacktestTitle">Replay real candles. Verify the report.</h2>
+          <p>The backtester is an event-driven replay engine that walks a stored candle table the same way a live bot would walk incoming ticks. The analytics crate is the same one the chart calls — not a re-implementation written for speed that diverges on edge cases.</p>
+          <ul class="tickList">
+            <li><strong>Every trade recorded:</strong> entry, exit, fill price, reason, PnL and the concept that triggered it.</li>
+            <li><strong>Verify command:</strong> re-reads recorded trades against stored market data — exits non-zero on any discrepancy.</li>
+            <li><strong>Parameter sweeps:</strong> test a range of stop/target multiples or lookback windows in one submission.</li>
+            <li><strong>Performance report:</strong> win rate, expectancy, max drawdown, Sharpe, Sortino, Calmar — all computed in Rust.</li>
+            <li><strong>AI interpretation:</strong> ask the agent to read the report and suggest improvements (5 credits).</li>
+          </ul>
+        </div>
+        <div class="pubFeatureRow__visual backtestCard" aria-hidden="true">
+          <div class="backtestCard__head">
+            <span>liquidity-sweep-long · BTCUSDT · 3M candles</span>
+            <span class="backtestCard__pass">Verified ✓</span>
+          </div>
+          <div class="backtestCard__stats">
+            <div><span>Win rate</span><b class="up">64.2%</b></div>
+            <div><span>Expectancy</span><b class="up">+0.82R</b></div>
+            <div><span>Max DD</span><b class="down">−8.4%</b></div>
+            <div><span>Sharpe</span><b>1.34</b></div>
+            <div><span>Trades</span><b>214</b></div>
+            <div><span>History</span><b>3 years</b></div>
+          </div>
+          <div class="backtestCard__equity">
+            <svg viewBox="0 0 200 48" xmlns="http://www.w3.org/2000/svg">
+              <polyline points="0,44 20,40 38,36 52,38 68,30 84,24 100,26 116,18 130,14 148,10 164,12 180,6 200,4"
+                stroke="#26a69a" stroke-width="1.8" fill="none"/>
+              <polyline points="0,44 20,40 38,36 52,38 68,30 84,24 100,26 116,18 130,14 148,10 164,12 180,6 200,4 200,48 0,48"
+                fill="#26a69a14"/>
+            </svg>
+            <span>Equity curve · 3yr</span>
+          </div>
+          <div class="backtestCard__foot">
+            <code>POST /backtests · verify · parameter sweep</code>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           6. STRATEGY STUDIO — three ways in
+           ============================================================ -->
       <section class="pubFeatureRow" aria-labelledby="featStudioTitle">
         <div class="pubFeatureRow__copy">
-          <span class="pubFeatureRow__icon" data-icon="studio" data-icon-size="24"></span>
           <p class="pubKicker">Strategy studio</p>
-          <h2 id="featStudioTitle">Three ways in. One validator.</h2>
-          <p>Describe the idea, write the DSL, or write Pine-lite. Whatever the source, it passes the same validation before it is allowed near a chart, a backtest or a bot.</p>
+          <h2 id="featStudioTitle">Three ways in. One validator. Four targets.</h2>
+          <p>Write a strategy as natural language, as the platform DSL, or as Pine-lite. Whatever the source, it passes the same field-level validator before it can touch a chart, a backtest, a paper bot or a live account. One document, four execution targets.</p>
           <ul class="tickList">
-            <li>Field-level validation reports every problem at once, not the first one.</li>
-            <li>AI-generated logic is compiled and run inside a WASM sandbox.</li>
-            <li>The backtester replays real candles and records every trade it took.</li>
-            <li><code>verify</code> re-checks a report against stored market data.</li>
+            <li><strong>Natural language → DSL:</strong> describe the setup in plain English; the AI converts and validates it.</li>
+            <li><strong>DSL authoring:</strong> declarative condition → action schema designed to be readable and testable.</li>
+            <li><strong>Pine-lite:</strong> familiar Pine Script shape adapted for the platform's analytics. Most scripts adapt cleanly.</li>
+            <li><strong>WASM sandbox:</strong> AI-generated logic is compiled to WASM and runs in an isolated module — no filesystem, no network.</li>
           </ul>
         </div>
         <div class="pubFeatureRow__visual ladder" aria-hidden="true">
-          <div class="ladder__step"><span>Natural language</span><em>“sweep the prior low, then reclaim”</em></div>
-          <div class="ladder__arrow" aria-hidden="true">↓</div>
-          <div class="ladder__step"><span>Validated document</span><em>liquidity_sweep → reclaim → delta</em></div>
-          <div class="ladder__arrow" aria-hidden="true">↓</div>
-          <div class="ladder__step ladder__step--ok"><span>Chart · backtest · paper · live</span><em>same numbers, four targets</em></div>
+          <div class="ladder__step"><span>Natural language</span><em>"sweep the prior low, reclaim, positive delta"</em></div>
+          <div class="ladder__arrow">↓</div>
+          <div class="ladder__step"><span>AI → DSL document</span><em>liquidity_sweep + reclaim + delta_divergence</em></div>
+          <div class="ladder__arrow">↓</div>
+          <div class="ladder__step"><span>Field-level validation</span><em>all conditions and actions checked before save</em></div>
+          <div class="ladder__arrow">↓</div>
+          <div class="ladder__step ladder__step--ok"><span>Four targets</span><em>chart overlay · backtest · paper bot · live bot</em></div>
         </div>
       </section>
 
+      <!-- ============================================================
+           7. AUTOMATION — paper and live bots
+           ============================================================ -->
       <section class="pubFeatureRow pubFeatureRow--reverse" aria-labelledby="featBotsTitle">
         <div class="pubFeatureRow__copy">
-          <span class="pubFeatureRow__icon" data-icon="bots" data-icon-size="24"></span>
           <p class="pubKicker">Automation</p>
-          <h2 id="featBotsTitle">Paper first. Then your account.</h2>
-          <p>Analysis is public; trading is yours. Connect a broker account when you are ready, and a live bot places orders on the account you chose — never on a deployment default.</p>
+          <h2 id="featBotsTitle">Paper first. Then your own broker account.</h2>
+          <p>Live bots connect to your exchange account, not a shared account. Your API key is encrypted with AES-256-GCM and bound to your user ID and the specific venue — copying the ciphertext to another user ID produces garbage.</p>
           <ul class="tickList">
-            <li>Keys sealed with AES-256-GCM and bound to your user and venue.</li>
-            <li>A key with withdrawal permission is refused before it is stored.</li>
-            <li>Kill switch, pause, resume, and a live event stream per bot.</li>
-            <li>Alerts and zone watchers run whether or not a chart is open.</li>
+            <li><strong>Key safety:</strong> keys with withdrawal permission are refused at storage time, not at execution.</li>
+            <li><strong>Kill switch:</strong> one click stops all positions and cancels all open orders.</li>
+            <li><strong>Zone watchers:</strong> monitor a price zone 24/7; fire an alert or a bot signal when price enters.</li>
+            <li><strong>Live event stream:</strong> every bot tick, fill, error and kill event is streamed to the panel in real time.</li>
+            <li><strong>Paper mode first:</strong> run the same strategy on live-shaped simulated fills before risking capital.</li>
           </ul>
         </div>
         <div class="pubFeatureRow__visual botCard" aria-hidden="true">
-          <div class="botCard__head"><span class="botCard__dot"></span> liquidity-sweep · BTCUSDT</div>
+          <div class="botCard__head"><span class="botCard__dot"></span> liquidity-sweep · BTCUSDT · Paper</div>
           <div class="botCard__grid">
-            <div><span>Mode</span><b>Paper</b></div>
             <div><span>State</span><b class="up">Running</b></div>
-            <div><span>Position</span><b>Flat</b></div>
-            <div><span>Next check</span><b>00:42</b></div>
+            <div><span>Position</span><b>Long 0.12 BTC</b></div>
+            <div><span>Entry</span><b>64,015</b></div>
+            <div><span>Stop</span><b class="down">63,890</b></div>
+            <div><span>Target</span><b>64,180</b></div>
+            <div><span>PnL</span><b class="up">+$24.60</b></div>
           </div>
           <div class="botCard__log">
-            <p><span>12:04</span> signal: sweep + reclaim on 5m</p>
-            <p><span>12:04</span> entry 64,180 · stop 63,940</p>
-            <p><span>12:19</span> target reached · +2.0R</p>
+            <p><span>14:04</span> signal: sweep + reclaim on 5m</p>
+            <p><span>14:04</span> entry filled @ 64,015 (paper)</p>
+            <p><span>14:18</span> target hit @ 64,180 · +$24.60</p>
           </div>
-          <div class="botCard__actions"><span>Pause</span><span class="botCard__kill">Kill</span></div>
+          <div class="botCard__actions"><span>Pause</span><span>→ Live</span><span class="botCard__kill">Kill</span></div>
         </div>
       </section>
 
+      <!-- ============================================================
+           8. TRUST / ARCHITECTURE
+           ============================================================ -->
       <section class="pubSection" aria-labelledby="featTrustTitle">
         <header class="pubSectionHead">
-          <p class="pubKicker">Trust</p>
-          <h2 id="featTrustTitle">Built like a trading system, not a demo.</h2>
+          <p class="pubKicker">Architecture</p>
+          <h2 id="featTrustTitle">One deterministic core. Chart = backtest = bot.</h2>
+          <p class="pubSectionHead__sub">The most common failure mode in retail trading tools is a backtest that uses different logic than the bot. Here it cannot happen — the analytics crate is the same binary everywhere.</p>
         </header>
         <div class="trustGrid">
-          <article><span data-icon="lock" data-icon-size="20"></span><h3>Secrets stay sealed</h3><p>Broker keys are encrypted at rest and never returned by any route. Moving a ciphertext to another user fails to decrypt.</p></article>
-          <article><span data-icon="sliders" data-icon-size="20"></span><h3>AI code is sandboxed</h3><p>Generated logic runs in WASM with no filesystem, network or shell access. A panic traps the module.</p></article>
-          <article><span data-icon="check-circle" data-icon-size="20"></span><h3>One source of numbers</h3><p>The backend, the chart and the backtester share one analytics crate. What you see is what was tested.</p></article>
-          <article><span data-icon="alert" data-icon-size="20"></span><h3>Refusals are explicit</h3><p>A missing permission, an unvalidated script or a plan limit answers with a machine-readable code, not a silent no.</p></article>
+          <article>
+            <div class="trustGrid__icon">⬡</div>
+            <h3>Rust analytics core</h3>
+            <p>Footprint, delta, CVD, VWAP, volume profile, market structure, imbalances and absorption — one shared crate. The chart, the backtester and the live bot call the same functions with the same rounding.</p>
+          </article>
+          <article>
+            <div class="trustGrid__icon">🔒</div>
+            <h3>Sealed broker keys</h3>
+            <p>AES-256-GCM encryption keyed on your user ID and the venue name. A key extracted from the database and loaded into a different account decrypts to garbage. Withdrawal-capable keys are rejected on input.</p>
+          </article>
+          <article>
+            <div class="trustGrid__icon">⬛</div>
+            <h3>WASM-sandboxed AI code</h3>
+            <p>Strategy logic generated by the AI is compiled to WASM and run inside an isolated module with no filesystem, no network, no shell access, and a strict instruction-count budget. A panic traps the module.</p>
+          </article>
+          <article>
+            <div class="trustGrid__icon">✓</div>
+            <h3>Verifiable backtests</h3>
+            <p>Every recorded trade references the exact candle it triggered on. The <code>verify</code> command re-reads those trades against the stored candle table and exits non-zero on any discrepancy.</p>
+          </article>
         </div>
       </section>
 
       <section class="pubSection pubFinal">
         <div class="pubFinal__inner">
-          <h2>Open the desk.</h2>
-          <p>Free to start. Bring your own broker when you are ready.</p>
+          <h2>Open the desk. Read the market.</h2>
+          <p>Free to start. No card. Your broker account when you are ready.</p>
           <div class="pubFinal__actions">
-            <button class="pubBtn pubBtn--primary" type="button" data-public-auth>Create a free account</button>
+            <a class="pubBtn pubBtn--primary" href="#/signup">Create a free account</a>
+            <a class="pubBtn" href="#/pricing">See pricing</a>
           </div>
         </div>
       </section>

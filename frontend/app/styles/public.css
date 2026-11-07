@@ -2028,3 +2028,400 @@ body:not(.isSignedIn) #connDotTop { display: none !important; }
   .heroCta { flex-direction: column; }
   .pubBtn--lg { width: 100%; }
 }
+
+/* ==========================================================================
+   NEW: Features page components — footprint chart, concept family blocks,
+        concept cards with SVG visuals, agent card, skills panel,
+        backtest card, improved trust grid, pubSectionHead__sub.
+   ========================================================================== */
+
+/* ---- Section head sub-paragraph ----------------------------------------- */
+
+.pubSectionHead__sub {
+  max-width: 66ch;
+  margin: var(--space-3) 0 0;
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+/* ---- Footprint chart visual ---------------------------------------------- */
+
+.fpChart {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  background: var(--bg-panel);
+  overflow: hidden;
+  font: var(--text-2xs)/1 var(--font-mono);
+}
+.fpChart__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--text-2);
+  font-size: 11px;
+}
+.fpChart__body { padding: var(--space-2) var(--space-3); display: flex; flex-direction: column; gap: 3px; }
+.fpRow {
+  display: grid;
+  grid-template-columns: 52px 30px 1fr 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  border-radius: var(--radius-1);
+  position: relative;
+}
+.fpRow--poc { background: color-mix(in srgb, var(--ai-soft) 60%, transparent); }
+.fpRow__price { color: var(--text-2); font-size: 10px; }
+.fpRow__buy  { color: var(--up);   text-align: right; font-size: 10px; font-weight: 600; }
+.fpRow__sell { color: var(--down); text-align: left;  font-size: 10px; }
+.fpRow__bar {
+  height: 14px;
+  border-radius: 2px;
+  width: calc(var(--w, 50%) * 0.9);
+}
+.fpRow__bar--buy  { background: color-mix(in srgb, var(--up)   70%, transparent); }
+.fpRow__bar--sell { background: color-mix(in srgb, var(--down) 70%, transparent); }
+.fpRow__poc {
+  position: absolute;
+  right: 4px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--ai-soft);
+  color: var(--ai);
+  font-size: 9px;
+  font-weight: 700;
+}
+.fpChart__foot {
+  display: flex;
+  gap: var(--space-3);
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-raised);
+}
+.fpLegend { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--text-3); }
+.fpLegend--buy::before  { content: ""; display: inline-block; width: 10px; height: 4px; border-radius: 2px; background: var(--up); }
+.fpLegend--sell::before { content: ""; display: inline-block; width: 10px; height: 4px; border-radius: 2px; background: var(--down); }
+
+/* ---- Concept family blocks ---------------------------------------------- */
+
+.conceptFamilyBlock {
+  margin-bottom: var(--space-8);
+}
+.conceptFamilyBlock__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.conceptFamilyBlock__head p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.conceptFamilyBlock__pill {
+  flex-shrink: 0;
+  animation: none !important;
+  opacity: 1 !important;
+}
+
+/* ---- Concept cards grid -------------------------------------------------- */
+
+.conceptCardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-4);
+}
+
+.conceptCard {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  background: var(--bg-panel);
+  overflow: hidden;
+  transition: transform 0.25s var(--ease), border-color 0.2s var(--ease), box-shadow 0.25s var(--ease);
+}
+.conceptCard:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 32px -8px rgba(4,8,12,0.4);
+}
+.conceptCard--smc:hover { border-color: var(--accent-line); }
+.conceptCard--of:hover  { border-color: rgba(22,199,132,0.45); }
+.conceptCard--vp:hover  { border-color: color-mix(in srgb, var(--ai) 45%, transparent); }
+.conceptCard--pa:hover  { border-color: rgba(245,165,36,0.45); }
+
+.conceptCard__visual {
+  padding: var(--space-3) var(--space-3) var(--space-2);
+  background: var(--bg-canvas);
+  border-bottom: 1px solid var(--line);
+}
+.conceptCard__visual svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.conceptCard__body {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  flex: 1;
+}
+.conceptCard__body h4 {
+  margin: 0;
+  color: var(--text-1);
+  font: 600 var(--text-sm)/1.2 var(--font-ui);
+}
+.conceptCard__body p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+.conceptCard__shape {
+  margin-top: auto;
+  padding-top: var(--space-2);
+  color: var(--text-3);
+  font: 400 var(--text-2xs)/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
+/* ---- Agent card visual --------------------------------------------------- */
+
+.agentCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  background: var(--bg-panel);
+  font-size: var(--text-xs);
+}
+
+.agentCard__question {
+  padding: var(--space-3);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-2);
+  background: var(--accent-soft);
+}
+.agentCard__qLabel {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--accent);
+  font: 600 var(--text-2xs)/1 var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.agentCard__question p { margin: 0; color: var(--text-2); font-style: italic; line-height: 1.5; }
+
+.agentCard__calls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.agentCard__call {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--bg-canvas);
+}
+.agentCard__callIcon { color: var(--text-3); font-size: 11px; }
+.agentCard__call code {
+  display: block;
+  color: var(--ai);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+.agentCard__callResult { color: var(--text-3); font-size: 10px; font-family: var(--font-mono); }
+
+.agentCard__thesis {
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--up) 30%, transparent);
+  border-radius: var(--radius-2);
+  background: color-mix(in srgb, var(--up-soft) 60%, transparent);
+}
+.agentCard__thesisLabel {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--up);
+  font: 600 var(--text-2xs)/1 var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.agentCard__thesis p { margin: 0 0 var(--space-2); color: var(--text-2); line-height: 1.5; }
+.agentCard__levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.agentCard__levels span {
+  padding: 3px 8px;
+  border-radius: var(--radius-1);
+  background: var(--bg-canvas);
+  border: 1px solid var(--line);
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-2);
+}
+.agentCard__levels .up  { color: var(--up);   border-color: rgba(22,199,132,0.35); background: var(--up-soft);  }
+.agentCard__levels .down { color: var(--down); border-color: rgba(239,83,80,0.3);  background: var(--down-soft); }
+
+/* ---- Skills panel visual ------------------------------------------------- */
+
+.skillPanel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  background: var(--bg-panel);
+  overflow: hidden;
+  font-size: var(--text-xs);
+}
+.skillPanel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
+}
+.skillPanel__icon { font-size: 18px; }
+.skillPanel__head b { display: block; color: var(--text-1); font: 600 var(--text-sm)/1 var(--font-ui); }
+.skillPanel__head span { color: var(--text-3); font-size: var(--text-2xs); }
+.skillPanel__body { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); flex: 1; }
+.skillPanel__rule {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.skillPanel__ruleNum {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font: 700 10px/1 var(--font-ui);
+  margin-top: 1px;
+}
+.skillPanel__foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--line);
+  background: var(--bg-canvas);
+}
+.skillPanel__tag { animation: none !important; opacity: 1 !important; }
+.skillPanel__foot > span:last-child { margin-left: auto; color: var(--text-3); font-family: var(--font-mono); font-size: 10px; }
+
+/* ---- Backtest card visual ------------------------------------------------ */
+
+.backtestCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  background: var(--bg-panel);
+  font-size: var(--text-xs);
+}
+.backtestCard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.backtestCard__pass {
+  padding: 3px 8px;
+  border-radius: var(--radius-1);
+  background: var(--up-soft);
+  border: 1px solid rgba(22,199,132,0.35);
+  color: var(--up);
+  font: 600 10px/1 var(--font-ui);
+  white-space: nowrap;
+}
+.backtestCard__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+}
+.backtestCard__stats div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  background: var(--bg-canvas);
+}
+.backtestCard__stats span { color: var(--text-3); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; }
+.backtestCard__stats b    { color: var(--text-1); font: 600 12px/1 var(--font-mono); }
+.backtestCard__equity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-2) 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--bg-canvas);
+  overflow: hidden;
+}
+.backtestCard__equity svg { display: block; width: 100%; height: auto; }
+.backtestCard__equity > span { color: var(--text-3); font-size: 10px; font-family: var(--font-mono); padding: 0 0 var(--space-2); }
+.backtestCard__foot {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+.backtestCard__foot code { color: var(--text-3); font-size: 10px; }
+
+/* ---- Trust grid: icon treatment ----------------------------------------- */
+
+.trustGrid__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: var(--space-2);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  font-size: 18px;
+}
+
+/* ---- Responsive ---------------------------------------------------------- */
+
+@media (max-width: 767px) {
+  .conceptCardGrid { grid-template-columns: repeat(2, 1fr); }
+  .conceptFamilyBlock__head { flex-direction: column; align-items: flex-start; }
+  .backtestCard__stats { grid-template-columns: repeat(2, 1fr); }
+  .agentCard__levels { flex-direction: column; }
+}
+@media (max-width: 480px) {
+  .conceptCardGrid { grid-template-columns: 1fr; }
+}
