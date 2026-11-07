@@ -199,6 +199,82 @@ impl OpenAiCompatClient {
     }
 }
 
+fn max_tokens_for_provider(provider: super::ProviderId, requested: u32) -> u32 {
+    if provider == super::ProviderId::Groq {
+        requested.min(900)
+    } else {
+        requested
+    }
+}
+
+fn compact_groq_indicator_request(mut request: LlmRequest) -> LlmRequest {
+    let user_text = request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == crate::llm_client::Role::User)
+        .map(|message| {
+            message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    crate::llm_client::ContentBlock::Text(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase()
+        })
+        .unwrap_or_default();
+    let script_build = request.tools.iter().any(|tool| tool.name == "submit_script");
+    let indicator_build = user_text.contains("indicator")
+        && ["build", "create", "generate", "make"]
+            .iter()
+            .any(|verb| user_text.contains(verb))
+        && request.tools.iter().any(|tool| tool.name == "create_indicator");
+    if !indicator_build && !script_build {
+        return request;
+    }
+
+    // Groq's free on-demand token budget is much smaller than the chart
+    // analyst's full tool catalog and Light Pine reference. For an indicator
+    // build, preserve the user's request (including image blocks) and the
+    // task-relevant tool(s), replacing the broad prompt with focused guidance.
+    if script_build {
+        request.system = Some(
+            "You write complete, compilable chart indicators in this platform's Light Pine \
+             language. Respond only by calling `submit_script` with `script` and `report`. \
+             Start source with `//@pine_lite version=1 overlay=true`. Use OHLCV series \
+             `open`, `high`, `low`, `close`, `volume`, plus `bar_index` and `time`. Use \
+             typed inputs (`input.float`, `input.int`, `input.bool`, `input.string`), \
+             arithmetic and history indexing, supported `ta.*` functions, `plot`, `plotshape`, \
+             `hline`, `barcolor`, and `color.*`. Keep syntax simple and use only features \
+             the request requires; do not write Pine `indicator()` or `strategy()` wrappers, \
+             orders, network calls, or unsupported Pine constructs. Preserve the user's \
+             requested formulas, defaults, plots and signals. If chart images are supplied, \
+             treat them as visual context, never as numeric data. The platform will compile \
+             and validate the script; report honestly and concisely what it detects, draws, \
+             its defaults, limitations and suggested adjustments."
+                .into(),
+        );
+    } else {
+        request.system = Some(
+            "You are an AI chart indicator builder. The user asked to build an indicator. \
+             Call `create_indicator` with the complete requested behavior, formulas, plots, \
+             signals and inputs; preserve their requirements and use the platform's Light \
+             Pine format. Do not create a trading strategy or place orders. After the build \
+             tool returns, call `submit_thesis` with a brief status summary that accurately \
+             reports whether the indicator compiled and attached. If chart images are present, \
+             use them only as context; do not invent candle values from the image."
+                .into(),
+        );
+        request.tools.retain(|tool| {
+            matches!(tool.name.as_str(), "create_indicator" | "submit_thesis")
+        });
+    }
+    request
+}
+
 /// Serialize one [`LlmRequest`] as a Chat Completions body.
 ///
 /// A free function so the wire shape is testable without a transport.
@@ -426,7 +502,14 @@ fn into_response(wire: WireResponse) -> LlmResponse {
 
 #[async_trait]
 impl LlmClient for OpenAiCompatClient {
-    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, AgentError> {
+    async fn complete(&self, mut request: LlmRequest) -> Result<LlmResponse, AgentError> {
+        if self.config.provider == super::ProviderId::Groq {
+            request = compact_groq_indicator_request(request);
+        }
+        // The Groq on-demand tier currently caps output tokens per minute at
+        // 1,000. Keep each request below that ceiling so a long agent tool
+        // schema does not make even a short response fail before generation.
+        request.max_tokens = max_tokens_for_provider(self.config.provider, request.max_tokens);
         let body = chat_body(&request, &self.config.model_id);
         let payload = serde_json::to_vec(&body)?;
         let (url, _origin) = self.config.endpoint();
@@ -589,6 +672,71 @@ impl LlmClient for OpenAiCompatClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn groq_output_budget_stays_under_free_tier_ceiling() {
+        assert_eq!(max_tokens_for_provider(super::super::ProviderId::Groq, 4096), 900);
+        assert_eq!(max_tokens_for_provider(super::super::ProviderId::Groq, 512), 512);
+        assert_eq!(max_tokens_for_provider(super::super::ProviderId::Gemini, 4096), 4096);
+    }
+
+    #[test]
+    fn groq_indicator_builds_use_compact_instructions_and_tools() {
+        let mut req = request();
+        req.messages = vec![Message::user(
+            "Build an overlay indicator from this chart and attach it",
+        )];
+        req.tools = vec![
+            ToolSpec {
+                name: "create_indicator".into(),
+                description: "Create a chart indicator".into(),
+                input_schema: json!({"type":"object"}),
+                exposed_tool: None,
+            },
+            ToolSpec {
+                name: "submit_thesis".into(),
+                description: "Return a summary".into(),
+                input_schema: json!({"type":"object"}),
+                exposed_tool: None,
+            },
+            ToolSpec {
+                name: "scan_market".into(),
+                description: "Scan symbols".into(),
+                input_schema: json!({"type":"object"}),
+                exposed_tool: None,
+            },
+        ];
+        req.system = Some("a large general-purpose chart analyst prompt".repeat(500));
+
+        let compact = compact_groq_indicator_request(req);
+        assert!(compact.system.as_deref().unwrap().len() < 1000);
+        assert_eq!(compact.tools.len(), 2);
+        assert!(compact.tools.iter().any(|tool| tool.name == "create_indicator"));
+        assert!(compact.tools.iter().any(|tool| tool.name == "submit_thesis"));
+        assert!(compact.messages[0].text().contains("Build an overlay indicator"));
+    }
+
+    #[test]
+    fn groq_light_pine_requests_use_a_compact_language_prompt() {
+        let mut req = request();
+        req.messages = vec![Message::user(
+            "Build a Light Pine indicator that plots session VWAP bands",
+        )];
+        req.tools = vec![ToolSpec {
+            name: "submit_script".into(),
+            description: "Submit the complete script for validation".into(),
+            input_schema: json!({"type":"object","required":["script","report"]}),
+            exposed_tool: None,
+        }];
+        req.system = Some("very large Light Pine language reference ".repeat(2000));
+
+        let compact = compact_groq_indicator_request(req);
+        assert!(compact.system.as_deref().unwrap().len() < 2_000);
+        assert_eq!(compact.tools.len(), 1);
+        assert_eq!(compact.tools[0].name, "submit_script");
+        assert!(compact.system.as_deref().unwrap().contains("Light Pine"));
+        assert!(compact.messages[0].text().contains("session VWAP bands"));
+    }
     use crate::llm_client::{ToolResult, ToolSpec};
     use serde_json::json;
 

@@ -143,7 +143,7 @@ impl ProviderId {
             Self::OpenRouter => "openai/gpt-4o",
             Self::DeepSeek => "deepseek-chat",
             Self::Grok => "grok-4.7",
-            Self::Groq => "meta-llama/llama-4-scout-17b-16e-instruct",
+            Self::Groq => "qwen/qwen3.8-27b",
             Self::HuggingFace => "meta-llama/Llama-3.3-70B-Instruct",
             Self::Gemini => "gemini-3.8-flash",
             Self::Cloudflare => "@cf/meta/llama-4-scout-17b-16e-instruct",

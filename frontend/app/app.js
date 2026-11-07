@@ -14560,7 +14560,7 @@ const AI_PROVIDERS = [
   { id: "openrouter", name: "OpenRouter", base: "https://openrouter.ai/api/v1", models: ["openai/gpt-4o", "anthropic/claude-sonnet-4.5", "deepseek/deepseek-chat"] },
   { id: "deepseek", name: "DeepSeek", base: "https://api.deepseek.com/v1", models: ["deepseek-chat", "deepseek-reasoner"] },
   { id: "grok", name: "xAI (Grok)", base: "https://api.x.ai/v1", models: ["grok-3", "grok-3-mini"] },
-  { id: "groq", name: "Groq", base: "https://api.groq.com/openai/v1", models: ["meta-llama/llama-4-scout-17b-16e-instruct", "qwen/qwen3.8-27b"] },
+  { id: "groq", name: "Groq", base: "https://api.groq.com/openai/v1", models: ["qwen/qwen3.8-27b"] },
   { id: "huggingface", name: "HuggingFace", base: "https://router.huggingface.co/v1", models: ["meta-llama/Llama-3.3-70B-Instruct"] },
   { id: "gemini", name: "Google Gemini", base: "https://generativelanguage.googleapis.com/v1beta/openai", models: ["gemini-3.8-flash", "gemini-3.6-flash"] },
   { id: "cloudflare", name: "Cloudflare Workers AI", base: "", models: ["@cf/meta/llama-4-scout-17b-16e-instruct"] },
