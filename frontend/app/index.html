@@ -550,6 +550,77 @@
         </div>
       </section>
 
+      <!-- Market data & brokers ------------------------------------------------ -->
+      <section class="pubSection" aria-labelledby="pubMarketsTitle">
+        <header class="pubSectionHead">
+          <p class="pubKicker">Market data</p>
+          <h2 id="pubMarketsTitle">Live feeds. Real tape. Your broker.</h2>
+          <p class="pubSectionHead__sub">
+            Charts are built from a real-time trade stream, not a delayed price feed. Order books are
+            maintained in memory at full depth. You connect your own broker account — the platform
+            never holds your money or trades on your behalf without a bot you explicitly started.
+          </p>
+        </header>
+        <div class="marketsGrid">
+          <div class="marketBlock">
+            <div class="marketBlock__head">
+              <span class="marketBlock__icon">⚡</span>
+              <h3>Real-time trade stream</h3>
+            </div>
+            <p>Every candle is constructed tick-by-tick from the exchange WebSocket. The buy/sell aggression split in a bar is the same number footprint, delta and CVD read — not a proxy, not a close approximation.</p>
+            <div class="marketBlock__chips">
+              <span class="phc phc--of">Tick-level</span>
+              <span class="phc phc--of">Sub-100ms</span>
+              <span class="phc phc--of">WebSocket binary</span>
+            </div>
+          </div>
+          <div class="marketBlock">
+            <div class="marketBlock__head">
+              <span class="marketBlock__icon">📊</span>
+              <h3>Full order book depth</h3>
+            </div>
+            <p>Order book snapshots and incremental updates are maintained in memory and served over the same WebSocket that feeds the chart. Bid/ask imbalance, stacked orders and iceberg detection all read the live book.</p>
+            <div class="marketBlock__chips">
+              <span class="phc phc--vp">Depth 20+</span>
+              <span class="phc phc--vp">Incremental</span>
+              <span class="phc phc--vp">Iceberg detection</span>
+            </div>
+          </div>
+          <div class="marketBlock">
+            <div class="marketBlock__head">
+              <span class="marketBlock__icon">🏦</span>
+              <h3>Supported exchanges</h3>
+            </div>
+            <p>Market data is collected from major spot and derivatives venues. Live bot execution routes to the exchange account you connect — you supply an API key with trade-only permission; withdrawal keys are refused.</p>
+            <div class="marketExchanges">
+              <span class="exchangeBadge">Binance</span>
+              <span class="exchangeBadge">Binance Futures</span>
+              <span class="exchangeBadge exchangeBadge--soon">Bybit</span>
+              <span class="exchangeBadge exchangeBadge--soon">OKX</span>
+              <span class="exchangeBadge exchangeBadge--soon">Coinbase</span>
+              <span class="exchangeBadge exchangeBadge--soon">Kraken</span>
+            </div>
+          </div>
+          <div class="marketBlock">
+            <div class="marketBlock__head">
+              <span class="marketBlock__icon">🔐</span>
+              <h3>Sealed broker keys</h3>
+            </div>
+            <p>Your API key is encrypted with AES-256-GCM, keyed on your user ID and the venue name. A key copied to a different account decrypts to garbage. Keys with withdrawal permission are rejected before they are stored.</p>
+            <div class="marketBlock__chips">
+              <span class="phc phc--smc">AES-256-GCM</span>
+              <span class="phc phc--smc">Trade-only</span>
+              <span class="phc phc--smc">Per-user bound</span>
+            </div>
+          </div>
+        </div>
+        <div class="marketSymbols" aria-label="Live symbols">
+          <span>BTCUSDT</span><span>ETHUSDT</span><span>SOLUSDT</span><span>BNBUSDT</span>
+          <span>XRPUSDT</span><span>DOGEUSDT</span><span>ADAUSDT</span><span>AVAXUSDT</span>
+          <span>LINKUSDT</span><span>MATICUSDT</span><span>+ 3,700 more</span>
+        </div>
+      </section>
+
       <section class="pubSection pubSection--alt" aria-labelledby="pubPriceTeaseTitle">
         <header class="pubSectionHead">
           <p class="pubKicker">Pricing</p>
@@ -591,14 +662,65 @@
         </div>
       </section>
 
+      <!-- Founding Desk promotion -------------------------------------------- -->
+      <section class="pubSection foundingDesk" aria-labelledby="foundingDeskTitle">
+        <div class="foundingDesk__inner">
+          <div class="foundingDesk__badge" aria-hidden="true">⬡</div>
+          <div class="foundingDesk__copy">
+            <p class="pubKicker">Founding Desk · Limited offer</p>
+            <h2 id="foundingDeskTitle">The first 200 loyal Pro subscribers get a permanent Desk upgrade.</h2>
+            <p>
+              Subscribe to the Pro plan for <strong>three consecutive months</strong> and, if you are among the first
+              200 traders to reach that milestone, your account is permanently upgraded to the <strong>Desk plan</strong>
+              — at no extra cost, for as long as you keep an active Pro subscription.
+              You become a founding member of the HRZ trading family.
+            </p>
+            <div class="foundingDesk__perks">
+              <div class="foundingDesk__perk">
+                <span class="foundingDesk__perkIcon up">✓</span>
+                <span>All Desk limits (5,000 AI credits, 5 live bots, 50 paper bots, unlimited history)</span>
+              </div>
+              <div class="foundingDesk__perk">
+                <span class="foundingDesk__perkIcon up">✓</span>
+                <span>Bring-your-own model key (Elite + Desk feature)</span>
+              </div>
+              <div class="foundingDesk__perk">
+                <span class="foundingDesk__perkIcon up">✓</span>
+                <span>Dedicated onboarding session with the team</span>
+              </div>
+              <div class="foundingDesk__perk">
+                <span class="foundingDesk__perkIcon up">✓</span>
+                <span>Priority feature placement and a founding-member badge on your community profile</span>
+              </div>
+              <div class="foundingDesk__perk">
+                <span class="foundingDesk__perkIcon up">✓</span>
+                <span>Direct access to the developer for feedback and early features</span>
+              </div>
+            </div>
+            <div class="foundingDesk__condition">
+              <p><strong>How it works:</strong> subscribe to Pro ($24/mo), pay for three consecutive billing periods, and the system automatically checks whether you are in the first 200 to reach that milestone. If you are, the Desk upgrade is applied instantly. No application needed.</p>
+            </div>
+            <div class="foundingDesk__actions">
+              <a class="pubBtn pubBtn--primary" href="#/signup">Start Pro — 14-day free trial</a>
+              <a class="pubBtn" href="#/pricing">See what Desk includes</a>
+            </div>
+          </div>
+          <div class="foundingDesk__counter" aria-label="Spots remaining">
+            <div class="foundingDesk__counterNum">200</div>
+            <div class="foundingDesk__counterLabel">founding spots</div>
+            <div class="foundingDesk__counterSub">first 200 Pro loyalists only</div>
+          </div>
+        </div>
+      </section>
+
       <section class="pubSection pubFinal" aria-labelledby="pubFinalTitle">
         <div class="pubFinal__inner">
           <p class="pubKicker">The door</p>
           <h2 id="pubFinalTitle">Put an analyst on your charts.</h2>
           <p>Free to start. No card. Your data, your broker, your methodology.</p>
           <div class="pubFinal__actions">
-            <button class="pubBtn pubBtn--primary" type="button" data-public-auth>Create a free account</button>
-            <button class="pubBtn" type="button" data-public-auth>Sign in</button>
+            <a class="pubBtn pubBtn--primary" href="#/signup">Create a free account</a>
+            <a class="pubBtn" href="#/signin">Sign in</a>
           </div>
         </div>
       </section>
@@ -1337,16 +1459,17 @@
           </ul>
         </article>
         <article class="priceCard priceCard--featured" data-plan="pro">
-          <span class="priceCard__flag">Most popular</span>
-          <header class="priceCard__head"><h2>Pro</h2><p>The full analytical desk, with one live bot.</p></header>
-          <p class="priceCard__price"><span class="priceCard__amount">$24</span><span class="priceCard__per">/mo</span></p>
-          <button class="pubBtn pubBtn--primary priceCard__cta" type="button" data-public-auth>Choose Pro</button>
-          <ul class="priceCard__list">
-            <li>50 panes per layout</li><li>100 saved layouts</li><li>200 alerts · 20 zone watchers</li>
-            <li>1,200 AI credits / month</li><li>300 backtests / month</li><li>3 years of history</li>
-            <li>10 paper bots · 1 live bot</li><li>Advanced order flow · priority support</li>
-          </ul>
-        </article>
+            <span class="priceCard__flag">Most popular</span>
+            <div class="priceCard__founding" title="Founding Desk: first 200 Pro loyalists (3 consecutive months) get a permanent Desk upgrade">⬡ Founding Desk eligible</div>
+            <header class="priceCard__head"><h2>Pro</h2><p>The full analytical desk, with one live bot.</p></header>
+            <p class="priceCard__price"><span class="priceCard__amount">$24</span><span class="priceCard__per">/mo</span></p>
+            <button class="pubBtn pubBtn--primary priceCard__cta" type="button" data-public-auth>Choose Pro</button>
+            <ul class="priceCard__list">
+              <li>50 panes per layout</li><li>100 saved layouts</li><li>200 alerts · 20 zone watchers</li>
+              <li>1,200 AI credits / month</li><li>300 backtests / month</li><li>3 years of history</li>
+              <li>10 paper bots · 1 live bot</li><li>Advanced order flow · priority support</li>
+            </ul>
+          </article>
         <article class="priceCard" data-plan="elite">
           <header class="priceCard__head"><h2>Elite</h2><p>More of everything, plus your own model key.</p></header>
           <p class="priceCard__price"><span class="priceCard__amount">$36</span><span class="priceCard__per">/mo</span></p>
@@ -1383,6 +1506,26 @@
         </div>
       </section>
 
+      <!-- Founding Desk promo on pricing page -->
+      <section class="pubSection foundingDesk foundingDesk--compact" aria-labelledby="pricingFoundingTitle">
+        <div class="foundingDesk__inner">
+          <div class="foundingDesk__badge" aria-hidden="true">⬡</div>
+          <div class="foundingDesk__copy">
+            <p class="pubKicker">Founding Desk · Limited offer</p>
+            <h2 id="pricingFoundingTitle">First 200 Pro loyalists get a permanent free upgrade to Desk.</h2>
+            <p>Subscribe to Pro for <strong>three consecutive months</strong>. If you are in the first 200 to do it, your account is permanently upgraded to the Desk plan — 5,000 AI credits, 5 live bots, dedicated onboarding and a founding-member badge. Automatic. No application needed.</p>
+            <div class="foundingDesk__actions">
+              <a class="pubBtn pubBtn--primary" href="#/signup">Start Pro — 14-day free trial</a>
+            </div>
+          </div>
+          <div class="foundingDesk__counter" aria-label="Spots remaining">
+            <div class="foundingDesk__counterNum">200</div>
+            <div class="foundingDesk__counterLabel">founding spots</div>
+            <div class="foundingDesk__counterSub">first 200 Pro loyalists</div>
+          </div>
+        </div>
+      </section>
+
       <section class="pubSection" aria-labelledby="priceFaqTitle">
         <header class="pubSectionHead">
           <p class="pubKicker">Questions</p>
@@ -1392,6 +1535,10 @@
           <details open>
             <summary>Is the Free plan really free?</summary>
             <p>Yes. Charts, paper trading, the community library and a 25-credit monthly AI allowance do not require a card. Paid plans start with a 14-day trial; there is one trial per account.</p>
+          </details>
+          <details>
+            <summary>What is the Founding Desk offer?</summary>
+            <p>Subscribe to the Pro plan ($24/mo) for three consecutive months. If you are among the first 200 traders to complete that milestone, your account is permanently upgraded to the Desk plan ($55/mo value) at no extra cost — for as long as you maintain an active Pro subscription. The upgrade is applied automatically by the billing system; no code or application is required.</p>
           </details>
           <details>
             <summary>What is an AI credit?</summary>

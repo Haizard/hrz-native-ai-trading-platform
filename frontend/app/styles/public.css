@@ -2425,3 +2425,296 @@ body:not(.isSignedIn) #connDotTop { display: none !important; }
 @media (max-width: 480px) {
   .conceptCardGrid { grid-template-columns: 1fr; }
 }
+
+/* ==========================================================================
+   NEW: Market data section, Founding Desk promo, exchange badges,
+        price card founding badge.
+   ========================================================================== */
+
+/* ---- Markets grid -------------------------------------------------------- */
+
+.marketsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-5);
+  margin-bottom: var(--space-6);
+}
+
+.marketBlock {
+  padding: var(--space-5);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  transition: border-color 0.2s var(--ease), transform 0.25s var(--ease);
+}
+.marketBlock:hover {
+  border-color: var(--accent-line);
+  transform: translateY(-2px);
+}
+.marketBlock__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.marketBlock__icon {
+  font-size: 22px;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+.marketBlock__head h3 {
+  margin: 0;
+  color: var(--text-1);
+  font: 600 var(--text-sm)/1.2 var(--font-ui);
+}
+.marketBlock p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+.marketBlock__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: auto;
+}
+.marketBlock__chips .phc {
+  animation: none !important;
+  opacity: 1 !important;
+  font-size: 10px;
+  padding: 3px 9px;
+}
+
+/* Exchange badges */
+.marketExchanges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+.exchangeBadge {
+  padding: 3px 10px;
+  border-radius: var(--radius-1);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-raised);
+  color: var(--text-2);
+  font: 500 11px/1 var(--font-mono);
+}
+.exchangeBadge--soon {
+  color: var(--text-3);
+  border-style: dashed;
+  opacity: 0.7;
+}
+.exchangeBadge--soon::after {
+  content: " soon";
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+/* Live symbol strip */
+.marketSymbols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--bg-canvas);
+}
+.marketSymbols span {
+  padding: 3px 10px;
+  border-radius: var(--radius-1);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  font: 500 11px/1 var(--font-mono);
+}
+.marketSymbols span:last-child {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+/* ---- Founding Desk promo ------------------------------------------------- */
+
+.foundingDesk {
+  position: relative;
+  overflow: hidden;
+}
+.foundingDesk::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(700px 500px at 80% 50%, var(--ai-soft), transparent 60%),
+    radial-gradient(500px 400px at 10% 60%, var(--accent-soft), transparent 60%);
+  pointer-events: none;
+}
+.foundingDesk__inner {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: flex-start;
+  padding: var(--space-8);
+  border: 1px solid color-mix(in srgb, var(--ai) 30%, var(--line-strong));
+  border-radius: var(--radius-3);
+  background: color-mix(in srgb, var(--bg-panel) 85%, transparent);
+  backdrop-filter: blur(4px);
+}
+.foundingDesk__badge {
+  position: absolute;
+  top: var(--space-5);
+  right: var(--space-5);
+  font-size: 52px;
+  color: var(--ai);
+  opacity: 0.18;
+  pointer-events: none;
+  line-height: 1;
+  user-select: none;
+}
+.foundingDesk__copy {
+  flex: 1 1 400px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.foundingDesk__copy h2 {
+  margin: 0;
+  font: 700 clamp(20px, 2.4vw, 30px)/1.15 var(--font-ui);
+  letter-spacing: -0.025em;
+  color: var(--text-1);
+}
+.foundingDesk__copy > p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+.foundingDesk__perks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.foundingDesk__perk {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.foundingDesk__perkIcon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 1px;
+}
+.foundingDesk__perkIcon.up {
+  background: var(--up-soft);
+  color: var(--up);
+  border: 1px solid rgba(22,199,132,0.35);
+}
+.foundingDesk__condition {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-2);
+  background: var(--bg-canvas);
+  font-size: var(--text-xs);
+  color: var(--text-2);
+  line-height: 1.6;
+}
+.foundingDesk__condition p { margin: 0; }
+.foundingDesk__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* Counter widget */
+.foundingDesk__counter {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 160px;
+  padding: var(--space-6) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--ai) 35%, var(--line-strong));
+  border-radius: var(--radius-3);
+  background: color-mix(in srgb, var(--ai-soft) 50%, transparent);
+  text-align: center;
+  gap: var(--space-2);
+}
+.foundingDesk__counterNum {
+  font: 700 52px/1 var(--font-ui);
+  letter-spacing: -0.04em;
+  color: var(--ai);
+}
+.foundingDesk__counterLabel {
+  color: var(--text-1);
+  font: 600 var(--text-sm)/1 var(--font-ui);
+}
+.foundingDesk__counterSub {
+  color: var(--text-3);
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+}
+
+/* Compact variant (pricing page) */
+.foundingDesk--compact .foundingDesk__inner {
+  padding: var(--space-5) var(--space-6);
+  align-items: center;
+}
+.foundingDesk--compact .foundingDesk__copy h2 {
+  font-size: clamp(16px, 2vw, 22px);
+}
+.foundingDesk--compact .foundingDesk__counter {
+  width: 130px;
+  padding: var(--space-4);
+}
+.foundingDesk--compact .foundingDesk__counterNum { font-size: 40px; }
+
+/* ---- Price card founding badge ------------------------------------------- */
+
+.priceCard__founding {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: var(--space-2);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ai-soft) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ai) 35%, transparent);
+  color: var(--ai);
+  font: 600 10px/1 var(--font-ui);
+  letter-spacing: 0.04em;
+  cursor: help;
+}
+
+/* ---- Responsive ---------------------------------------------------------- */
+
+@media (max-width: 767px) {
+  .marketsGrid { grid-template-columns: 1fr; }
+  .foundingDesk__inner { flex-direction: column; }
+  .foundingDesk__counter { width: 100%; flex-direction: row; justify-content: center; gap: var(--space-4); padding: var(--space-4); }
+  .foundingDesk__counterNum { font-size: 36px; }
+  .foundingDesk__badge { font-size: 36px; }
+}
