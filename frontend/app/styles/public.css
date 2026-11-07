@@ -2718,3 +2718,336 @@ body:not(.isSignedIn) #connDotTop { display: none !important; }
   .foundingDesk__counterNum { font-size: 36px; }
   .foundingDesk__badge { font-size: 36px; }
 }
+
+/* ==========================================================================
+   NEW: Markets page — live ticker grid, broker cards, infra steps,
+        symbol band, timeframe grid.
+   ========================================================================== */
+
+/* ---- Live ticker grid ---------------------------------------------------- */
+
+.tickerGrid {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+/* Header row */
+.tickerGrid::before {
+  content: "Symbol · · · · · Price · 24h Change · 24h Range · 24h Volume";
+  display: block;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--text-3);
+  font: 500 10px/1 var(--font-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.tickerRow {
+  display: grid;
+  grid-template-columns: 140px 1fr 100px 1fr 120px;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  transition: background var(--dur-1) var(--ease);
+}
+.tickerRow:last-child { border-bottom: 0; }
+.tickerRow:hover { background: var(--bg-raised); }
+
+/* Skeleton loading state */
+.tickerRow--skeleton span {
+  display: block;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--line-strong);
+  animation: skeletonPulse 1.4s ease-in-out infinite;
+}
+.tickerRow--skeleton span:nth-child(1) { width: 90px; }
+.tickerRow--skeleton span:nth-child(2) { width: 70px; animation-delay: 0.1s; }
+.tickerRow--skeleton span:nth-child(3) { width: 55px; animation-delay: 0.2s; }
+.tickerRow--skeleton span:nth-child(4) { width: 100px; animation-delay: 0.3s; }
+.tickerRow--skeleton span:nth-child(5) { width: 65px; animation-delay: 0.4s; }
+
+@keyframes skeletonPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+
+.tickerRow__symbol {
+  font: 600 13px/1 var(--font-mono);
+  color: var(--text-1);
+}
+.tickerRow__symbol em {
+  font-style: normal;
+  color: var(--text-3);
+  font-size: 10px;
+  margin-left: 3px;
+}
+.tickerRow__price {
+  font: 600 13px/1 var(--font-mono);
+  color: var(--text-1);
+}
+.tickerRow__change {
+  font: 600 12px/1 var(--font-mono);
+  padding: 3px 7px;
+  border-radius: 4px;
+  text-align: center;
+}
+.tickerRow__change.up   { color: var(--up);   background: var(--up-soft); }
+.tickerRow__change.down { color: var(--down); background: var(--down-soft); }
+.tickerRow__range {
+  font: 400 11px/1 var(--font-mono);
+  color: var(--text-3);
+}
+.tickerRow__range i { font-style: normal; }
+.tickerRow__vol {
+  font: 400 11px/1 var(--font-mono);
+  color: var(--text-3);
+  text-align: right;
+}
+
+.mktTickerMeta {
+  margin-top: var(--space-2);
+  color: var(--text-3);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+/* ---- Infrastructure steps ------------------------------------------------ */
+
+.mktInfraGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-5);
+  margin-bottom: var(--space-6);
+}
+.mktInfraCard {
+  padding: var(--space-5);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.mktInfraCard__step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font: 700 14px/1 var(--font-ui);
+}
+.mktInfraCard h3 {
+  margin: 0;
+  color: var(--text-1);
+  font: 600 var(--text-sm)/1.2 var(--font-ui);
+}
+.mktInfraCard p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+/* ---- Symbol band --------------------------------------------------------- */
+
+.mktSymbolBand {
+  margin-top: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--bg-canvas);
+}
+.mktSymbolBand .pubKicker { margin-bottom: var(--space-3); }
+.mktSymbolScroll {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.mktSymbolScroll span {
+  padding: 3px 9px;
+  border-radius: var(--radius-1);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  font: 500 11px/1 var(--font-mono);
+}
+.mktSymbolMore {
+  color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+  border-color: var(--accent-line) !important;
+}
+
+/* ---- Broker cards -------------------------------------------------------- */
+
+.brokerGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: var(--space-5);
+  margin-bottom: var(--space-5);
+}
+.brokerCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  background: var(--bg-panel);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.brokerCard:hover {
+  border-color: var(--accent-line);
+  box-shadow: 0 8px 24px -8px rgba(4,8,12,0.35);
+}
+.brokerCard--loading {
+  min-height: 160px;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.5;
+}
+.brokerCard__spinner {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spinOnce 1s linear infinite;
+}
+@keyframes spinOnce { to { transform: rotate(360deg); } }
+
+.brokerCard__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.brokerCard__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent-soft), var(--ai-soft));
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font: 700 20px/1 var(--font-ui);
+}
+.brokerCard__head b {
+  display: block;
+  color: var(--text-1);
+  font: 700 var(--text-md)/1 var(--font-ui);
+  letter-spacing: -0.01em;
+}
+.brokerCard__live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--up);
+  font: 500 11px/1 var(--font-ui);
+}
+.brokerCard__live::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--up);
+  box-shadow: 0 0 0 3px var(--up-soft);
+  animation: pulseDot 2s ease infinite;
+}
+.brokerCard__guidance {
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: 1.65;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--bg-canvas);
+}
+.brokerCard__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: auto;
+}
+.brokerCard__keys { font-size: var(--text-xs); }
+.brokerCard__cta  { font-size: var(--text-xs); }
+
+.mktBrokerNote {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-2);
+  background: var(--bg-canvas);
+}
+.mktBrokerNote__icon { font-size: 20px; flex-shrink: 0; }
+.mktBrokerNote p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+.mktBrokerError {
+  color: var(--down);
+  font-size: var(--text-xs);
+  padding: var(--space-4);
+}
+
+/* ---- Timeframe grid ------------------------------------------------------ */
+
+.mktTimeframeGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--space-3);
+}
+.mktTF {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-2);
+  background: var(--bg-panel);
+  text-align: center;
+  transition: border-color 0.2s var(--ease), background 0.2s var(--ease);
+}
+.mktTF:hover { border-color: var(--accent-line); background: var(--accent-soft); }
+.mktTF__label {
+  font: 700 20px/1 var(--font-mono);
+  color: var(--text-1);
+  letter-spacing: -0.02em;
+}
+.mktTF__note {
+  color: var(--text-3);
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+}
+
+/* ---- Responsive ---------------------------------------------------------- */
+
+@media (max-width: 860px) {
+  .tickerRow { grid-template-columns: 120px 1fr 90px; }
+  .tickerRow__range,
+  .tickerRow__vol { display: none; }
+}
+@media (max-width: 560px) {
+  .tickerRow { grid-template-columns: 1fr 1fr 80px; }
+  .brokerGrid { grid-template-columns: 1fr; }
+  .mktTimeframeGrid { grid-template-columns: repeat(3, 1fr); }
+}

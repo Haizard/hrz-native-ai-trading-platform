@@ -99,6 +99,7 @@
   <nav class="publicNav" id="publicNav" aria-label="Site" hidden>
     <a href="#/" data-public-route="home">Home</a>
     <a href="#/features" data-public-route="features">Features</a>
+    <a href="#/markets" data-public-route="markets">Markets</a>
     <a href="#/pricing" data-public-route="pricing">Pricing</a>
     <a href="#/community" data-public-route="community">Community</a>
     <a href="#/docs" data-public-route="docs">Docs</a>
@@ -140,6 +141,7 @@
   <nav aria-label="Site">
     <a href="#/" data-public-route="home">Home</a>
     <a href="#/features" data-public-route="features">Features</a>
+    <a href="#/markets" data-public-route="markets">Markets</a>
     <a href="#/pricing" data-public-route="pricing">Pricing</a>
     <a href="#/community" data-public-route="community">Community</a>
     <a href="#/docs" data-public-route="docs">Docs</a>
@@ -1405,6 +1407,144 @@
           <div class="pubFinal__actions">
             <a class="pubBtn pubBtn--primary" href="#/signup">Create a free account</a>
             <a class="pubBtn" href="#/pricing">See pricing</a>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- =================================================== MARKETS ====== -->
+    <div class="pubPage" data-public-page="markets" hidden>
+
+      <header class="pageHero">
+        <p class="pubEyebrow"><span class="pubDot" aria-hidden="true"></span> Markets &amp; Brokers</p>
+        <h1>Live market data.<br />Your broker account.</h1>
+        <p class="pubLede">
+          Real-time trade stream from Binance. Full order book depth. 3,700+ symbols.
+          Connect your own exchange account when you are ready to trade — the platform never holds your funds.
+        </p>
+        <div class="pageHeroConcepts" aria-hidden="true">
+          <span class="phc phc--of" style="--delay:0.1s">Live tape</span>
+          <span class="phc phc--vp" style="--delay:0.3s">Order book</span>
+          <span class="phc phc--of" style="--delay:0.5s">Footprint</span>
+          <span class="phc phc--vp" style="--delay:0.7s">3,700+ symbols</span>
+          <span class="phc phc--smc" style="--delay:0.9s">WebSocket</span>
+        </div>
+      </header>
+
+      <!-- Live ticker grid: painted by JS from GET /tickers -->
+      <section class="pubSection" aria-labelledby="mktTickersTitle">
+        <header class="pubSectionHead">
+          <p class="pubKicker">Live prices</p>
+          <h2 id="mktTickersTitle">Top markets — refreshed every 5 seconds</h2>
+          <p class="pubSectionHead__sub">Prices are sourced directly from the Binance WebSocket. The same numbers feed footprint, delta and CVD in the workstation.</p>
+        </header>
+        <!-- Skeleton shown while loading -->
+        <div class="tickerGrid" id="mktTickerGrid" aria-live="polite" aria-label="Live ticker prices">
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
+        </div>
+        <p class="mktTickerMeta" id="mktTickerMeta" aria-live="polite"></p>
+      </section>
+
+      <!-- Data infrastructure -->
+      <section class="pubSection pubSection--alt" aria-labelledby="mktInfraTitle">
+        <header class="pubSectionHead">
+          <p class="pubKicker">Infrastructure</p>
+          <h2 id="mktInfraTitle">How the data pipeline works.</h2>
+        </header>
+        <div class="mktInfraGrid">
+          <div class="mktInfraCard">
+            <div class="mktInfraCard__step">01</div>
+            <h3>Exchange WebSocket</h3>
+            <p>A persistent Rust WebSocket client subscribes to the exchange aggTrade and depth streams for every tracked symbol. Reconnects and deduplication are handled in the <code>market-data</code> crate.</p>
+          </div>
+          <div class="mktInfraCard">
+            <div class="mktInfraCard__step">02</div>
+            <h3>Trade normalisation</h3>
+            <p>Each incoming trade is timestamped, tagged as aggressor buy or sell, and appended to the candle builder. The buy/sell split used by the chart is exactly what arrived from the exchange.</p>
+          </div>
+          <div class="mktInfraCard">
+            <div class="mktInfraCard__step">03</div>
+            <h3>Analytics crate</h3>
+            <p>Completed bars pass through the shared <code>analytics-core</code> crate: footprint cells, bar delta, cumulative delta, VWAP, volume profile and market structure are computed once and cached.</p>
+          </div>
+          <div class="mktInfraCard">
+            <div class="mktInfraCard__step">04</div>
+            <h3>Gateway WebSocket</h3>
+            <p>The <code>api-gateway</code> fans the computed bars and order-book updates to every subscribed client over a single binary-framed WebSocket. Charts and bots share the same stream.</p>
+          </div>
+        </div>
+        <div class="mktSymbolBand">
+          <p class="pubKicker">Available symbols · Binance spot + futures</p>
+          <div class="mktSymbolScroll">
+            <span>BTCUSDT</span><span>ETHUSDT</span><span>SOLUSDT</span><span>BNBUSDT</span>
+            <span>XRPUSDT</span><span>DOGEUSDT</span><span>ADAUSDT</span><span>AVAXUSDT</span>
+            <span>LINKUSDT</span><span>DOTUSDT</span><span>MATICUSDT</span><span>TRXUSDT</span>
+            <span>LTCUSDT</span><span>ATOMUSDT</span><span>UNIUSDT</span><span>XLMUSDT</span>
+            <span>BCHUSDT</span><span>NEARUSDT</span><span>ICPUSDT</span><span>FILUSDT</span>
+            <span>AAVEUSDT</span><span>SANDUSDT</span><span>MANAUSDT</span><span>GALAUSDT</span>
+            <span>FTMUSDT</span><span>ROSEUSDT</span><span>ENJUSDT</span><span>CHZUSDT</span>
+            <span>ALGOUSDT</span><span>VETUSDT</span><span>FLOWUSDT</span><span>EOSUSDT</span>
+            <span class="mktSymbolMore">+ 3,700 more</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Brokers: fetched from GET /brokers/available -->
+      <section class="pubSection" aria-labelledby="mktBrokersTitle">
+        <header class="pubSectionHead">
+          <p class="pubKicker">Connected brokers</p>
+          <h2 id="mktBrokersTitle">Your account. Your keys. Your trades.</h2>
+          <p class="pubSectionHead__sub">Connect your own exchange API key. The platform places orders on your behalf only when a bot you started is running. Keys are AES-256-GCM encrypted and never returned by the API.</p>
+        </header>
+        <div class="brokerGrid" id="mktBrokerGrid" aria-live="polite">
+          <!-- painted by JS from GET /brokers/available -->
+          <div class="brokerCard brokerCard--loading">
+            <div class="brokerCard__inner"><span class="brokerCard__spinner"></span></div>
+          </div>
+        </div>
+        <div class="mktBrokerNote">
+          <span class="mktBrokerNote__icon">🔒</span>
+          <p>
+            <strong>Key safety guarantee:</strong> Your broker API key is encrypted with AES-256-GCM, keyed on your user ID and the exchange name.
+            A key with withdrawal or transfer permission is refused at storage time — not at execution.
+            Copying a ciphertext to another account decrypts to garbage.
+          </p>
+        </div>
+      </section>
+
+      <!-- Timeframes supported -->
+      <section class="pubSection pubSection--alt" aria-labelledby="mktTimeframesTitle">
+        <header class="pubSectionHead">
+          <p class="pubKicker">Timeframes</p>
+          <h2 id="mktTimeframesTitle">Every resolution from 1-minute to 1-week.</h2>
+        </header>
+        <div class="mktTimeframeGrid">
+          <div class="mktTF"><span class="mktTF__label">1m</span><span class="mktTF__note">Scalping, order-flow triggers</span></div>
+          <div class="mktTF"><span class="mktTF__label">3m</span><span class="mktTF__note">Short-term delta patterns</span></div>
+          <div class="mktTF"><span class="mktTF__label">5m</span><span class="mktTF__note">Execution timeframe default</span></div>
+          <div class="mktTF"><span class="mktTF__label">15m</span><span class="mktTF__note">Confirmation &amp; structure</span></div>
+          <div class="mktTF"><span class="mktTF__label">30m</span><span class="mktTF__note">Session bias refinement</span></div>
+          <div class="mktTF"><span class="mktTF__label">1h</span><span class="mktTF__note">Intraday structure</span></div>
+          <div class="mktTF"><span class="mktTF__label">4h</span><span class="mktTF__note">Swing context</span></div>
+          <div class="mktTF"><span class="mktTF__label">1d</span><span class="mktTF__note">HTF bias &amp; draw</span></div>
+          <div class="mktTF"><span class="mktTF__label">1w</span><span class="mktTF__note">Institutional perspective</span></div>
+        </div>
+      </section>
+
+      <section class="pubSection pubFinal">
+        <div class="pubFinal__inner">
+          <h2>Open a chart. Read the tape.</h2>
+          <p>Free account. No card. Connect a broker when you are ready to trade.</p>
+          <div class="pubFinal__actions">
+            <a class="pubBtn pubBtn--primary" href="#/signup">Create a free account</a>
+            <a class="pubBtn" href="#/features">See all features</a>
           </div>
         </div>
       </section>

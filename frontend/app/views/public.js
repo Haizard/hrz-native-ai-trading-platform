@@ -19,13 +19,14 @@
 
   const TOKEN_KEY = "atp.token";
   const HOME = "home";
-  const ROUTES = ["home", "features", "pricing", "community", "docs", "signin", "signup"];
+  const ROUTES = ["home", "features", "markets", "pricing", "community", "docs", "signin", "signup"];
   // Auth pages don't show the footer or the marketing nav links.
   const AUTH_PAGES = ["signin", "signup"];
 
   const TITLES = {
     home: "HRZ — AI-native order-flow trading terminal",
     features: "Features — HRZ",
+    markets: "Markets & Brokers — HRZ",
     pricing: "Pricing — HRZ",
     community: "Community — HRZ",
     docs: "Docs — HRZ",
@@ -129,6 +130,7 @@
     }
 
     if (page === "pricing") loadPlans();
+    if (page === "markets") loadMarkets();
 
     // Re-observe reveal targets each time a page becomes visible, since the
     // observer ran at boot when non-home pages were still hidden.
@@ -354,6 +356,115 @@
       .finally(() => {
         plansLoading = null;
       });
+  }
+
+  /* ---- Markets page: live tickers + brokers from the API ------------------ */
+
+  const TICKER_SYMBOLS = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
+    "DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT",
+    "MATICUSDT","TRXUSDT","LTCUSDT","ATOMUSDT","UNIUSDT",
+    "XLMUSDT","BCHUSDT","NEARUSDT","ICPUSDT","FILUSDT",
+  ];
+
+  let marketsLoaded = false;
+  let tickerInterval = null;
+
+  function fmtPrice(p) {
+    if (p >= 1000)  return p.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if (p >= 1)     return p.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+    return p.toLocaleString("en-US", { minimumFractionDigits: 6, maximumFractionDigits: 6 });
+  }
+
+  function fmtVol(v) {
+    if (v >= 1e9)  return (v / 1e9).toFixed(2) + "B";
+    if (v >= 1e6)  return (v / 1e6).toFixed(1) + "M";
+    if (v >= 1e3)  return (v / 1e3).toFixed(1) + "K";
+    return v.toFixed(0);
+  }
+
+  function renderTickers(tickers) {
+    const grid = el("mktTickerGrid");
+    const meta = el("mktTickerMeta");
+    if (!grid) return;
+    grid.innerHTML = "";
+    for (const t of tickers) {
+      const pos = t.price_change_percent >= 0;
+      const row = document.createElement("div");
+      row.className = "tickerRow" + (pos ? " tickerRow--up" : " tickerRow--dn");
+      row.innerHTML = `
+        <span class="tickerRow__symbol">${t.symbol.replace("USDT", "")}<em>/ USDT</em></span>
+        <span class="tickerRow__price">${fmtPrice(t.last_price)}</span>
+        <span class="tickerRow__change ${pos ? "up" : "down"}">${pos ? "+" : ""}${t.price_change_percent.toFixed(2)}%</span>
+        <span class="tickerRow__range"><i>${fmtPrice(t.low_price)}</i> – <i>${fmtPrice(t.high_price)}</i></span>
+        <span class="tickerRow__vol">${fmtVol(t.quote_volume)} USDT</span>
+      `;
+      grid.appendChild(row);
+    }
+    if (meta) meta.textContent = `Updated ${new Date().toLocaleTimeString()} · ${tickers.length} symbols · Source: Binance`;
+  }
+
+  function fetchTickers() {
+    const syms = TICKER_SYMBOLS.join(",");
+    fetch(`/tickers?symbols=${syms}`, { headers: { accept: "application/json" } })
+      .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then((body) => { if (body && Array.isArray(body.tickers)) renderTickers(body.tickers); })
+      .catch(() => { /* keep whatever was showing */ });
+  }
+
+  function renderBrokers(brokers) {
+    const grid = el("mktBrokerGrid");
+    if (!grid) return;
+    grid.innerHTML = "";
+    for (const b of brokers) {
+      const card = document.createElement("div");
+      card.className = "brokerCard";
+      const guidance = (b.guidance || "").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      const referral = b.referral_url
+        ? `<a class="pubBtn pubBtn--primary brokerCard__cta" href="${b.referral_url}" target="_blank" rel="noopener noreferrer">Sign up for ${b.name}</a>`
+        : "";
+      card.innerHTML = `
+        <div class="brokerCard__head">
+          <span class="brokerCard__avatar">${b.name[0]}</span>
+          <div>
+            <b>${b.name}</b>
+            <span class="brokerCard__live">Live trading enabled</span>
+          </div>
+        </div>
+        <div class="brokerCard__guidance">${guidance}</div>
+        <div class="brokerCard__actions">
+          <a class="pubBtn brokerCard__keys" href="${b.keys_url}" target="_blank" rel="noopener noreferrer">
+            Create API key on ${b.name} →
+          </a>
+          ${referral}
+        </div>
+      `;
+      grid.appendChild(card);
+    }
+  }
+
+  function loadMarkets() {
+    fetchTickers();
+    if (!marketsLoaded) {
+      marketsLoaded = true;
+      fetch("/brokers/available", { headers: { accept: "application/json" } })
+        .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then((body) => { if (Array.isArray(body)) renderBrokers(body); })
+        .catch(() => {
+          const g = el("mktBrokerGrid");
+          if (g) g.innerHTML = '<p class="mktBrokerError">Could not load broker list — refresh to try again.</p>';
+        });
+    }
+    // Refresh tickers every 5 seconds while the markets page is visible
+    if (!tickerInterval) {
+      tickerInterval = setInterval(() => {
+        if (current === "markets") fetchTickers();
+        else {
+          clearInterval(tickerInterval);
+          tickerInterval = null;
+        }
+      }, 5000);
+    }
   }
 
   /* ---- Scroll-reveal via IntersectionObserver ----------------------------- */
