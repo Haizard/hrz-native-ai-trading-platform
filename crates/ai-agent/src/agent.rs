@@ -1257,6 +1257,12 @@ impl Agent {
         // detector's own anchors, never an invented coordinate.
         let mut findings = RunFindings::default();
         let mut auto_draw_attempted = false;
+        // Set once a turn comes back as prose with no call in it. The analysis
+        // phase normally leaves the choice to the model; a model that has
+        // already written a call as text has shown it will not take that choice,
+        // so from then on the wire requires one. Run-level: the habit does not
+        // wear off between turns, and a live run repeated it five times.
+        let mut force_tools = false;
 
         // `max_turns` turns of analysis, then `ANSWER_TURNS` that can only
         // answer. Reserving them matters: a question that ends on another data
@@ -1390,7 +1396,14 @@ impl Agent {
                     )
                 }
             } else {
-                (tools.clone(), None)
+                (
+                    tools.clone(),
+                    if force_tools {
+                        Some(ToolChoice::Any)
+                    } else {
+                        None
+                    },
+                )
             };
 
             progress.report(Progress::Thinking {
@@ -1434,14 +1447,21 @@ impl Agent {
 
             if calls.is_empty() {
                 // Prose only. Some models narrate before calling, so nudge
-                // unless there is no turn left to nudge into.
+                // unless there is no turn left to nudge into -- and make the
+                // next turn's choice mandatory, because a nudge alone is what
+                // the model just ignored.
                 if last {
                     break;
                 }
-                messages.push(Message::user(
+                force_tools = true;
+                messages.push(Message::user(if answering {
                     "Answer by calling submit_thesis with the structured fields. \
-                     Do not answer in prose.",
-                ));
+                     Do not answer in prose."
+                } else {
+                    "Continue by calling one of the tools offered. A tool call \
+                     written as text is not a call and does nothing. Call \
+                     submit_thesis when the work is finished, not before."
+                }));
                 continue;
             }
 
@@ -4430,6 +4450,118 @@ mod tests {
             !answer.trace.iter().any(|t| t.tool == "detect_liquidity"),
             "the answer phase ran a data tool: {:?}",
             answer.trace.iter().map(|t| &t.tool).collect::<Vec<_>>()
+        );
+    }
+
+    /// A turn that comes back as words instead of a call.
+    fn prose(text: &str) -> LlmResponse {
+        LlmResponse {
+            message: Message {
+                role: crate::llm_client::Role::Assistant,
+                content: vec![ContentBlock::Text(text.into())],
+            },
+            stop_reason: StopReason::EndTurn,
+            usage: Usage::default(),
+        }
+    }
+
+    /// The live failure that stranded a whole lesson: the model wrote
+    /// `[submit_thesis(...)]` as prose for five turns running, so nothing was
+    /// drawn, nothing was photographed back, and the answer phase inherited a
+    /// conversation full of numbers no tool had reported. The nudge asked it to
+    /// call the tool while the wire still left the choice open, and asking is
+    /// what had already failed. Once a turn comes back with no call the next
+    /// turn makes the choice mandatory -- the same `ToolChoice::Any` the answer
+    /// phase uses, and which this same model obeyed on the very next run.
+    #[tokio::test]
+    async fn a_prose_turn_makes_the_next_turn_choose_a_tool() {
+        let source = Fixture::new();
+        let llm = Arc::new(ScriptedClient::new(vec![
+            prose("[submit_thesis(symbol='BTCUSDT', direction='long')]"),
+            read_call("r1"),
+            thesis_call(100_100.0, 100_000.0, 100_400.0),
+        ]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        agent
+            .ask(&AskRequest::new("BTCUSDT", "long setup"), &source)
+            .await
+            .expect("a prose turn must not cost the run its thesis");
+
+        let requests = llm.requests();
+        assert_eq!(
+            requests[0].tool_choice, None,
+            "a first turn that has shown nothing keeps the choice open"
+        );
+        assert!(
+            matches!(requests[1].tool_choice, Some(ToolChoice::Any)),
+            "after a prose turn the next turn must force a call: {:?}",
+            requests[1].tool_choice
+        );
+        assert!(
+            matches!(requests[2].tool_choice, Some(ToolChoice::Any)),
+            "the model has shown it writes calls as text, so the rest of the \
+             analysis phase stays forced: {:?}",
+            requests[2].tool_choice
+        );
+    }
+
+    /// The nudge that follows a prose turn must match the phase it is in.
+    /// Telling an unfinished lesson to "answer by calling submit_thesis" is how
+    /// a run that owed drawings and a second look spent five turns trying to
+    /// submit instead: the correction named the wrong next action.
+    #[tokio::test]
+    async fn a_prose_analysis_turn_is_told_to_call_a_tool_not_to_submit() {
+        let source = Fixture::new();
+        let llm = Arc::new(ScriptedClient::new(vec![
+            prose("## Step 1: Analyze the Timeframes"),
+            read_call("r1"),
+            thesis_call(100_100.0, 100_000.0, 100_400.0),
+        ]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        agent
+            .ask(&AskRequest::new("BTCUSDT", "teach me this chart"), &source)
+            .await
+            .expect("the run still answers");
+
+        let requests = llm.requests();
+        let history = serde_json::to_string(&requests[1].messages).unwrap_or_default();
+        assert!(
+            history.contains("written as text"),
+            "the correction must say why the prose did nothing: {history}"
+        );
+        assert!(
+            !history.contains("Answer by calling submit_thesis"),
+            "an analysis turn is not the answer phase; the nudge must not send \
+             the model to submit early: {history}"
+        );
+    }
+
+    /// The answer phase keeps its own correction: there, submitting *is* the
+    /// next action, and the two reserved turns exist to land it.
+    #[tokio::test]
+    async fn a_prose_answer_turn_is_still_told_to_submit() {
+        let source = Fixture::new();
+        let mut responses: Vec<LlmResponse> = (0..DEFAULT_MAX_TURNS)
+            .map(|i| read_call(&format!("r{i}")))
+            .collect();
+        responses.push(prose("Here is the plan in words."));
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        let llm = Arc::new(ScriptedClient::new(responses));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        agent
+            .ask(&AskRequest::new("BTCUSDT", "long setup"), &source)
+            .await
+            .expect("the reserved turns land the thesis");
+
+        let requests = llm.requests();
+        let history =
+            serde_json::to_string(&requests[DEFAULT_MAX_TURNS + 1].messages).unwrap_or_default();
+        assert!(
+            history.contains("Answer by calling submit_thesis"),
+            "the answer phase's correction names the thesis: {history}"
         );
     }
 
