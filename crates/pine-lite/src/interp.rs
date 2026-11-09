@@ -2325,17 +2325,13 @@ impl<'a> Vm<'a> {
             "array.set" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
                 if (STR_TAG..LTF_TAG).contains(&handle) {
-                    let idx = self.arg_f(args, 1)?.unwrap_or(NA);
+                    let index = self.arg_f(args, 1)?.unwrap_or(NA);
                     let v = self.eval_s(&args[2].value)?;
                     let list = self.str_array_ref(handle)?;
-                    let idx = if idx.is_finite() && idx >= 0.0 { idx as usize } else { usize::MAX };
-                    if idx >= list.len() {
-                        return Err(crate::ScriptError {
-                            kind: crate::ErrorKind::Type,
-                            span: crate::Span::new(1, 1),
-                            message: format!("array.set index {idx} is past the array's length {}", list.len()),
-                        });
-                    }
+                    let span = args
+                        .get(1)
+                        .map_or(crate::Span::new(1, 1), |arg| arg.value.span);
+                    let idx = checked_array_set_index(index, span, list.len())?;
                     list[idx] = v;
                     return Ok(());
                 }
@@ -2344,21 +2340,11 @@ impl<'a> Vm<'a> {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
                 let index = self.arg_f(args, 1)?.unwrap_or(NA);
                 let value = self.arg_f(args, 2)?.unwrap_or(NA);
-                let i = if index.is_finite() && index >= 0.0 { index as usize } else {
-                    return Err(crate::ScriptError {
-                        kind: crate::ErrorKind::Type,
-                        span: crate::Span::new(1, 1),
-                        message: "array.set index must be a whole number >= 0".into(),
-                    });
-                };
                 let list = self.array_ref(handle)?;
-                if i >= list.len() {
-                    return Err(crate::ScriptError {
-                        kind: crate::ErrorKind::Type,
-                        span: crate::Span::new(1, 1),
-                        message: format!("array.set index {i} is past the array's length {}", list.len()),
-                    });
-                }
+                let span = args
+                    .get(1)
+                    .map_or(crate::Span::new(1, 1), |arg| arg.value.span);
+                let i = checked_array_set_index(index, span, list.len())?;
                 list[i] = value;
                 Ok(())
             }
@@ -4903,6 +4889,28 @@ impl<'a> Vm<'a> {
     }
 }
 
+fn checked_array_set_index(
+    index: f64,
+    span: crate::Span,
+    len: usize,
+) -> Result<usize, crate::ScriptError> {
+    if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
+        return Err(crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span,
+            message: format!("array.set index must be a whole number in 0..{len}; got {index}"),
+        });
+    }
+    if index >= len as f64 {
+        return Err(crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span,
+            message: format!("array.set index {index} is out of bounds for array of length {len}"),
+        });
+    }
+    Ok(index as usize)
+}
+
 /// The 17 named colors Pine has; the handful a chart legend needs.
 fn named_color(name: &str) -> Option<u32> {
     Some(match name {
@@ -5196,6 +5204,95 @@ mod tests {
         let out = run_src(src, &candles);
         // Bar 9: close[0..3] = 9+8+7+6 = 30.
         assert!((out.plots[0].values[9] - 30.0).abs() < 1e-9, "got {}", out.plots[0].values[9]);
+    }
+
+    #[test]
+    fn array_set_rejects_invalid_indexes_and_reports_the_index_location() {
+        let candles = vec![candle(0, 100.0)];
+        let cases = [
+            (
+                concat!(
+                    "//@pine_lite version=1\n",
+                    "var values = array.new()\n",
+                    "array.push(values, 1.0)\n",
+                    "array.set(values, 0.5, 2.0)\n",
+                ),
+                "whole number",
+                "0.5",
+            ),
+            (
+                concat!(
+                    "//@pine_lite version=1\n",
+                    "var values = array.new()\n",
+                    "array.push(values, 1.0)\n",
+                    "array.set(values, na, 2.0)\n",
+                ),
+                "whole number",
+                "NaN",
+            ),
+            (
+                concat!(
+                    "//@pine_lite version=1\n",
+                    "var values = array.new()\n",
+                    "array.push(values, 1.0)\n",
+                    "array.set(values, -1, 2.0)\n",
+                ),
+                "whole number",
+                "-1",
+            ),
+            (
+                concat!(
+                    "//@pine_lite version=1\n",
+                    "var values = array.new()\n",
+                    "array.push(values, 1.0)\n",
+                    "array.set(values, 1, 2.0)\n",
+                ),
+                "out of bounds",
+                "length 1",
+            ),
+            (
+                concat!(
+                    "//@pine_lite version=1\n",
+                    "var values = array.new_string()\n",
+                    "array.push(values, \"a\")\n",
+                    "array.set(values, 0.5, \"b\")\n",
+                ),
+                "whole number",
+                "0.5",
+            ),
+        ];
+
+        for (src, diagnostic, detail) in cases {
+            let err = run_src_safe(src, &candles).expect_err("invalid indexes must fail");
+            assert_eq!(err.span.line, 4, "{err}");
+            assert!(err.message.contains(diagnostic), "{err}");
+            assert!(err.message.contains(detail), "{err}");
+        }
+    }
+
+    #[test]
+    fn safe_profile_binning_guards_warmup_and_clamps_the_high_endpoint() {
+        let candles: Vec<Candle> = (0..5).map(|i| candle(i, 100.0 + i as f64)).collect();
+        let src = concat!(
+            "//@pine_lite version=1\n",
+            "bin_count = 4\n",
+            "range_low = ta.lowest(low, 2)\n",
+            "range_high = ta.highest(high, 2)\n",
+            "price = high\n",
+            "var hist = array.new()\n",
+            "if barstate.isfirst\n",
+            "    for i = 0 to bin_count - 1\n",
+            "        array.push(hist, 0.0)\n",
+            "if not na(range_low) and not na(range_high) and range_high > range_low and not na(price)\n",
+            "    bin_width = (range_high - range_low) / bin_count\n",
+            "    raw_bin = math.floor((price - range_low) / bin_width)\n",
+            "    bin_index = math.max(0, math.min(bin_count - 1, raw_bin))\n",
+            "    if bin_index < array.size(hist)\n",
+            "        array.set(hist, bin_index, array.get(hist, bin_index) + volume)\n",
+            "plot(array.get(hist, 3), title=\"Top bin\")\n",
+        );
+        let out = run_src(src, &candles);
+        assert_eq!(out.plots[0].values[4], 40.0);
     }
 
     #[test]

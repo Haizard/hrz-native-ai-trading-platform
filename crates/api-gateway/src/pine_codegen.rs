@@ -177,6 +177,24 @@ A variable holds a whole array once created with `var` (allocate ONCE, at the to
 Readers: `array.size(a)`, `array.get(a, i)`, `array.first(a)`, `array.last(a)`, `array.min(a)`, `array.max(a)`, `array.avg(a)`, `array.includes(a, v)`. Mutators: `array.push(a, v)`, `array.pop(a)`, `array.shift(a)`, `array.clear(a)`, `array.set(a, i, v)` (only existing indexes).
 Guards: out-of-bounds `array.get` returns `na` (wrap with `nz(...)` when the value feeds arithmetic); never allocate without `var` (the heap cap kills the script); pop/shift when a list could grow unbounded. A state machine over two parallel arrays (values + bar stamps) builds order blocks, FVGs, breaker blocks and session levels.
 
+## Safe volume-profile / histogram binning
+For a fixed-bin profile, allocate and initialize every slot ONCE before using `array.set`. Guard warm-up `na` values and a flat range before dividing; floor the computed index, then clamp it so a price equal to the range high lands in the final bin. Keep every statement on its own physical line:
+For a current rolling-profile snapshot, wrap the reset, accumulation, and POC scan in `if barstate.islast`: the script is replayed over every stored candle, but only the final candle needs this O(lookback + bins) calculation. Use one sequential pass over lookback bars and a separate pass over bins; never nest loops or rescan the lookback once per bin. Draw the current POC as one horizontal `line.new` rather than recomputing the full profile on every historical candle. Only produce historical per-bar profiles if explicitly requested, and keep their windows small enough for the step budget.
+
+    bin_count = 40
+    var hist = array.new()
+    if barstate.isfirst
+        for i = 0 to bin_count - 1
+            array.push(hist, 0.0)
+    if not na(range_low) and not na(range_high) and range_high > range_low and not na(price)
+        bin_width = (range_high - range_low) / bin_count
+        raw_bin = math.floor((price - range_low) / bin_width)
+        bin_index = math.max(0, math.min(bin_count - 1, raw_bin))
+        if bin_index < array.size(hist)
+            array.set(hist, bin_index, array.get(hist, bin_index) + volume)
+
+`array.set` requires a finite whole-number index in `0..array.size(hist)-1`; never write to an empty/uninitialized slot, and never rely on implicit truncation or out-of-range behavior.
+
 ## A second instrument (cross-market math: SMT divergence, spreads, ratios)
 A correlated second instrument rides along when the header declares it:
 
@@ -1124,6 +1142,8 @@ mod tests {
             "STRINGS ARE REAL VARIABLES",
             "TRAILING STOPS",
             "## SMC zones",
+            "## Safe volume-profile / histogram binning",
+            "wrap the reset, accumulation, and POC scan in `if barstate.islast`",
             "## Reference strategy",
         ] {
             assert!(p.contains(marker), "the prompt is missing: {marker}");
