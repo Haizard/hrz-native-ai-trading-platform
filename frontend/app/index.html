@@ -4142,7 +4142,35 @@
       </p>
       <div id="aiCurrent"><p class="empty">Sign in to see your model settings.</p></div>
 
-      <h3 class="section">Your own model</h3>
+      <!-- Ollama quick-connect card -->
+      <div class="aiOllamaCard" id="aiOllamaCard">
+        <div class="aiOllamaCard__head">
+          <span class="aiOllamaCard__badge">Local</span>
+          <strong>Ollama</strong>
+          <span class="muted aiOllamaCard__sub">Run any model on your own machine — no API key needed</span>
+        </div>
+        <div class="aiOllamaCard__body">
+          <div class="row">
+            <label for="ollamaUrl" class="lbl">Ollama URL</label>
+            <input id="ollamaUrl" value="http://localhost:11434" placeholder="http://localhost:11434" spellcheck="false" autocomplete="off" />
+            <button id="ollamaTest" type="button" title="Test connection and load available models">Test connection</button>
+          </div>
+          <div class="row" id="ollamaModelRow">
+            <label for="ollamaModel" class="lbl">Model</label>
+            <select id="ollamaModel"><option value="">— select a model —</option></select>
+            <input id="ollamaModelCustom" placeholder="or type a model name" autocomplete="off" />
+          </div>
+          <div class="row">
+            <button id="ollamaConnect" class="primary" type="button">Use this model</button>
+            <span id="ollamaMsg" class="muted"></span>
+          </div>
+          <div class="aiOllamaCard__help">
+            <p>Don't have Ollama? <a href="https://ollama.com" target="_blank" rel="noopener">ollama.com</a> — install, then run <code>ollama pull llama3.2</code></p>
+          </div>
+        </div>
+      </div>
+
+      <h3 class="section">Other providers</h3>
       <div class="row">
         <select id="aiProvider" title="Provider"></select>
       </div>
@@ -4152,7 +4180,7 @@
       <div class="row" id="aiBaseUrlRow">
         <input id="aiBaseUrl" placeholder="Base URL override (optional)" />
       </div>
-      <div class="row">
+      <div class="row" id="aiKeyRow">
         <input id="aiKey" type="password" placeholder="API key" autocomplete="off" />
       </div>
       <div class="row">

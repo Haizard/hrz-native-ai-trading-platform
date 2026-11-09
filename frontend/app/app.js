@@ -14572,8 +14572,97 @@ const AI_PROVIDERS = [
   { id: "huggingface", name: "HuggingFace", base: "https://router.huggingface.co/v1", models: ["meta-llama/Llama-3.3-70B-Instruct"] },
   { id: "gemini", name: "Google Gemini", base: "https://generativelanguage.googleapis.com/v1beta/openai", models: ["gemini-3.8-flash", "gemini-3.6-flash"] },
   { id: "cloudflare", name: "Cloudflare Workers AI", base: "", models: ["@cf/meta/llama-4-scout-17b-16e-instruct"] },
-  { id: "openai-compat", name: "Custom (OpenAI-compatible)", base: "", models: [] },
+  { id: "openai-compat", name: "Ollama / LM Studio / vLLM (local)", base: "", models: [], needsKey: false },
+  { id: "openai-compat-custom", name: "Custom (OpenAI-compatible)", base: "", models: [] },
 ];
+
+// ---------------------------------------------------------------------------
+// Ollama quick-connect
+// ---------------------------------------------------------------------------
+
+async function ollamaTestConnection() {
+  const msg = el("ollamaMsg");
+  const btn = el("ollamaTest");
+  const urlRaw = (el("ollamaUrl").value || "http://localhost:11434").trim().replace(/\/$/, "");
+  msg.textContent = "connecting…";
+  btn.disabled = true;
+  try {
+    // Ollama exposes GET /api/tags — returns { models: [{name, ...}] }
+    const resp = await fetch(`${urlRaw}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const models = (data.models || []).map(m => m.name || m.model).filter(Boolean);
+    const sel = el("ollamaModel");
+    sel.innerHTML = '<option value="">— select a model —</option>';
+    for (const name of models) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      sel.append(opt);
+    }
+    el("ollamaModelRow").hidden = false;
+    if (models.length > 0) {
+      sel.value = models[0];
+      msg.textContent = `✓ Connected — ${models.length} model${models.length !== 1 ? "s" : ""} available`;
+    } else {
+      msg.textContent = "✓ Connected — no models pulled yet. Run: ollama pull llama3.2";
+    }
+  } catch (e) {
+    msg.textContent = `Could not connect: ${e.message}. Is Ollama running?`;
+    el("ollamaModelRow").hidden = false; // still let them type manually
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function ollamaConnect() {
+  const msg = el("ollamaMsg");
+  const urlRaw = (el("ollamaUrl").value || "http://localhost:11434").trim().replace(/\/$/, "");
+  // Model: prefer the dropdown, fall back to the free-text field
+  const modelSel = el("ollamaModel").value.trim();
+  const modelCustom = el("ollamaModelCustom").value.trim();
+  const model = modelSel || modelCustom;
+  if (!model) {
+    msg.textContent = "select or type a model name first";
+    return;
+  }
+  msg.textContent = "saving…";
+  try {
+    await api("/agent/provider-config", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "openai-compat",
+        model_id: model,
+        api_key: "ollama",   // placeholder — Ollama ignores the key; backend requires non-empty
+        base_url: `${urlRaw}/v1`,
+        extra_headers: {},
+      }),
+    });
+    msg.textContent = `✓ Using ${model} via Ollama`;
+    try { localStorage.setItem("atp.ollamaUrl", urlRaw); } catch {}
+    try { localStorage.setItem("atp.modelChip", `Ollama · ${model}`); } catch {}
+    paintModelChip();
+    refreshAiModel();
+  } catch (e) {
+    msg.textContent = e.message;
+  }
+}
+
+function wireOllamaCard() {
+  const btn = el("ollamaTest");
+  const connectBtn = el("ollamaConnect");
+  if (!btn || !connectBtn) return;
+  btn.addEventListener("click", ollamaTestConnection);
+  connectBtn.addEventListener("click", ollamaConnect);
+  // Restore last-used URL from localStorage
+  try {
+    const saved = localStorage.getItem("atp.ollamaUrl");
+    if (saved) el("ollamaUrl").value = saved;
+  } catch {}
+  // Allow pressing Enter in the URL field to test
+  el("ollamaUrl").addEventListener("keydown", e => { if (e.key === "Enter") ollamaTestConnection(); });
+}
 
 function paintAiProviderOptions(selected) {
   const select = el("aiProvider");
@@ -14590,7 +14679,10 @@ function paintAiProviderOptions(selected) {
 }
 
 function paintAiModelHints() {
-  const provider = AI_PROVIDERS.find((p) => p.id === el("aiProvider").value);
+  const provId = el("aiProvider").value;
+  // openai-compat-custom is a UI-only alias; the wire value is openai-compat
+  const wireProv = provId === "openai-compat-custom" ? "openai-compat" : provId;
+  const provider = AI_PROVIDERS.find((p) => p.id === provId);
   const model = el("aiModelId");
   model.setAttribute("list", "aiModelList");
   let datalist = document.getElementById("aiModelList");
@@ -14602,17 +14694,21 @@ function paintAiModelHints() {
   for (const id of provider && provider.models ? provider.models : []) {
     datalist.append(Object.assign(document.createElement("option"), { value: id }));
   }
-  // A placeholder suggestion, never a silent override: the field keeps
-  // whatever the user typed.
   if (!model.value && provider && provider.models && provider.models.length) {
     model.placeholder = `e.g. ${provider.models[0]}`;
   }
-  // Bedrock is not reachable per-user (it authenticates with the deployment's
-  // AWS credentials), and a custom endpoint is the one row that needs a URL.
-  el("aiBaseUrlRow").hidden = !(provider && ["openai-compat", "cloudflare"].includes(provider.id));
+  // Show base URL row for local/custom/cloudflare providers
+  const needsUrl = provider && ["openai-compat", "openai-compat-custom", "cloudflare"].includes(provider.id);
+  el("aiBaseUrlRow").hidden = !needsUrl;
   el("aiBaseUrl").placeholder = provider && provider.id === "cloudflare"
     ? "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+    : provider && provider.id === "openai-compat"
+    ? "e.g. http://localhost:11434/v1 (Ollama) or http://localhost:1234/v1 (LM Studio)"
     : "Base URL override (optional)";
+  // Hide API key row for keyless providers (Ollama/local)
+  const needsKey = !(provider && provider.needsKey === false);
+  if (el("aiKeyRow")) el("aiKeyRow").hidden = !needsKey;
+  if (el("aiKey")) el("aiKey").required = needsKey;
 }
 
 async function refreshAiModel() {
@@ -14685,24 +14781,32 @@ async function runAiChip(promptText) {
 
 async function saveAiModel() {
   const msg = el("aiMsg");
-  const provider = el("aiProvider").value;
-  if (!provider) {
-    msg.textContent = "pick a provider, or press “Use platform model” to remove yours";
+  let provId = el("aiProvider").value;
+  if (!provId) {
+    msg.textContent = "pick a provider, or press "Use platform model" to remove yours";
     return;
   }
+  // openai-compat-custom is a UI-only alias to show the right hint text
+  const wireProvider = provId === "openai-compat-custom" ? "openai-compat" : provId;
+  const provider = AI_PROVIDERS.find((p) => p.id === provId);
   const modelId = el("aiModelId").value.trim();
   const apiKey = el("aiKey").value.trim();
+  const baseUrl = el("aiBaseUrl").value.trim();
   if (!modelId) { msg.textContent = "which model id?"; return; }
+  // For keyless providers (local Ollama/LM Studio), send a placeholder key so
+  // the backend's NOT NULL constraint is satisfied — Ollama ignores the header.
+  const keyless = provider && provider.needsKey === false;
+  if (!keyless && !apiKey) { msg.textContent = "API key is required for this provider"; return; }
   msg.textContent = "saving…";
   try {
     await api("/agent/provider-config", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        provider,
+        provider: wireProvider,
         model_id: modelId,
-        api_key: apiKey || null,
-        base_url: el("aiBaseUrl").value.trim() || null,
+        api_key: apiKey || (keyless ? "local" : null),
+        base_url: baseUrl || null,
         extra_headers: {},
       }),
     });
@@ -17831,6 +17935,8 @@ el("authorChips").addEventListener("click", (event) => {
   el("aiProvider").addEventListener("change", paintAiModelHints);
   el("aiSave").addEventListener("click", saveAiModel);
   el("aiClear").addEventListener("click", clearAiModel);
+  // Wire the Ollama quick-connect card.
+  wireOllamaCard();
   // Seed both selects once so the panes are ready before they are ever opened.
   paintAiProviderOptions("");
   paintAiModelHints();
