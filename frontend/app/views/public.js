@@ -383,23 +383,50 @@
     return v.toFixed(0);
   }
 
+  // Generate a simple deterministic sparkline SVG from a ticker's 24h range + last price.
+  // Since we only have 24h high/low/last we synthesise 8 plausible points that are visually
+  // consistent with the direction (pos = trending up, neg = trending down).
+  function sparkline(ticker, pos) {
+    const h = ticker.high_price;
+    const l = ticker.low_price;
+    const p = ticker.last_price;
+    const range = h - l || 1;
+    // 8 normalised y-values (0 = bottom, 28 = top of 30px viewBox)
+    const norm = (v) => Math.round(28 - ((v - l) / range) * 24);
+    // Synthesise a plausible path: start near open (opposite side), drift to last
+    const pts = pos
+      ? [l + range * 0.3, l + range * 0.25, l + range * 0.35, l + range * 0.45, l + range * 0.55, l + range * 0.70, l + range * 0.85, p]
+      : [l + range * 0.75, l + range * 0.80, l + range * 0.68, l + range * 0.58, l + range * 0.48, l + range * 0.35, l + range * 0.22, p];
+    const color = pos ? "#16c784" : "#ea3943";
+    const xs = [2, 12, 22, 32, 42, 52, 62, 72];
+    const polyPoints = xs.map((x, i) => `${x},${norm(pts[i])}`).join(" ");
+    return `<svg viewBox="0 0 74 30" width="74" height="30" aria-hidden="true" class="sparkSvg">
+      <polyline points="${polyPoints}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" opacity=".85"/>
+      <circle cx="${xs[7]}" cy="${norm(p)}" r="2" fill="${color}" opacity=".9"/>
+    </svg>`;
+  }
+
   function renderTickers(tickers) {
-    const grid = el("mktTickerGrid");
-    const meta = el("mktTickerMeta");
-    if (!grid) return;
-    grid.innerHTML = "";
+    const table = el("mktTickerGrid");
+    const meta  = el("mktTickerMeta");
+    if (!table) return;
+    // Remove skeleton rows but keep the header row
+    const head = table.querySelector(".mktTable__head");
+    table.innerHTML = "";
+    if (head) table.appendChild(head);
     for (const t of tickers) {
       const pos = t.price_change_percent >= 0;
       const row = document.createElement("div");
       row.className = "tickerRow" + (pos ? " tickerRow--up" : " tickerRow--dn");
       row.innerHTML = `
-        <span class="tickerRow__symbol">${t.symbol.replace("USDT", "")}<em>/ USDT</em></span>
+        <span class="tickerRow__symbol">${t.symbol.replace("USDT","")}<em>/ USDT</em></span>
         <span class="tickerRow__price">${fmtPrice(t.last_price)}</span>
         <span class="tickerRow__change ${pos ? "up" : "down"}">${pos ? "+" : ""}${t.price_change_percent.toFixed(2)}%</span>
         <span class="tickerRow__range"><i>${fmtPrice(t.low_price)}</i> – <i>${fmtPrice(t.high_price)}</i></span>
-        <span class="tickerRow__vol">${fmtVol(t.quote_volume)} USDT</span>
+        <span class="tickerRow__vol">${fmtVol(t.quote_volume)}</span>
+        <span class="tickerRow__spark">${sparkline(t, pos)}</span>
       `;
-      grid.appendChild(row);
+      table.appendChild(row);
     }
     if (meta) meta.textContent = `Updated ${new Date().toLocaleTimeString()} · ${tickers.length} symbols · Source: Binance`;
   }

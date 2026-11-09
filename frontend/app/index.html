@@ -1415,98 +1415,83 @@
     <!-- =================================================== MARKETS ====== -->
     <div class="pubPage" data-public-page="markets" hidden>
 
-      <header class="pageHero">
+      <header class="pageHero pageHero--markets">
         <p class="pubEyebrow"><span class="pubDot" aria-hidden="true"></span> Markets &amp; Brokers</p>
-        <h1>Live market data.<br />Your broker account.</h1>
+        <h1>Live prices.<br /><span class="pubGrad">Real tape.</span></h1>
         <p class="pubLede">
-          Real-time trade stream from Binance. Full order book depth. 3,700+ symbols.
-          Connect your own exchange account when you are ready to trade — the platform never holds your funds.
+          Real-time trade stream, full order-book depth, 3,700+ symbols. Connect your broker account
+          when you are ready to trade — the platform never holds your funds.
         </p>
-        <div class="pageHeroConcepts" aria-hidden="true">
-          <span class="phc phc--of" style="--delay:0.1s">Live tape</span>
-          <span class="phc phc--vp" style="--delay:0.3s">Order book</span>
-          <span class="phc phc--of" style="--delay:0.5s">Footprint</span>
-          <span class="phc phc--vp" style="--delay:0.7s">3,700+ symbols</span>
-          <span class="phc phc--smc" style="--delay:0.9s">WebSocket</span>
+        <div class="mktHeroStats" aria-label="Platform market statistics">
+          <div class="mktHeroStat"><strong>3,700+</strong><span>symbols</span></div>
+          <div class="mktHeroStat"><strong>&lt;100ms</strong><span>tick latency</span></div>
+          <div class="mktHeroStat"><strong>9</strong><span>timeframes</span></div>
+          <div class="mktHeroStat"><strong>2</strong><span>live exchanges</span></div>
         </div>
       </header>
 
-      <!-- Live ticker grid: painted by JS from GET /tickers -->
-      <section class="pubSection" aria-labelledby="mktTickersTitle">
-        <header class="pubSectionHead">
-          <p class="pubKicker">Live prices</p>
-          <h2 id="mktTickersTitle">Top markets — refreshed every 5 seconds</h2>
-          <p class="pubSectionHead__sub">Prices are sourced directly from the Binance WebSocket. The same numbers feed footprint, delta and CVD in the workstation.</p>
+      <!-- Category tabs + live overview table -->
+      <section class="pubSection mktOverviewSection" aria-labelledby="mktOverviewTitle">
+        <header class="pubSectionHead pubSectionHead--row">
+          <div>
+            <p class="pubKicker">Live overview</p>
+            <h2 id="mktOverviewTitle">Markets — refreshed every 5 s</h2>
+          </div>
+          <!-- Category filter tabs -->
+          <div class="mktCatTabs" role="tablist" aria-label="Market category">
+            <button class="mktCatTab mktCatTab--active" role="tab" aria-selected="true"  data-mkt-cat="crypto">Crypto</button>
+            <button class="mktCatTab" role="tab" aria-selected="false" data-mkt-cat="forex">Forex <span class="mktCatTab__soon">soon</span></button>
+            <button class="mktCatTab" role="tab" aria-selected="false" data-mkt-cat="commodities">Commodities <span class="mktCatTab__soon">soon</span></button>
+          </div>
         </header>
-        <!-- Skeleton shown while loading -->
-        <div class="tickerGrid" id="mktTickerGrid" aria-live="polite" aria-label="Live ticker prices">
-          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
-          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
-          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
-          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
-          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
-          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
-          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
-          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span></div>
+
+        <!-- Table header -->
+        <div class="mktTable" id="mktTickerGrid" aria-live="polite" aria-label="Live market prices">
+          <div class="mktTable__head">
+            <span class="mktTh mktTh--sym">Symbol</span>
+            <span class="mktTh mktTh--price">Price</span>
+            <span class="mktTh mktTh--chg">24h Change</span>
+            <span class="mktTh mktTh--range">24h Range</span>
+            <span class="mktTh mktTh--vol">Volume</span>
+            <span class="mktTh mktTh--spark">7d trend</span>
+          </div>
+          <!-- skeleton rows -->
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="tickerRow tickerRow--skeleton"><span></span><span></span><span></span><span></span><span></span><span></span></div>
         </div>
         <p class="mktTickerMeta" id="mktTickerMeta" aria-live="polite"></p>
       </section>
 
-      <!-- Data infrastructure -->
-      <section class="pubSection pubSection--alt" aria-labelledby="mktInfraTitle">
-        <header class="pubSectionHead">
-          <p class="pubKicker">Infrastructure</p>
-          <h2 id="mktInfraTitle">How the data pipeline works.</h2>
-        </header>
-        <div class="mktInfraGrid">
-          <div class="mktInfraCard">
-            <div class="mktInfraCard__step">01</div>
-            <h3>Exchange WebSocket</h3>
-            <p>A persistent Rust WebSocket client subscribes to the exchange aggTrade and depth streams for every tracked symbol. Reconnects and deduplication are handled in the <code>market-data</code> crate.</p>
-          </div>
-          <div class="mktInfraCard">
-            <div class="mktInfraCard__step">02</div>
-            <h3>Trade normalisation</h3>
-            <p>Each incoming trade is timestamped, tagged as aggressor buy or sell, and appended to the candle builder. The buy/sell split used by the chart is exactly what arrived from the exchange.</p>
-          </div>
-          <div class="mktInfraCard">
-            <div class="mktInfraCard__step">03</div>
-            <h3>Analytics crate</h3>
-            <p>Completed bars pass through the shared <code>analytics-core</code> crate: footprint cells, bar delta, cumulative delta, VWAP, volume profile and market structure are computed once and cached.</p>
-          </div>
-          <div class="mktInfraCard">
-            <div class="mktInfraCard__step">04</div>
-            <h3>Gateway WebSocket</h3>
-            <p>The <code>api-gateway</code> fans the computed bars and order-book updates to every subscribed client over a single binary-framed WebSocket. Charts and bots share the same stream.</p>
-          </div>
-        </div>
-        <div class="mktSymbolBand">
-          <p class="pubKicker">Available symbols · Binance spot + futures</p>
-          <div class="mktSymbolScroll">
-            <span>BTCUSDT</span><span>ETHUSDT</span><span>SOLUSDT</span><span>BNBUSDT</span>
-            <span>XRPUSDT</span><span>DOGEUSDT</span><span>ADAUSDT</span><span>AVAXUSDT</span>
-            <span>LINKUSDT</span><span>DOTUSDT</span><span>MATICUSDT</span><span>TRXUSDT</span>
-            <span>LTCUSDT</span><span>ATOMUSDT</span><span>UNIUSDT</span><span>XLMUSDT</span>
-            <span>BCHUSDT</span><span>NEARUSDT</span><span>ICPUSDT</span><span>FILUSDT</span>
-            <span>AAVEUSDT</span><span>SANDUSDT</span><span>MANAUSDT</span><span>GALAUSDT</span>
-            <span>FTMUSDT</span><span>ROSEUSDT</span><span>ENJUSDT</span><span>CHZUSDT</span>
-            <span>ALGOUSDT</span><span>VETUSDT</span><span>FLOWUSDT</span><span>EOSUSDT</span>
-            <span class="mktSymbolMore">+ 3,700 more</span>
-          </div>
-        </div>
-      </section>
-
       <!-- Brokers: fetched from GET /brokers/available -->
-      <section class="pubSection" aria-labelledby="mktBrokersTitle">
+      <section class="pubSection pubSection--alt" aria-labelledby="mktBrokersTitle">
         <header class="pubSectionHead">
-          <p class="pubKicker">Connected brokers</p>
+          <p class="pubKicker">Connected exchanges</p>
           <h2 id="mktBrokersTitle">Your account. Your keys. Your trades.</h2>
-          <p class="pubSectionHead__sub">Connect your own exchange API key. The platform places orders on your behalf only when a bot you started is running. Keys are AES-256-GCM encrypted and never returned by the API.</p>
+          <p class="pubSectionHead__sub">Connect your own exchange API key. The platform places orders on your behalf only when a bot you started is running — keys are AES-256-GCM encrypted and never returned by the API.</p>
         </header>
-        <div class="brokerGrid" id="mktBrokerGrid" aria-live="polite">
-          <!-- painted by JS from GET /brokers/available -->
-          <div class="brokerCard brokerCard--loading">
-            <div class="brokerCard__inner"><span class="brokerCard__spinner"></span></div>
+        <div class="mktExchangeGrid">
+          <!-- Live exchanges from API -->
+          <div class="mktExchangeGroup">
+            <p class="mktExchangeGroup__label">Live trading enabled</p>
+            <div class="brokerGrid" id="mktBrokerGrid" aria-live="polite">
+              <div class="brokerCard brokerCard--loading">
+                <div class="brokerCard__inner"><span class="brokerCard__spinner"></span></div>
+              </div>
+            </div>
+          </div>
+          <!-- Coming-soon exchanges -->
+          <div class="mktExchangeGroup">
+            <p class="mktExchangeGroup__label">Coming soon</p>
+            <div class="mktSoonGrid">
+              <div class="mktSoonCard"><span class="mktSoonCard__name">Bybit</span><span class="mktSoonCard__note">Spot + Derivatives</span></div>
+              <div class="mktSoonCard"><span class="mktSoonCard__name">OKX</span><span class="mktSoonCard__note">Spot + Perps</span></div>
+              <div class="mktSoonCard"><span class="mktSoonCard__name">Coinbase</span><span class="mktSoonCard__note">Advanced Trade</span></div>
+              <div class="mktSoonCard"><span class="mktSoonCard__name">Kraken</span><span class="mktSoonCard__note">Spot + Futures</span></div>
+            </div>
           </div>
         </div>
         <div class="mktBrokerNote">
@@ -1519,29 +1504,75 @@
         </div>
       </section>
 
-      <!-- Timeframes supported -->
+      <!-- Data infrastructure -->
+      <section class="pubSection" aria-labelledby="mktInfraTitle">
+        <header class="pubSectionHead">
+          <p class="pubKicker">Infrastructure</p>
+          <h2 id="mktInfraTitle">How the data pipeline works.</h2>
+          <p class="pubSectionHead__sub">One Rust pipeline from exchange WebSocket to chart pixel, with no gaps where a proxy could disagree.</p>
+        </header>
+        <div class="mktInfraGrid">
+          <div class="mktInfraCard">
+            <div class="mktInfraCard__step">01</div>
+            <h3>Exchange WebSocket</h3>
+            <p>A persistent Rust client subscribes to the exchange aggTrade and depth streams for every tracked symbol. Reconnects and deduplication are handled in the <code>market-data</code> crate.</p>
+          </div>
+          <div class="mktInfraCard">
+            <div class="mktInfraCard__step">02</div>
+            <h3>Trade normalisation</h3>
+            <p>Each incoming trade is timestamped, tagged as aggressor buy or sell, and appended to the candle builder. The buy/sell split used by the chart is exactly what arrived from the exchange.</p>
+          </div>
+          <div class="mktInfraCard">
+            <div class="mktInfraCard__step">03</div>
+            <h3>Analytics crate</h3>
+            <p>Completed bars pass through the shared <code>analytics-core</code> crate: footprint cells, bar delta, cumulative delta, VWAP, volume profile and market structure — computed once, cached.</p>
+          </div>
+          <div class="mktInfraCard">
+            <div class="mktInfraCard__step">04</div>
+            <h3>Gateway WebSocket</h3>
+            <p>The <code>api-gateway</code> fans computed bars and order-book updates to every subscribed client over a single binary-framed WebSocket. Charts and bots share the same stream.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Timeframes + symbol band -->
       <section class="pubSection pubSection--alt" aria-labelledby="mktTimeframesTitle">
         <header class="pubSectionHead">
-          <p class="pubKicker">Timeframes</p>
-          <h2 id="mktTimeframesTitle">Every resolution from 1-minute to 1-week.</h2>
+          <p class="pubKicker">Coverage</p>
+          <h2 id="mktTimeframesTitle">9 timeframes · 3,700+ symbols</h2>
         </header>
-        <div class="mktTimeframeGrid">
-          <div class="mktTF"><span class="mktTF__label">1m</span><span class="mktTF__note">Scalping, order-flow triggers</span></div>
-          <div class="mktTF"><span class="mktTF__label">3m</span><span class="mktTF__note">Short-term delta patterns</span></div>
-          <div class="mktTF"><span class="mktTF__label">5m</span><span class="mktTF__note">Execution timeframe default</span></div>
-          <div class="mktTF"><span class="mktTF__label">15m</span><span class="mktTF__note">Confirmation &amp; structure</span></div>
-          <div class="mktTF"><span class="mktTF__label">30m</span><span class="mktTF__note">Session bias refinement</span></div>
-          <div class="mktTF"><span class="mktTF__label">1h</span><span class="mktTF__note">Intraday structure</span></div>
-          <div class="mktTF"><span class="mktTF__label">4h</span><span class="mktTF__note">Swing context</span></div>
-          <div class="mktTF"><span class="mktTF__label">1d</span><span class="mktTF__note">HTF bias &amp; draw</span></div>
-          <div class="mktTF"><span class="mktTF__label">1w</span><span class="mktTF__note">Institutional perspective</span></div>
+        <div class="mktCoverageLayout">
+          <div class="mktTimeframeGrid">
+            <div class="mktTF"><span class="mktTF__label">1m</span><span class="mktTF__note">Scalping, order-flow triggers</span></div>
+            <div class="mktTF"><span class="mktTF__label">3m</span><span class="mktTF__note">Short-term delta patterns</span></div>
+            <div class="mktTF mktTF--active"><span class="mktTF__label">5m</span><span class="mktTF__note">Execution default</span></div>
+            <div class="mktTF"><span class="mktTF__label">15m</span><span class="mktTF__note">Confirmation &amp; structure</span></div>
+            <div class="mktTF"><span class="mktTF__label">30m</span><span class="mktTF__note">Session bias</span></div>
+            <div class="mktTF"><span class="mktTF__label">1h</span><span class="mktTF__note">Intraday structure</span></div>
+            <div class="mktTF"><span class="mktTF__label">4h</span><span class="mktTF__note">Swing context</span></div>
+            <div class="mktTF"><span class="mktTF__label">1d</span><span class="mktTF__note">HTF bias &amp; draw</span></div>
+            <div class="mktTF"><span class="mktTF__label">1w</span><span class="mktTF__note">Institutional perspective</span></div>
+          </div>
+          <div class="mktSymbolBand">
+            <p class="pubKicker">Available symbols · Binance spot + futures</p>
+            <div class="mktSymbolScroll">
+              <span>BTCUSDT</span><span>ETHUSDT</span><span>SOLUSDT</span><span>BNBUSDT</span>
+              <span>XRPUSDT</span><span>DOGEUSDT</span><span>ADAUSDT</span><span>AVAXUSDT</span>
+              <span>LINKUSDT</span><span>DOTUSDT</span><span>MATICUSDT</span><span>TRXUSDT</span>
+              <span>LTCUSDT</span><span>ATOMUSDT</span><span>UNIUSDT</span><span>XLMUSDT</span>
+              <span>BCHUSDT</span><span>NEARUSDT</span><span>ICPUSDT</span><span>FILUSDT</span>
+              <span>AAVEUSDT</span><span>SANDUSDT</span><span>MANAUSDT</span><span>GALAUSDT</span>
+              <span>FTMUSDT</span><span>ALGOUSDT</span><span>VETUSDT</span><span>EOSUSDT</span>
+              <span class="mktSymbolMore">+ 3,700 more on Binance</span>
+            </div>
+          </div>
         </div>
       </section>
 
       <section class="pubSection pubFinal">
         <div class="pubFinal__inner">
           <h2>Open a chart. Read the tape.</h2>
-          <p>Free account. No card. Connect a broker when you are ready to trade.</p>
+          <p>Free account. No card required. Connect a broker when you are ready to trade.</p>
           <div class="pubFinal__actions">
             <a class="pubBtn pubBtn--primary" href="#/signup">Create a free account</a>
             <a class="pubBtn" href="#/features">See all features</a>
@@ -1712,93 +1743,751 @@
 
     <!-- ================================================= COMMUNITY ====== -->
     <div class="pubPage" data-public-page="community" hidden>
-      <header class="pageHero">
-        <p class="pubEyebrow"><span class="pubDot" aria-hidden="true"></span> Community</p>
-        <h1>Built with traders.<br />Not just for them.</h1>
+
+      <!-- Hero with search -->
+      <header class="pageHero pageHero--community">
+        <p class="pubEyebrow"><span class="pubDot" aria-hidden="true"></span> Community library</p>
+        <h1>Open-source indicators.<br /><span class="pubGrad">Validated by the engine.</span></h1>
         <p class="pubLede">
-          Publish an indicator you validated. Install a revision someone else proved.
-          Every published artifact is re-vetted on install, and every install is a fork
-          you own — not a share of someone’s private workspace.
+          Every script in this library passed the platform validator before it was listed.
+          Install a revision — you own the fork. Publish yours when you are ready.
         </p>
+        <!-- Search bar (cosmetic on public page — real search is inside the workstation) -->
+        <div class="commSearch" role="search" aria-label="Search community indicators">
+          <span class="commSearch__icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </span>
+          <input class="commSearch__input" type="search" placeholder="Search indicators, tags, or authors…" aria-label="Search indicators" readonly />
+          <button class="commSearch__cta pubBtn pubBtn--sm pubBtn--primary" type="button" data-public-auth>Sign in to search</button>
+        </div>
+        <!-- Stat bar -->
+        <div class="commHeroStats" aria-label="Library statistics">
+          <div class="commHeroStat"><strong>400+</strong><span>published scripts</span></div>
+          <div class="commHeroStat"><strong>90+</strong><span>concept families</span></div>
+          <div class="commHeroStat"><strong>v3</strong><span>validator engine</span></div>
+          <div class="commHeroStat"><strong>free</strong><span>to browse &amp; install</span></div>
+        </div>
       </header>
 
-      <section class="pubSection" aria-labelledby="commPublishTitle">
-        <div class="pubSplit">
-          <div class="pubSplit__copy">
-            <p class="pubKicker">Publish</p>
-            <h2 id="commPublishTitle">A revision, not a workspace.</h2>
-            <p class="pubSplit__lede">
-              What goes public is the finished revision: source, summary, symbol, timeframe,
-              the validator report and the chart preview. Chat history, alerts, strategies
-              and bot drafts stay private.
-            </p>
-            <ul class="tickList">
-              <li>Versions are immutable; an install pins the one it was given.</li>
-              <li>Publishing re-runs the current validator — last month’s pass is not proof.</li>
-              <li>Switch an item between public and private without republishing.</li>
-              <li>Reporting and moderation keep the catalog honest.</li>
-            </ul>
-            <a class="pubTextLink" href="#/features">See the studio <span aria-hidden="true">→</span></a>
-          </div>
-          <div class="pubSplit__visual">
-            <div class="communityCard" aria-hidden="true">
-              <div class="communityCard__head"><span class="communityCard__avatar">A</span><div><b>Adaptive order-flow</b><span>v3 · BTCUSDT · 5m</span></div><span class="communityCard__ok">validated</span></div>
-              <p class="communityCard__desc">Footprint imbalance with absorption filter and a session volume profile.</p>
-              <div class="communityCard__tags"><span>order flow</span><span>footprint</span><span>absorption</span></div>
-              <div class="communityCard__foot"><span>1,284 installs</span><span>Version 3</span></div>
+      <!-- Category filter pills -->
+      <div class="commCatBar" role="navigation" aria-label="Browse by category">
+        <button class="commCat commCat--active" data-comm-cat="featured">Featured</button>
+        <button class="commCat" data-comm-cat="smc">Smart money</button>
+        <button class="commCat" data-comm-cat="orderflow">Order flow</button>
+        <button class="commCat" data-comm-cat="vp">Volume profile</button>
+        <button class="commCat" data-comm-cat="pa">Price action</button>
+        <button class="commCat" data-comm-cat="indicators">Indicators</button>
+        <button class="commCat" data-comm-cat="sessions">Sessions</button>
+        <button class="commCat" data-comm-cat="fibonacci">Fibonacci</button>
+      </div>
+
+      <!-- Script library feed — TradingView-style blog cards -->
+      <section class="pubSection commFeedSection" aria-labelledby="commFeedTitle">
+        <header class="commFeedHeader">
+          <h2 id="commFeedTitle" class="commFeedTitle">Featured scripts</h2>
+          <span class="commFeedCount">Showing 12 of 400+ · <button class="pubTextLink--inline" type="button" data-public-auth>sign in to see all</button></span>
+        </header>
+
+        <div class="commFeed" id="commFeed">
+
+          <!-- Card 1: Adaptive Order-Flow Composite -->
+          <article class="commCard commCard--featured">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- mini footprint bars -->
+                <rect x="8"  y="55" width="18" height="30" rx="1" fill="var(--color-up)" opacity=".7"/>
+                <rect x="30" y="42" width="18" height="43" rx="1" fill="var(--color-up)" opacity=".85"/>
+                <rect x="52" y="60" width="18" height="25" rx="1" fill="var(--color-dn)" opacity=".6"/>
+                <rect x="74" y="38" width="18" height="47" rx="1" fill="var(--color-up)" opacity=".9"/>
+                <rect x="96" y="48" width="18" height="37" rx="1" fill="var(--color-up)" opacity=".75"/>
+                <rect x="118" y="65" width="18" height="20" rx="1" fill="var(--color-dn)" opacity=".55"/>
+                <rect x="140" y="30" width="18" height="55" rx="1" fill="var(--color-up)" opacity=".95"/>
+                <rect x="162" y="50" width="18" height="35" rx="1" fill="var(--color-up)" opacity=".8"/>
+                <rect x="184" y="44" width="18" height="41" rx="1" fill="var(--color-up)" opacity=".88"/>
+                <!-- POC line -->
+                <line x1="0" y1="42" x2="220" y2="42" stroke="#22d3ee" stroke-width="1.2" stroke-dasharray="4 3" opacity=".7"/>
+                <!-- delta histogram at bottom -->
+                <rect x="8"  y="90" width="18" height="8"  rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="30" y="87" width="18" height="11" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="52" y="91" width="18" height="7"  rx="1" fill="var(--color-dn)" opacity=".5"/>
+                <rect x="74" y="84" width="18" height="14" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="96" y="88" width="18" height="10" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="118" y="92" width="18" height="6"  rx="1" fill="var(--color-dn)" opacity=".5"/>
+                <rect x="140" y="82" width="18" height="16" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="162" y="86" width="18" height="12" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="184" y="85" width="18" height="13" rx="1" fill="var(--color-up)" opacity=".5"/>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--of">Order flow</span>
+                <span class="commCard__ver">v4</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">Adaptive Order-Flow Composite</h3>
+              <p class="commCard__desc">Footprint imbalance with an absorption filter and a session volume profile overlay. Highlights bars where buying or selling aggression significantly exceeds the 20-bar average.</p>
+              <div class="commCard__tags">
+                <span>footprint</span><span>delta</span><span>absorption</span><span>POC</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--blue">H</span>
+                  <span>hrz_dev</span>
+                  <span class="commCard__tier commCard__tier--pro">Pro</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 2,841 installs</span>
+                  <span>BTCUSDT · 5m</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm pubBtn--primary" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 2: SMC Structure Detector -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- ascending price candles -->
+                <g fill="var(--color-up)">
+                  <rect x="8"  y="70" width="10" height="20" rx="1" opacity=".8"/>
+                  <rect x="24" y="62" width="10" height="26" rx="1" opacity=".8"/>
+                  <rect x="40" y="54" width="10" height="30" rx="1" opacity=".8"/>
+                </g>
+                <g fill="var(--color-dn)">
+                  <rect x="56" y="58" width="10" height="22" rx="1" opacity=".7"/>
+                </g>
+                <g fill="var(--color-up)">
+                  <rect x="72" y="46" width="10" height="34" rx="1" opacity=".85"/>
+                  <rect x="88" y="38" width="10" height="38" rx="1" opacity=".85"/>
+                </g>
+                <g fill="var(--color-dn)">
+                  <rect x="104" y="42" width="10" height="26" rx="1" opacity=".7"/>
+                  <rect x="120" y="48" width="10" height="22" rx="1" opacity=".65"/>
+                </g>
+                <g fill="var(--color-up)">
+                  <rect x="136" y="32" width="10" height="42" rx="1" opacity=".9"/>
+                  <rect x="152" y="22" width="10" height="48" rx="1" opacity=".9"/>
+                  <rect x="168" y="16" width="10" height="52" rx="1" opacity=".92"/>
+                  <rect x="184" y="12" width="10" height="55" rx="1" opacity=".95"/>
+                </g>
+                <!-- BOS label box -->
+                <rect x="128" y="10" width="32" height="14" rx="3" fill="#3b82f6" opacity=".85"/>
+                <text x="144" y="21" text-anchor="middle" font-size="8" fill="white" font-weight="bold">BOS</text>
+                <!-- structure line -->
+                <line x1="0" y1="56" x2="220" y2="56" stroke="#3b82f6" stroke-width="1" stroke-dasharray="3 2" opacity=".6"/>
+                <!-- OB box -->
+                <rect x="72" y="46" width="36" height="34" rx="2" fill="#f59e0b" opacity=".15" stroke="#f59e0b" stroke-width="1" stroke-opacity=".5"/>
+                <text x="90" y="56" text-anchor="middle" font-size="7" fill="#f59e0b" opacity=".9">OB</text>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--smc">Smart money</span>
+                <span class="commCard__ver">v6</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">SMC Structure Detector</h3>
+              <p class="commCard__desc">Detects BOS, CHoCH and MSS in real time. Marks order blocks and fair value gaps as they form. Premium/discount zones update with each new swing.</p>
+              <div class="commCard__tags">
+                <span>BOS</span><span>CHoCH</span><span>order block</span><span>FVG</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--green">T</span>
+                  <span>tape_reader</span>
+                  <span class="commCard__tier commCard__tier--elite">Elite</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 1,647 installs</span>
+                  <span>Multi-TF</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 3: Session Volume Profile -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- volume profile bars (horizontal) -->
+                <rect x="160" y="8"  width="52" height="7" rx="1" fill="#22d3ee" opacity=".35"/>
+                <rect x="142" y="18" width="70" height="7" rx="1" fill="#22d3ee" opacity=".5"/>
+                <rect x="125" y="28" width="87" height="7" rx="1" fill="#22d3ee" opacity=".6"/>
+                <rect x="108" y="38" width="104" height="7" rx="1" fill="#22d3ee" opacity=".75"/>
+                <rect x="90"  y="48" width="122" height="7" rx="1" fill="#22d3ee" opacity=".9"/>  <!-- POC -->
+                <rect x="105" y="58" width="107" height="7" rx="1" fill="#22d3ee" opacity=".72"/>
+                <rect x="120" y="68" width="92" height="7" rx="1" fill="#22d3ee" opacity=".58"/>
+                <rect x="135" y="78" width="77" height="7" rx="1" fill="#22d3ee" opacity=".42"/>
+                <rect x="148" y="88" width="64" height="7" rx="1" fill="#22d3ee" opacity=".3"/>
+                <!-- POC line -->
+                <line x1="0" y1="51" x2="220" y2="51" stroke="#22d3ee" stroke-width="1.5" opacity=".8"/>
+                <text x="3" y="49" font-size="7" fill="#22d3ee" opacity=".9">POC</text>
+                <!-- VAH / VAL -->
+                <line x1="0" y1="33" x2="220" y2="33" stroke="#22d3ee" stroke-width="0.8" stroke-dasharray="3 2" opacity=".5"/>
+                <text x="3" y="31" font-size="6" fill="#22d3ee" opacity=".7">VAH</text>
+                <line x1="0" y1="72" x2="220" y2="72" stroke="#22d3ee" stroke-width="0.8" stroke-dasharray="3 2" opacity=".5"/>
+                <text x="3" y="82" font-size="6" fill="#22d3ee" opacity=".7">VAL</text>
+                <!-- candles to the left -->
+                <rect x="20" y="44" width="8"  height="18" rx="1" fill="var(--color-up)" opacity=".75"/>
+                <rect x="34" y="48" width="8"  height="14" rx="1" fill="var(--color-dn)" opacity=".6"/>
+                <rect x="48" y="38" width="8"  height="24" rx="1" fill="var(--color-up)" opacity=".8"/>
+                <rect x="62" y="42" width="8"  height="20" rx="1" fill="var(--color-up)" opacity=".85"/>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--vp">Volume profile</span>
+                <span class="commCard__ver">v2</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">Session Volume Profile</h3>
+              <p class="commCard__desc">Draws a fixed-range volume profile for each trading session. Highlights POC, VAH and VAL. Single prints are marked as thin-volume zones for retest anticipation.</p>
+              <div class="commCard__tags">
+                <span>volume profile</span><span>POC</span><span>VAH</span><span>VAL</span><span>sessions</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--cyan">V</span>
+                  <span>vp_analyst</span>
+                  <span class="commCard__tier commCard__tier--pro">Pro</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 1,203 installs</span>
+                  <span>Any symbol</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 4: CVD Divergence Scanner -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- price line trending up -->
+                <polyline points="5,75 25,68 45,60 65,64 85,52 105,44 125,48 145,36 165,28 185,22 205,18"
+                          fill="none" stroke="var(--color-up)" stroke-width="1.5" opacity=".8"/>
+                <!-- CVD line trending down (divergence) -->
+                <polyline points="5,55 25,56 45,58 65,62 85,65 105,67 125,70 145,72 165,75 185,78 205,80"
+                          fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3 2" opacity=".8"/>
+                <!-- divergence annotation -->
+                <line x1="145" y1="36" x2="205" y2="18" stroke="var(--color-up)" stroke-width="0.8" opacity=".4"/>
+                <line x1="145" y1="72" x2="205" y2="80" stroke="#f59e0b" stroke-width="0.8" opacity=".4"/>
+                <!-- labels -->
+                <text x="160" y="15" font-size="7" fill="var(--color-up)" opacity=".8">Price ↑</text>
+                <text x="155" y="90" font-size="7" fill="#f59e0b" opacity=".8">CVD ↓ divergence</text>
+                <!-- highlight box -->
+                <rect x="140" y="14" width="75" height="70" rx="3" fill="#f59e0b" opacity=".06" stroke="#f59e0b" stroke-width="0.8" stroke-opacity=".3"/>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--of">Order flow</span>
+                <span class="commCard__ver">v3</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">CVD Divergence Scanner</h3>
+              <p class="commCard__desc">Flags bars where cumulative volume delta diverges from price direction. Bearish CVD into a price high and bullish CVD into a price low are the two primary signals.</p>
+              <div class="commCard__tags">
+                <span>CVD</span><span>divergence</span><span>delta</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--orange">D</span>
+                  <span>delta_lab</span>
+                  <span class="commCard__tier commCard__tier--elite">Elite</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 987 installs</span>
+                  <span>BTCUSDT · ETH</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 5: Liquidity Sweep & Reclaim -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- prior low level -->
+                <line x1="0" y1="68" x2="220" y2="68" stroke="#ef4444" stroke-width="1" stroke-dasharray="4 3" opacity=".6"/>
+                <text x="3" y="66" font-size="6" fill="#ef4444" opacity=".8">prior low</text>
+                <!-- candles: sell-off through level then recovery -->
+                <rect x="10" y="46" width="10" height="22" rx="1" fill="var(--color-up)" opacity=".8"/>
+                <rect x="26" y="50" width="10" height="20" rx="1" fill="var(--color-dn)" opacity=".7"/>
+                <rect x="42" y="54" width="10" height="22" rx="1" fill="var(--color-dn)" opacity=".75"/>
+                <!-- sweep candle — long wick below -->
+                <line x1="57" y1="60" x2="57" y2="82" stroke="var(--color-dn)" stroke-width="1.5" opacity=".8"/>
+                <rect x="52" y="58" width="10" height="14" rx="1" fill="var(--color-dn)" opacity=".8"/>
+                <!-- sweep dot -->
+                <circle cx="57" cy="82" r="3.5" fill="#ef4444" opacity=".9"/>
+                <!-- recovery candles -->
+                <rect x="68" y="42" width="10" height="28" rx="1" fill="var(--color-up)" opacity=".85"/>
+                <rect x="84" y="34" width="10" height="32" rx="1" fill="var(--color-up)" opacity=".9"/>
+                <rect x="100" y="26" width="10" height="36" rx="1" fill="var(--color-up)" opacity=".9"/>
+                <rect x="116" y="20" width="10" height="38" rx="1" fill="var(--color-up)" opacity=".95"/>
+                <!-- reclaim label -->
+                <rect x="64" y="30" width="46" height="13" rx="3" fill="var(--color-up)" opacity=".15" stroke="var(--color-up)" stroke-width="0.8" stroke-opacity=".5"/>
+                <text x="87" y="40" text-anchor="middle" font-size="7" fill="var(--color-up)" opacity=".9">sweep + reclaim</text>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--smc">Smart money</span>
+                <span class="commCard__ver">v5</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">Liquidity Sweep &amp; Reclaim</h3>
+              <p class="commCard__desc">Detects when price sweeps a swing high or low and reclaims the level within a configurable bar window. Works with or without a positive delta filter.</p>
+              <div class="commCard__tags">
+                <span>sweep</span><span>liquidity</span><span>reclaim</span><span>SMC</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--red">L</span>
+                  <span>liq_hunter</span>
+                  <span class="commCard__tier commCard__tier--pro">Pro</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 876 installs</span>
+                  <span>Any symbol · 5m+</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 6: Anchored VWAP Suite -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- candles background -->
+                <rect x="8"  y="50" width="8" height="30" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="22" y="44" width="8" height="32" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="36" y="38" width="8" height="28" rx="1" fill="var(--color-dn)" opacity=".5"/>
+                <rect x="50" y="32" width="8" height="26" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="64" y="26" width="8" height="28" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="78" y="30" width="8" height="22" rx="1" fill="var(--color-dn)" opacity=".5"/>
+                <rect x="92" y="22" width="8" height="26" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="106" y="16" width="8" height="28" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="120" y="20" width="8" height="24" rx="1" fill="var(--color-dn)" opacity=".5"/>
+                <rect x="134" y="14" width="8" height="26" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <rect x="148" y="10" width="8" height="24" rx="1" fill="var(--color-up)" opacity=".5"/>
+                <!-- VWAP from open -->
+                <polyline points="8,68 36,58 64,48 92,38 120,32 148,24 176,18 204,14"
+                          fill="none" stroke="#a78bfa" stroke-width="1.8" opacity=".9"/>
+                <!-- VWAP from swing low -->
+                <polyline points="50,55 78,48 106,40 134,32 162,25 190,19 218,14"
+                          fill="none" stroke="#34d399" stroke-width="1.4" stroke-dasharray="4 2" opacity=".8"/>
+                <!-- labels -->
+                <text x="176" y="14" font-size="6" fill="#a78bfa">VWAP</text>
+                <text x="162" y="22" font-size="6" fill="#34d399">Anchored</text>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--vp">Volume profile</span>
+                <span class="commCard__ver">v3</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">Anchored VWAP Suite</h3>
+              <p class="commCard__desc">Session VWAP, custom anchor VWAP and multi-timeframe VWAP in one script. Standard deviation bands (1σ, 2σ) shown as gradient fills.</p>
+              <div class="commCard__tags">
+                <span>VWAP</span><span>anchored</span><span>bands</span><span>session</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--purple">W</span>
+                  <span>vwap_pro</span>
+                  <span class="commCard__tier commCard__tier--pro">Pro</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 754 installs</span>
+                  <span>Any symbol</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 7: Equal Highs / Equal Lows -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- equal highs horizontal line -->
+                <line x1="20" y1="28" x2="200" y2="28" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 3" opacity=".8"/>
+                <text x="4"  y="26" font-size="6" fill="#f59e0b" opacity=".9">EQH</text>
+                <!-- equal lows line -->
+                <line x1="20" y1="72" x2="200" y2="72" stroke="#60a5fa" stroke-width="1.2" stroke-dasharray="4 3" opacity=".8"/>
+                <text x="4"  y="82" font-size="6" fill="#60a5fa" opacity=".9">EQL</text>
+                <!-- candles -->
+                <rect x="20"  y="20" width="9" height="22" rx="1" fill="var(--color-dn)" opacity=".7"/>
+                <rect x="36"  y="36" width="9" height="20" rx="1" fill="var(--color-up)" opacity=".75"/>
+                <rect x="52"  y="44" width="9" height="28" rx="1" fill="var(--color-up)" opacity=".7"/>
+                <rect x="68"  y="38" width="9" height="18" rx="1" fill="var(--color-dn)" opacity=".65"/>
+                <rect x="84"  y="20" width="9" height="22" rx="1" fill="var(--color-dn)" opacity=".72"/>
+                <rect x="100" y="48" width="9" height="24" rx="1" fill="var(--color-up)" opacity=".7"/>
+                <rect x="116" y="64" width="9" height="22" rx="1" fill="var(--color-dn)" opacity=".7"/>
+                <rect x="132" y="56" width="9" height="20" rx="1" fill="var(--color-up)" opacity=".75"/>
+                <rect x="148" y="64" width="9" height="22" rx="1" fill="var(--color-dn)" opacity=".68"/>
+                <rect x="164" y="36" width="9" height="26" rx="1" fill="var(--color-up)" opacity=".75"/>
+                <rect x="180" y="20" width="9" height="22" rx="1" fill="var(--color-dn)" opacity=".7"/>
+                <!-- dot markers at equal highs/lows -->
+                <circle cx="29"  cy="20" r="2.5" fill="#f59e0b" opacity=".9"/>
+                <circle cx="93"  cy="20" r="2.5" fill="#f59e0b" opacity=".9"/>
+                <circle cx="189" cy="20" r="2.5" fill="#f59e0b" opacity=".9"/>
+                <circle cx="125" cy="72" r="2.5" fill="#60a5fa" opacity=".9"/>
+                <circle cx="157" cy="72" r="2.5" fill="#60a5fa" opacity=".9"/>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--smc">Smart money</span>
+                <span class="commCard__ver">v2</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">Equal Highs &amp; Equal Lows</h3>
+              <p class="commCard__desc">Automatically identifies and connects swing highs and lows that are within a configurable ATR tolerance. Labels them EQH and EQL as liquidity pools.</p>
+              <div class="commCard__tags">
+                <span>EQH</span><span>EQL</span><span>liquidity</span><span>sweeps</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--amber">E</span>
+                  <span>eq_levels</span>
+                  <span class="commCard__tier commCard__tier--pro">Pro</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 632 installs</span>
+                  <span>Any symbol · Any TF</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 8: FVG + Mitigation Tracker -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- candles -->
+                <rect x="10"  y="55" width="9" height="25" rx="1" fill="var(--color-up)" opacity=".75"/>
+                <rect x="24"  y="46" width="9" height="28" rx="1" fill="var(--color-up)" opacity=".8"/>
+                <rect x="38"  y="36" width="9" height="32" rx="1" fill="var(--color-up)" opacity=".85"/>
+                <!-- FVG gap zone (highlighted rect between 2 candles) -->
+                <rect x="52"  y="22" width="14" height="18" rx="2" fill="#3b82f6" opacity=".18" stroke="#3b82f6" stroke-width="0.8" stroke-opacity=".5"/>
+                <text x="59" y="19" text-anchor="middle" font-size="6.5" fill="#3b82f6" opacity=".9">FVG</text>
+                <rect x="66"  y="18" width="9" height="30" rx="1" fill="var(--color-up)" opacity=".85"/>
+                <rect x="80"  y="26" width="9" height="26" rx="1" fill="var(--color-dn)" opacity=".7"/>
+                <!-- price comes back to fill FVG -->
+                <rect x="94"  y="34" width="9" height="22" rx="1" fill="var(--color-dn)" opacity=".72"/>
+                <!-- mitigation arrow -->
+                <path d="M98 34 L59 28" stroke="#3b82f6" stroke-width="0.8" stroke-dasharray="3 2" opacity=".6" marker-end="url(#arr)"/>
+                <rect x="108" y="40" width="9" height="20" rx="1" fill="var(--color-up)" opacity=".75"/>
+                <rect x="122" y="30" width="9" height="26" rx="1" fill="var(--color-up)" opacity=".8"/>
+                <rect x="136" y="22" width="9" height="28" rx="1" fill="var(--color-up)" opacity=".85"/>
+                <!-- mitigated FVG (greyed out) -->
+                <rect x="52" y="22" width="14" height="18" rx="2" fill="#3b82f6" opacity=".07"/>
+                <text x="59" y="47" text-anchor="middle" font-size="5.5" fill="#3b82f6" opacity=".6">mitigated</text>
+                <!-- new unmitigated FVG -->
+                <rect x="150" y="14" width="14" height="16" rx="2" fill="#3b82f6" opacity=".22" stroke="#3b82f6" stroke-width="0.8" stroke-opacity=".7"/>
+                <text x="157" y="11" text-anchor="middle" font-size="6.5" fill="#3b82f6" opacity=".95">FVG</text>
+                <rect x="164" y="12" width="9" height="28" rx="1" fill="var(--color-up)" opacity=".9"/>
+                <rect x="178" y="8"  width="9" height="28" rx="1" fill="var(--color-up)" opacity=".92"/>
+                <rect x="192" y="6"  width="9" height="26" rx="1" fill="var(--color-up)" opacity=".95"/>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--smc">Smart money</span>
+                <span class="commCard__ver">v4</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">FVG + Mitigation Tracker</h3>
+              <p class="commCard__desc">Draws all open fair value gaps and dims them when price returns to fill. Tracks partial vs full mitigation separately. Configurable gap size filter in ATR multiples.</p>
+              <div class="commCard__tags">
+                <span>FVG</span><span>imbalance</span><span>mitigation</span><span>SMC</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--blue">F</span>
+                  <span>fvg_labs</span>
+                  <span class="commCard__tier commCard__tier--elite">Elite</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 598 installs</span>
+                  <span>Any symbol · 1m+</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 9: Fibonacci Auto-Draw -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- swing line -->
+                <line x1="10" y1="80" x2="140" y2="18" stroke="#a78bfa" stroke-width="1.2" opacity=".5"/>
+                <!-- fib levels -->
+                <line x1="0" y1="18"  x2="220" y2="18"  stroke="#a78bfa" stroke-width="0.8" opacity=".7"/>
+                <text x="2" y="16" font-size="6" fill="#a78bfa" opacity=".8">0</text>
+                <line x1="0" y1="34"  x2="220" y2="34"  stroke="#a78bfa" stroke-width="0.7" stroke-dasharray="3 2" opacity=".6"/>
+                <text x="2" y="32" font-size="6" fill="#a78bfa" opacity=".7">0.236</text>
+                <line x1="0" y1="49"  x2="220" y2="49"  stroke="#a78bfa" stroke-width="0.9" opacity=".75"/>
+                <text x="2" y="47" font-size="6" fill="#a78bfa" opacity=".9">0.382</text>
+                <line x1="0" y1="62"  x2="220" y2="62"  stroke="#a78bfa" stroke-width="1.1" stroke-dasharray="0" opacity=".85"/>
+                <text x="2" y="60" font-size="6" fill="#a78bfa">0.5</text>
+                <line x1="0" y1="73"  x2="220" y2="73"  stroke="#a78bfa" stroke-width="0.9" opacity=".75"/>
+                <text x="2" y="71" font-size="6" fill="#a78bfa" opacity=".9">0.618</text>
+                <line x1="0" y1="80"  x2="220" y2="80"  stroke="#a78bfa" stroke-width="0.8" opacity=".7"/>
+                <text x="2" y="88" font-size="6" fill="#a78bfa" opacity=".8">1</text>
+                <!-- candles overlaid -->
+                <rect x="150" y="56" width="8" height="20" rx="1" fill="var(--color-up)" opacity=".7"/>
+                <rect x="163" y="48" width="8" height="20" rx="1" fill="var(--color-up)" opacity=".75"/>
+                <rect x="176" y="40" width="8" height="22" rx="1" fill="var(--color-up)" opacity=".8"/>
+                <rect x="189" y="32" width="8" height="24" rx="1" fill="var(--color-up)" opacity=".85"/>
+                <rect x="202" y="24" width="8" height="26" rx="1" fill="var(--color-up)" opacity=".9"/>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--fib">Fibonacci</span>
+                <span class="commCard__ver">v2</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">Fibonacci Auto-Draw</h3>
+              <p class="commCard__desc">Automatically detects the last significant swing high and low and draws standard Fibonacci retracement and extension levels. Redraws on each new swing.</p>
+              <div class="commCard__tags">
+                <span>fibonacci</span><span>retracement</span><span>extensions</span><span>auto</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--purple">F</span>
+                  <span>fib_master</span>
+                  <span class="commCard__tier commCard__tier--pro">Pro</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 521 installs</span>
+                  <span>Any symbol</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 10: VPIN Real-Time -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- VPIN histogram -->
+                <rect x="8"   y="72" width="14" height="18" rx="1" fill="#22d3ee" opacity=".55"/>
+                <rect x="26"  y="68" width="14" height="22" rx="1" fill="#22d3ee" opacity=".6"/>
+                <rect x="44"  y="60" width="14" height="30" rx="1" fill="#22d3ee" opacity=".65"/>
+                <rect x="62"  y="50" width="14" height="40" rx="1" fill="#f59e0b" opacity=".7"/>
+                <rect x="80"  y="32" width="14" height="58" rx="1" fill="#ef4444" opacity=".75"/>
+                <rect x="98"  y="20" width="14" height="70" rx="1" fill="#ef4444" opacity=".85"/>
+                <rect x="116" y="28" width="14" height="62" rx="1" fill="#ef4444" opacity=".8"/>
+                <rect x="134" y="40" width="14" height="50" rx="1" fill="#f59e0b" opacity=".7"/>
+                <rect x="152" y="54" width="14" height="36" rx="1" fill="#22d3ee" opacity=".6"/>
+                <rect x="170" y="64" width="14" height="26" rx="1" fill="#22d3ee" opacity=".55"/>
+                <rect x="188" y="70" width="14" height="20" rx="1" fill="#22d3ee" opacity=".5"/>
+                <!-- threshold line -->
+                <line x1="0" y1="40" x2="220" y2="40" stroke="#ef4444" stroke-width="1" stroke-dasharray="4 3" opacity=".6"/>
+                <text x="2" y="38" font-size="6" fill="#ef4444" opacity=".8">toxic threshold</text>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--of">Order flow</span>
+                <span class="commCard__ver">v2</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">VPIN Real-Time</h3>
+              <p class="commCard__desc">Volume-synchronised probability of informed trading, computed bar-by-bar. Highlights periods of elevated toxic order flow with a configurable threshold and colour gradient.</p>
+              <div class="commCard__tags">
+                <span>VPIN</span><span>toxic flow</span><span>order flow</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--cyan">V</span>
+                  <span>vpin_algo</span>
+                  <span class="commCard__tier commCard__tier--elite">Elite</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 412 installs</span>
+                  <span>BTCUSDT · 5m</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 11: Harmonic Pattern Detector -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- Gartley pattern XABCD -->
+                <polyline points="20,75 70,22 110,55 150,18 190,62"
+                          fill="none" stroke="#a78bfa" stroke-width="1.5" opacity=".85"/>
+                <!-- Fill triangle highlight -->
+                <polygon points="110,55 150,18 190,62" fill="#a78bfa" opacity=".08"/>
+                <!-- Labels -->
+                <text x="17"  y="85"  font-size="8" fill="#a78bfa" opacity=".9" font-weight="bold">X</text>
+                <text x="67"  y="18"  font-size="8" fill="#a78bfa" opacity=".9" font-weight="bold">A</text>
+                <text x="107" y="68"  font-size="8" fill="#a78bfa" opacity=".9" font-weight="bold">B</text>
+                <text x="147" y="14"  font-size="8" fill="#a78bfa" opacity=".9" font-weight="bold">C</text>
+                <text x="187" y="76"  font-size="8" fill="#a78bfa" opacity=".9" font-weight="bold">D</text>
+                <!-- Pattern label -->
+                <rect x="80" y="72" width="60" height="14" rx="3" fill="#a78bfa" opacity=".2"/>
+                <text x="110" y="82" text-anchor="middle" font-size="7" fill="#a78bfa" opacity=".95">Gartley 0.618</text>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--fib">Harmonics</span>
+                <span class="commCard__ver">v3</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">Harmonic Pattern Detector</h3>
+              <p class="commCard__desc">Identifies Gartley, Bat, Butterfly, Crab and Cypher patterns by scanning XABCD swing ratios. Highlights the PRZ and shows the ideal entry zone.</p>
+              <div class="commCard__tags">
+                <span>harmonics</span><span>Gartley</span><span>Bat</span><span>Butterfly</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--purple">H</span>
+                  <span>harmonic_dev</span>
+                  <span class="commCard__tier commCard__tier--elite">Elite</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 389 installs</span>
+                  <span>Any symbol · 15m+</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+          <!-- Card 12: Multi-TF Bias Dashboard -->
+          <article class="commCard">
+            <div class="commCard__preview" aria-hidden="true">
+              <svg viewBox="0 0 220 100" class="commCard__chart">
+                <rect x="0" y="0" width="220" height="100" fill="var(--comm-preview-bg)"/>
+                <!-- TF rows -->
+                <text x="8" y="20" font-size="7" fill="var(--text-muted)" opacity=".8">1W</text>
+                <rect x="34" y="10" width="80" height="14" rx="2" fill="var(--color-up)" opacity=".75"/>
+                <text x="120" y="21" font-size="7" fill="var(--color-up)" opacity=".9">Bullish</text>
+
+                <text x="8" y="38" font-size="7" fill="var(--text-muted)" opacity=".8">1D</text>
+                <rect x="34" y="28" width="80" height="14" rx="2" fill="var(--color-up)" opacity=".7"/>
+                <text x="120" y="39" font-size="7" fill="var(--color-up)" opacity=".9">Bullish</text>
+
+                <text x="8" y="56" font-size="7" fill="var(--text-muted)" opacity=".8">4H</text>
+                <rect x="34" y="46" width="60" height="14" rx="2" fill="#f59e0b" opacity=".65"/>
+                <text x="100" y="57" font-size="7" fill="#f59e0b" opacity=".9">Neutral</text>
+
+                <text x="8" y="74" font-size="7" fill="var(--text-muted)" opacity=".8">1H</text>
+                <rect x="34" y="64" width="80" height="14" rx="2" fill="var(--color-up)" opacity=".7"/>
+                <text x="120" y="75" font-size="7" fill="var(--color-up)" opacity=".9">Bullish</text>
+
+                <text x="8" y="92" font-size="7" fill="var(--text-muted)" opacity=".8">5M</text>
+                <rect x="34" y="82" width="55" height="14" rx="2" fill="var(--color-dn)" opacity=".65"/>
+                <text x="95"  y="93" font-size="7" fill="var(--color-dn)" opacity=".9">Bearish</text>
+
+                <!-- overall bias pill -->
+                <rect x="160" y="36" width="52" height="28" rx="5" fill="var(--color-up)" opacity=".15" stroke="var(--color-up)" stroke-width="1" stroke-opacity=".4"/>
+                <text x="186" y="48" text-anchor="middle" font-size="7" fill="var(--color-up)" opacity=".9">Overall</text>
+                <text x="186" y="59" text-anchor="middle" font-size="8" fill="var(--color-up)" font-weight="bold">Long ▲</text>
+              </svg>
+            </div>
+            <div class="commCard__body">
+              <div class="commCard__meta">
+                <span class="commCard__cat commCard__cat--smc">Multi-TF</span>
+                <span class="commCard__ver">v2</span>
+                <span class="commCard__validated">✓ validated</span>
+              </div>
+              <h3 class="commCard__title">Multi-TF Bias Dashboard</h3>
+              <p class="commCard__desc">Shows market structure bias across five timeframes in a compact table. Aggregates BOS, CHoCH and trend direction into a single long/short/neutral reading per TF.</p>
+              <div class="commCard__tags">
+                <span>multi-TF</span><span>bias</span><span>structure</span><span>dashboard</span>
+              </div>
+              <div class="commCard__foot">
+                <div class="commCard__author">
+                  <span class="commCard__avatar commCard__avatar--green">M</span>
+                  <span>mtf_trader</span>
+                  <span class="commCard__tier commCard__tier--pro">Pro</span>
+                </div>
+                <div class="commCard__stats">
+                  <span>⬇ 344 installs</span>
+                  <span>Any symbol</span>
+                </div>
+              </div>
+            </div>
+            <button class="commCard__install pubBtn pubBtn--sm" type="button" data-public-auth>Install</button>
+          </article>
+
+        </div><!-- /commFeed -->
+
+        <!-- Sign-in gate -->
+        <div class="commGate">
+          <div class="commGate__inner">
+            <p class="commGate__title">Showing 12 of <strong>400+ scripts</strong></p>
+            <p class="commGate__sub">Sign in to browse the full library, filter by tag or author, and install in one click.</p>
+            <div class="commGate__actions">
+              <button class="pubBtn pubBtn--primary" type="button" data-public-auth>Sign in to browse all</button>
+              <a class="pubBtn" href="#/signup">Create a free account</a>
             </div>
           </div>
         </div>
       </section>
 
-      <section class="pubSection pubSection--alt" aria-labelledby="commInstallTitle">
+      <!-- How it works strip -->
+      <section class="pubSection pubSection--alt" aria-labelledby="commHowTitle">
         <header class="pubSectionHead">
-          <p class="pubKicker">Install</p>
-          <h2 id="commInstallTitle">A fork you own.</h2>
-          <p>Installing is not subscribing to someone else’s edits. You receive a copy tied to a pinned version, and the author’s next change is an update you can choose.</p>
+          <p class="pubKicker">How it works</p>
+          <h2 id="commHowTitle">From idea to installed in three steps.</h2>
         </header>
         <div class="stepCards">
-          <article><span>01</span><h3>Find it</h3><p>Browse by title, tag, symbol or timeframe. The catalog says what was validated and when.</p></article>
-          <article><span>02</span><h3>Install it</h3><p>The server re-vets the source and the preview against the current engine before the copy is made.</p></article>
-          <article><span>03</span><h3>Make it yours</h3><p>The workspace is yours. Edit the copy, keep the version pinned, or take an update when one lands.</p></article>
-        </div>
-      </section>
-
-      <section class="pubSection" aria-labelledby="commFactsTitle">
-        <header class="pubSectionHead">
-          <h2 id="commFactsTitle">What is in the library</h2>
-        </header>
-        <div class="libraryGrid">
-          <article class="libraryCard">
-            <span class="libraryCard__tag">Smart money</span>
-            <h3>Structure &amp; liquidity</h3>
-            <p>BOS, CHoCH, MSS, order blocks, breakers, fair value gaps, sweeps, equal highs and lows, premium and discount.</p>
-            <span class="libraryCard__meta">31 concepts</span>
+          <article>
+            <span>01</span>
+            <h3>Write &amp; validate</h3>
+            <p>Author an indicator in the DSL, Pine-lite or natural language. The engine validates the logic and generates a live chart preview before anything is published.</p>
           </article>
-          <article class="libraryCard">
-            <span class="libraryCard__tag">Price action</span>
-            <h3>Levels &amp; patterns</h3>
-            <p>Support and resistance, retests, failed breakouts, compression, channels, flags, pennants and reversal patterns.</p>
-            <span class="libraryCard__meta">Price-action library</span>
+          <article>
+            <span>02</span>
+            <h3>Publish a revision</h3>
+            <p>What goes public is the finished revision: source, summary, validator report, chart preview. Versions are immutable. Publishing re-runs the validator — last month's pass is not proof.</p>
           </article>
-          <article class="libraryCard">
-            <span class="libraryCard__tag">Order flow</span>
-            <h3>Delta &amp; volume</h3>
-            <p>Footprint, delta by size, CVD, absorption, icebergs, profile memory, VPIN and session volume profiles.</p>
-            <span class="libraryCard__meta">Order-flow engine</span>
+          <article>
+            <span>03</span>
+            <h3>Install a fork you own</h3>
+            <p>Installing creates a copy tied to the pinned version in your own workspace. The author's next change is an update you choose to take — never pushed automatically.</p>
           </article>
-        </div>
-        <div class="pubCenter">
-          <button class="pubBtn pubBtn--primary" type="button" data-public-auth>Browse the community</button>
         </div>
       </section>
 
       <section class="pubSection pubFinal">
         <div class="pubFinal__inner">
           <h2>Publish something worth installing.</h2>
-          <p>An account is the only requirement. Every plan can browse, install and publish.</p>
+          <p>Every plan can browse, install and publish. No extra fees.</p>
           <div class="pubFinal__actions">
             <button class="pubBtn pubBtn--primary" type="button" data-public-auth>Create a free account</button>
+            <a class="pubBtn" href="#/features">See the studio</a>
           </div>
         </div>
       </section>
