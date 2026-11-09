@@ -14783,7 +14783,7 @@ async function saveAiModel() {
   const msg = el("aiMsg");
   let provId = el("aiProvider").value;
   if (!provId) {
-    msg.textContent = "pick a provider, or press "Use platform model" to remove yours";
+    msg.textContent = "pick a provider, or press 'Use platform model' to remove yours";
     return;
   }
   // openai-compat-custom is a UI-only alias to show the right hint text
