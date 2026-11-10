@@ -16,11 +16,12 @@
 //! the real code: the real `create_message` handler, the real vet pipeline,
 //! the real `replay_script_preview`, the real database.
 //!
-//! ## The script is deliberately guaranteed to plot
+//! ## The script is guaranteed to plot and emit one box and label
 //!
 //! `plot(ta.ema(close, 9))` is finite on any candle with a past, so a
-//! non-empty preview is guaranteed if the plumbing works at all. If the chain
-//! breaks, the zone count goes to zero and the assertion says so.
+//! non-empty preview is guaranteed if the plumbing works at all. The final
+//! bar also emits one drawing of each kind so server-measured counts are
+//! checked against interpreter output.
 
 mod common;
 
@@ -31,11 +32,14 @@ use ai_agent::{AgentConfig, ContentBlock, LlmResponse, Message, Role, StopReason
 use analytics_core::types::{Candle, Timeframe};
 use serde_json::json;
 
-/// The scripted script: an EMA line, finite on every bar after the ninth.
+/// The scripted script: an EMA line plus one final-bar box and label.
 const FIREABLE_SCRIPT: &str = concat!(
-    "//@pine_lite version=1 overlay=false title=\"EMA probe\"\n",
+    "//@pine_lite version=1 overlay=true title=\"EMA probe\"\n",
     "e = ta.ema(close, 9)\n",
     "plot(e, title=\"EMA9\", color=color.orange)\n",
+    "if bar_index == last_bar_index\n",
+    "    box.new(bar_index - 2, high, bar_index, low, color=color.teal)\n",
+    "    label.new(bar_index, high, \"preview\", color=color.teal)\n",
 );
 
 const RUNTIME_FAILURE_SCRIPT: &str = concat!(
@@ -55,7 +59,10 @@ fn scripted_agent_with_scripts(scripts: &[&str]) -> Arc<ai_agent::Agent> {
                 content: vec![ContentBlock::ToolUse {
                     id: format!("d{}", index + 1),
                     name: "submit_script".into(),
-                    input: json!({ "script": script }),
+                    input: json!({
+                        "script": script,
+                        "report": "Model report without revision or replay details."
+                    }),
                 }],
             },
             stop_reason: StopReason::ToolUse,
@@ -155,6 +162,39 @@ async fn a_generation_turn_stores_a_non_empty_validated_preview() {
     let revision = &body["revision"];
     assert_eq!(revision["status"], "validated", "revision: {revision}");
     let preview = &revision["preview"];
+    let assistant = &body["assistant_message"];
+    let assistant_text = assistant["content"].as_str().expect("assistant report");
+    let preview_stats = &assistant["payload"]["preview_stats"];
+    assert_eq!(
+        assistant["payload"]["revision_number"],
+        revision["revision_number"]
+    );
+    assert_eq!(assistant["payload"]["revision_status"], "validated");
+    assert_eq!(preview_stats["drawing_objects"], 2);
+    assert_eq!(preview_stats["boxes"], 1);
+    assert_eq!(preview_stats["labels"], 1);
+    assert_eq!(preview_stats["objects_truncated"], false);
+    assert!(
+        assistant_text.contains("Model report without revision or replay details."),
+        "the model's useful report must be preserved: {assistant_text}"
+    );
+    assert!(
+        assistant_text.contains(&format!(
+            "Saved as active validated revision #{}. {}-day preview: {} bars, {} plot(s), {} level(s), {} marker(s), and {} drawing object(s), including {} box(es) and {} label(s).",
+            revision["revision_number"].as_i64().expect("revision number"),
+            preview_stats["window_days"].as_i64().expect("preview days"),
+            preview_stats["bars"].as_u64().expect("preview bars"),
+            preview_stats["plots"].as_u64().expect("preview plots"),
+            preview_stats["levels"].as_u64().expect("preview levels"),
+            preview_stats["shapes"].as_u64().expect("preview markers"),
+            preview_stats["drawing_objects"]
+                .as_u64()
+                .expect("preview drawings"),
+            preview_stats["boxes"].as_u64().expect("preview boxes"),
+            preview_stats["labels"].as_u64().expect("preview labels"),
+        )),
+        "the assistant must report server-computed revision and preview facts: {assistant_text}"
+    );
 
     let zones = preview["zones"].as_array().expect("a zones array");
     assert!(
@@ -177,6 +217,18 @@ async fn a_generation_turn_stores_a_non_empty_validated_preview() {
             Some(&user.token),
         )
         .await;
+    assert_eq!(listed[0]["id"], revision["id"]);
+    assert_eq!(listed[0]["revision_number"], revision["revision_number"]);
+    let workspace = h
+        .ok(
+            &format!("/indicator-workspaces/{workspace_id}"),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(
+        workspace["active_revision_id"], revision["id"],
+        "a successful validated generation must become the workspace's active revision"
+    );
     let stored = &listed[0]["preview"]["zones"];
     assert!(
         stored.as_array().is_some_and(|z| !z.is_empty()),

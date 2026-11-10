@@ -2084,37 +2084,14 @@ mod tests {
 
     /// The multi-timeframe idiom the prompt teaches (docs/28), assembled as
     /// the complete script the model is expected to write from it.
-    const MTF_SYNTHESIS_SCRIPT: &str = concat!(
-        "//@pine_lite version=1 overlay=true title=\"MTF FVG\"\n",
-        "t15 = request.security(\"BTCUSDT\", \"15m\", time)\n",
-        "h15 = request.security(\"BTCUSDT\", \"15m\", high)\n",
-        "l15 = request.security(\"BTCUSDT\", \"15m\", low)\n",
-        "t1h = request.security(\"BTCUSDT\", \"1h\", time)\n",
-        "h1h = request.security(\"BTCUSDT\", \"1h\", high)\n",
-        "l1h = request.security(\"BTCUSDT\", \"1h\", low)\n",
-        "far = 10000000000000000.0\n",
-        "nb15 = t15 != t15[1]\n",
-        "var a1 = na\n",
-        "var a2 = na\n",
-        "if nb15 and not na(a2)\n",
-        "    if l15[1] > a2\n",
-        "        box.new_time(t15[1], l15[1], t15 + far, a2, color=color.aqua)\n",
-        "        label.new_time(t15[1], l15[1], \"15m FVG\", color=color.aqua)\n",
-        "if nb15\n",
-        "    a2 = a1\n",
-        "    a1 = h15[1]\n",
-        "nb1h = t1h != t1h[1]\n",
-        "var b1 = na\n",
-        "var b2 = na\n",
-        "if nb1h and not na(b2)\n",
-        "    if l1h[1] > b2\n",
-        "        box.new_time(t1h[1], l1h[1], t1h + far, b2, color=color.teal)\n",
-        "        label.new_time(t1h[1], l1h[1], \"1h FVG\", color=color.teal)\n",
-        "if nb1h\n",
-        "    b2 = b1\n",
-        "    b1 = h1h[1]\n",
-        "plot(close)\n",
-    );
+    const TOP_DOWN_ZONES_REQUEST: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-fixtures/light-pine/top_down_zones_request.txt"
+    ));
+    const MTF_SYNTHESIS_SCRIPT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-fixtures/light-pine/top_down_zones.pine"
+    ));
 
     #[test]
     fn the_taught_multi_timeframe_idiom_vets_and_runs_over_two_pools() {
@@ -2190,10 +2167,186 @@ mod tests {
         assert!(prompt.contains("15m FVG"), "the tf-tagged zone labels ride the prompt");
     }
 
+    #[tokio::test]
+    async fn prompt1_top_down_feature_runs_through_the_indicator_generation_gate() {
+        let llm = CapturingScriptedLlm {
+            script: MTF_SYNTHESIS_SCRIPT.to_string(),
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+        let generated = generate_script(
+            &llm,
+            script_system_prompt("BTCUSDT", "5m"),
+            TOP_DOWN_ZONES_REQUEST,
+            None,
+            4096,
+            0.0,
+            None,
+            &[],
+        )
+        .await
+        .expect("the scripted model's tool call should pass the real generation gate");
+
+        assert_eq!(generated.attempts, 1);
+        assert_eq!(generated.source, MTF_SYNTHESIS_SCRIPT);
+        assert!(generated.report.as_deref().is_some_and(|report| {
+            report.contains("closed bars")
+                && report.contains("does not create entries")
+                && report.ends_with('?')
+        }));
+        assert!(pine_lite::vet(&generated.source).is_ok());
+
+        let requests = llm.requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(
+            matches!(
+                &requests[0].messages[0].content[0],
+                ContentBlock::Text(text) if text == TOP_DOWN_ZONES_REQUEST
+            ),
+            "the top-down feature request reaches the generator unchanged"
+        );
+        assert_eq!(
+            requests[0].tool_choice,
+            Some(ToolChoice::Tool("submit_script".to_string()))
+        );
+
+        let (_, parsed) = pine_lite::vet(&generated.source).expect("generated script vets");
+        let candles = candles_for_mtf_fixture();
+        let output = pine_lite::run(&parsed, &candles, &mtf_fixture_inputs())
+            .expect("generated script executes");
+        let boxes: Vec<_> = output
+            .objects
+            .iter()
+            .filter(|object| matches!(object, pine_lite::interp::ScriptObject::BoxTime { .. }))
+            .collect();
+        let labels: Vec<_> = output
+            .objects
+            .iter()
+            .filter_map(|object| match object {
+                pine_lite::interp::ScriptObject::LabelTime { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(boxes.len(), 2, "one qualifying FVG per requested timeframe");
+        assert_eq!(labels, ["15m FVG", "1h FVG"]);
+    }
+
+    fn candles_for_mtf_fixture() -> Vec<analytics_core::types::Candle> {
+        (0..40)
+            .map(|i| analytics_core::types::Candle {
+                symbol: "BTCUSDT".into(),
+                timeframe: analytics_core::types::Timeframe::M5,
+                open_time: i * 300_000_000_000,
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.0,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            })
+            .collect()
+    }
+
+    fn mtf_fixture_inputs() -> pine_lite::Inputs {
+        let aligned_pool = |bars_per_period: usize, levels: &[(f64, f64)]| {
+            (0..40)
+                .map(|i| {
+                    let period = i / bars_per_period;
+                    let (high, low) = levels[period];
+                    analytics_core::types::Candle {
+                        symbol: "BTCUSDT".into(),
+                        timeframe: analytics_core::types::Timeframe::M5,
+                        open_time: (period * bars_per_period) as i64 * 300_000_000_000,
+                        open: 100.0,
+                        high,
+                        low,
+                        close: 100.0,
+                        volume: 1.0,
+                        buy_volume: 0.5,
+                        sell_volume: 0.5,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut series_pool = std::collections::HashMap::new();
+        series_pool.insert(
+            "BTCUSDT@15M".to_string(),
+            aligned_pool(
+                3,
+                &[
+                    (100.0, 90.0),
+                    (108.0, 94.0),
+                    (112.0, 104.0),
+                    (110.0, 103.0),
+                    (111.0, 102.0),
+                    (112.0, 103.0),
+                    (113.0, 104.0),
+                    (114.0, 105.0),
+                    (115.0, 106.0),
+                    (116.0, 107.0),
+                    (117.0, 108.0),
+                    (118.0, 109.0),
+                    (119.0, 110.0),
+                    (120.0, 111.0),
+                ],
+            ),
+        );
+        series_pool.insert(
+            "BTCUSDT@1H".to_string(),
+            aligned_pool(
+                12,
+                &[
+                    (100.0, 90.0),
+                    (110.0, 95.0),
+                    (115.0, 105.0),
+                    (120.0, 110.0),
+                ],
+            ),
+        );
+        pine_lite::Inputs {
+            series_pool,
+            ..pine_lite::Inputs::default()
+        }
+    }
+
     /// A scripted LLM: each completion pops the next canned tool call, so a
     /// test can run the whole attempt loop without a provider.
     struct ScriptedLlm {
         scripts: std::sync::Mutex<Vec<String>>,
+    }
+
+    struct CapturingScriptedLlm {
+        script: String,
+        requests: std::sync::Mutex<Vec<LlmRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for CapturingScriptedLlm {
+        async fn complete(
+            &self,
+            request: LlmRequest,
+        ) -> Result<ai_agent::llm_client::LlmResponse, ai_agent::AgentError> {
+            self.requests.lock().expect("requests").push(request);
+            Ok(ai_agent::llm_client::LlmResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "top-down-call".into(),
+                        name: "submit_script".into(),
+                        input: serde_json::json!({
+                            "script": self.script,
+                            "report": "Maps bullish 15m and 1h fair-value gaps from closed bars, drawing time-anchored, timeframe-labeled zones. It does not create entries or manage trades. Would you like the next stage to add the higher-timeframe trend filter?"
+                        }),
+                    }],
+                },
+                stop_reason: ai_agent::llm_client::StopReason::ToolUse,
+                usage: ai_agent::llm_client::Usage::default(),
+            })
+        }
+
+        fn name(&self) -> &str {
+            "capturing-scripted"
+        }
     }
 
     #[async_trait::async_trait]

@@ -1,6 +1,7 @@
 # Light Pine Evolution — Engineering Roadmap
 
-- **Status:** Phase 0 in progress; Pine-Lite crate test suite green
+- **Status:** Phase 0 in progress; source-level reference report complete;
+  architecture and implementation decisions remain gated on Phase 0 evidence
 - **Scope owner:** QUANTERA platform
 - **Implementation rule:** ship one reviewable, tested capability per phase
 
@@ -196,12 +197,14 @@ The local references are isolated under the root-level ignored folder
 | Wasmtime | WASM isolation, fuel, resource controls | Sandbox integration and resource policy |
 | YATA | Stateful indicator APIs, formula coverage, licensing | Quant API design and numerical parity |
 
-The first research batch should compare these against the existing
-implementation, not benchmark them in unrelated workloads. The larger
-comparison (including Wickra, VectorTA, NautilusTrader, HftBacktest, charting,
-and AI tooling projects) is a separate, source-cited deliverable. For every
-candidate, record the exact revision inspected, relevant source paths, license
-and notices, feature fit, integration cost, and evidence.
+The source-level comparison of all requested projects is recorded in
+`docs/56-OPEN-SOURCE-REFERENCE-BENCHMARK.md`. It pins inspected source
+revisions, links relevant implementation/license files, distinguishes
+published benchmark evidence from inference, and records integration and
+MSRV constraints. TradeRyte Trading Charts and the intended `ta-rs` repository
+remain explicitly unresolved rather than guessed. The report recommends no
+immediate dependency or runtime replacement; its implementation priorities
+remain subject to Phase 0 baselines and review.
 
 ## Phased execution plan
 

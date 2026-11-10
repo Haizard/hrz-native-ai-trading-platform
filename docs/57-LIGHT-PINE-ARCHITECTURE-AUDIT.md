@@ -157,10 +157,22 @@ host (gateway, browser/WASM, backtester, or live execution as applicable).
    its implementation and documented form use one. The registry still needs
    parameter names/defaults, host-data requirements, and runtime support status
    before it is a complete SDK specification.
-2. **Structured diagnostics and conformance fixtures.** Add stable diagnostic
-   codes and structured spans while preserving readable messages. Build
-   fixtures that run through vet and execution in the gateway and chart engine,
-   and assert the supported API/reference stays aligned.
+2. **Structured diagnostics and conformance fixtures.** Implemented stable
+   phase-level diagnostic codes and structured spans while preserving readable
+   messages and legacy line/column fields. A bounded top-down-analysis request,
+   distilled from the supplied prompt, now exercises the gateway's generation
+   tool-call and vet gate with a deterministic scripted LLM; the resulting
+   15m/1h closed-bar FVG script is executed and its time-anchored zones and
+   labels are verified in both the gateway conformance test and chart-engine
+   projection test. This proves the generation contract and script behavior,
+   not a live model's ability to infer the strategy from the full transcript;
+   that still requires a provider-backed run. The workspace response now
+   appends a server-authored receipt with the saved active revision and replay
+   counts, independent of the model's prose; the gateway integration test
+   checks that receipt against the stored revision and active pointer. Preview
+   stats now also report structured drawing-object, box, and label counts from
+   interpreter output, plus whether the drawing limit was reached; the
+   gateway integration test exercises one box and one label.
 3. **Execution-parity and error handling.** Make backtest runtime errors
    explicit; test identical source/inputs across preview, chart/WASM, and
    replay where the semantics are intended to match. Keep live execution

@@ -348,6 +348,13 @@ CPU calc   GPU-friendly buffers
   at, and still looks like a VWAP. `the_profile_and_the_levels_follow_the_window` therefore
   compares the numbers rather than the shape.
 
+  Pine-Lite scripts run against that same visible slice. Their shell-supplied
+  `security`, pooled timeframe, and `request.data` series are sliced from the
+  matching `window.from` as well; otherwise zooming makes the script compare a
+  visible candle with another bar's auxiliary values. The regression
+  `zoomed_script_drawings_use_the_matching_pooled_series_window` keeps an
+  HTF drawing present in a shifted viewport.
+
   Zones are the deliberate exception. They keep the **whole** series and are clamped to the
   window at draw time, because a band that formed before the left edge is still a band — and
   clipping the detection would erase exactly the levels a trader scrolled back to look at.

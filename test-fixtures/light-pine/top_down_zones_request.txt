@@ -1,0 +1,4 @@
+Build the first stage of a top-down overlay: map bullish 15m and 1h fair-value-gap
+zones onto the chart, label each timeframe, use completed higher-timeframe bars,
+and anchor the zones by absolute time. Do not add entries, stops, or trade
+execution yet.

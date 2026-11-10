@@ -1,0 +1,29 @@
+//@pine_lite version=1 overlay=true title="MTF FVG"
+t15 = request.security("BTCUSDT", "15m", time)
+h15 = request.security("BTCUSDT", "15m", high)
+l15 = request.security("BTCUSDT", "15m", low)
+t1h = request.security("BTCUSDT", "1h", time)
+h1h = request.security("BTCUSDT", "1h", high)
+l1h = request.security("BTCUSDT", "1h", low)
+far = 10000000000000000.0
+nb15 = t15 != t15[1]
+var a1 = na
+var a2 = na
+if nb15 and not na(a2)
+    if l15[1] > a2
+        box.new_time(t15[1], l15[1], t15 + far, a2, color=color.aqua)
+        label.new_time(t15[1], l15[1], "15m FVG", color=color.aqua)
+if nb15
+    a2 = a1
+    a1 = h15[1]
+nb1h = t1h != t1h[1]
+var b1 = na
+var b2 = na
+if nb1h and not na(b2)
+    if l1h[1] > b2
+        box.new_time(t1h[1], l1h[1], t1h + far, b2, color=color.teal)
+        label.new_time(t1h[1], l1h[1], "1h FVG", color=color.teal)
+if nb1h
+    b2 = b1
+    b1 = h1h[1]
+plot(close)

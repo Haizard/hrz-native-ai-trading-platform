@@ -18742,7 +18742,10 @@ async function saveCodeAsRevision() {
       }),
     });
     const stats = resp.preview_stats;
-    const statNote = stats ? ` — ${stats.bars} bars replayed, ${stats.plots} plot(s), ${stats.shapes} marker(s)` : "";
+    const drawingNote = stats && typeof stats.drawing_objects === "number"
+      ? `, ${stats.drawing_objects} drawing object(s) (${stats.boxes} box(es), ${stats.labels} label(s))`
+      : "";
+    const statNote = stats ? ` — ${stats.bars} bars replayed, ${stats.plots} plot(s), ${stats.shapes} marker(s)${drawingNote}` : "";
     if (msg) msg.textContent = `Saved as rev #${resp.revision_number}${statNote}.`;
     wsCodeFile = { wsId: wsCodeFile.wsId, revisionId: resp.revision_id, name: resp.title, source, fresh: false };
     await loadRevisions(wsCodeFile.wsId);
@@ -18936,6 +18939,12 @@ async function viewRevision(wsId, revId) {
     const days = Math.max(1, Math.round(Number(stats.window_days) || 7));
     const fmt = (v, suffix = "") =>
       v === null || v === undefined ? "—" : `${Number(v).toFixed(2)}${suffix}`;
+    const drawingStats = typeof stats.drawing_objects === "number"
+      ? `
+          <span><strong>${stats.drawing_objects}</strong> drawing objects</span>
+          <span><strong>${Number(stats.boxes) || 0}</strong> boxes</span>
+          <span><strong>${Number(stats.labels) || 0}</strong> labels</span>`
+      : "";
     // A pine-lite script's preview: what the VM ran over and what it drew.
     if (typeof stats.bars === "number") {
       return `
@@ -18945,6 +18954,8 @@ async function viewRevision(wsId, revId) {
           <span><strong>${Number(stats.plots) || 0}</strong> plots</span>
           <span><strong>${Number(stats.levels) || 0}</strong> levels</span>
           <span><strong>${Number(stats.shapes) || 0}</strong> markers</span>
+          ${drawingStats}
+          ${stats.objects_truncated ? '<span class="muted">drawing-object limit reached</span>' : ""}
         </div>`;
     }
     if (stats.kind === "detector") {

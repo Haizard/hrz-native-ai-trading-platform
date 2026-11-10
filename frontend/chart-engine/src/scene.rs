@@ -3366,12 +3366,14 @@ pub fn build(request: &Request) -> Scene {
             match pine_lite::run(
                 &parsed,
                 visible_real,
-                &crate::script::inputs_from_spec(
+                &crate::script::inputs_from_spec_for_window(
                     spec,
                     visible_real
                         .first()
                         .map(|c| c.symbol.as_str())
                         .unwrap_or(""),
+                    window.from,
+                    visible_real.len(),
                 ),
             ) {
                 Ok(output) => {
@@ -3446,9 +3448,10 @@ pub fn build(request: &Request) -> Scene {
             w: plot.w,
             h: equity_height,
         };
-        match crate::script::script_pane_full(
+        match crate::script::script_pane_full_for_window(
             spec,
             visible_real,
+            window.from,
             slot,
             &pane_plot,
             &equity_plot,
@@ -8142,6 +8145,63 @@ mod tests {
         // axis label is built from.
         assert_eq!(scene.from, 100 * 300_000_000_000);
         assert_eq!(scene.to, 150 * 300_000_000_000);
+    }
+
+    #[test]
+    fn zoomed_script_drawings_use_the_matching_pooled_series_window() {
+        let mut request = windowed(50, 20, 10);
+        let pool = request
+            .candles
+            .iter()
+            .enumerate()
+            .map(|(index, chart_bar)| {
+                let close = chart_bar.close + if index >= 25 { 10.0 } else { 0.0 };
+                Candle {
+                    symbol: "BTCUSDT".into(),
+                    timeframe: Timeframe::M15,
+                    open_time: chart_bar.open_time,
+                    open: close,
+                    high: close + 0.25,
+                    low: close - 0.25,
+                    close,
+                    volume: 1.0,
+                    buy_volume: 0.5,
+                    sell_volume: 0.5,
+                }
+            })
+            .collect();
+        request.scripts = vec![crate::script::ScriptSpec {
+            source: concat!(
+                "//@pine_lite version=1 overlay=true\n",
+                "v = request.security(\"BTCUSDT\", \"15m\", request.close())\n",
+                "t = request.security(\"BTCUSDT\", \"15m\", request.time())\n",
+                "if v > v[1] + 5\n",
+                "    box.new_time(t[1], v, t, v[1], color=color.teal)\n",
+            )
+            .into(),
+            inputs: Default::default(),
+            security: Vec::new(),
+            series_pool: [("BTCUSDT@15M".into(), pool)].into(),
+            data_series: Default::default(),
+        }];
+
+        let scene = build(&request);
+        let overlay = scene
+            .script_overlays
+            .first()
+            .expect("the script overlay runs for the zoomed viewport");
+        let boxes: Vec<_> = overlay
+            .objects
+            .iter()
+            .filter_map(|draw| match draw {
+                crate::script::ScriptDraw::Box { x1, x2, .. } => Some((*x1, *x2)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(boxes.len(), 1, "the visible HTF gap must still draw");
+        assert!(boxes[0].0 >= scene.plot.x && boxes[0].1 <= scene.plot.x + scene.plot.w);
+        assert!(boxes[0].1 > boxes[0].0);
     }
 
     #[test]

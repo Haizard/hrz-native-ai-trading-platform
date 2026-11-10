@@ -58,6 +58,14 @@ pub struct ScriptPreviewStats {
     pub levels: usize,
     /// `plotshape()`/`plotchar()` markers.
     pub shapes: usize,
+    /// VM drawing objects plus structured polylines, line fills, and tables.
+    pub drawing_objects: usize,
+    /// Active `box.new` / `box.new_time` objects.
+    pub boxes: usize,
+    /// Active `label.new` / `label.new_time` objects.
+    pub labels: usize,
+    /// Whether the script exceeded the drawing-object limit.
+    pub objects_truncated: bool,
     /// Whether the script draws on the price pane.
     pub overlays: usize,
     /// Strategy execution (docs/24 S1): the run simulated a strategy.
@@ -983,20 +991,51 @@ async fn run_workspace_turn(
     // script detects, what it draws, the knobs, the gaps, and the suggested
     // adjustments. The old receipt is the fallback for a reply that skipped
     // the report field.
-    let assistant_text = generated.report.clone().unwrap_or_else(|| {
+    let assistant_report = generated.report.clone().unwrap_or_else(|| {
         format!(
-            "Generated and validated revision {} (pine-lite script, {} model attempt(s)). Attached to the chart: {} plot(s) and {} marker(s) in its preview window; {}{}. The source is stored as code -- open the Pine Editor tab to read or edit it.",
+            "Generated and validated revision {} (pine-lite script, {} model attempt(s)). Attached to the chart: {} plot(s), {} marker(s), {} drawing object(s), including {} box(es) and {} label(s) in its preview window; {}{}. The source is stored as code -- open the Pine Editor tab to read or edit it.",
             revision.revision_number,
             attempts,
             plots,
             markers,
+            preview_stats.as_ref().map_or(0, |s| s.drawing_objects),
+            preview_stats.as_ref().map_or(0, |s| s.boxes),
+            preview_stats.as_ref().map_or(0, |s| s.labels),
             kind_note,
             strategy_note,
         )
     });
+    let replay_receipt = match preview_stats.as_ref() {
+        Some(stats) => {
+            let cap_note = if stats.objects_truncated {
+                " The drawing-object limit was reached."
+            } else {
+                ""
+            };
+            format!(
+                "Saved as active validated revision #{}. {}-day preview: {} bars, {} plot(s), {} level(s), {} marker(s), and {} drawing object(s), including {} box(es) and {} label(s).{}",
+                revision.revision_number,
+                stats.window_days,
+                stats.bars,
+                stats.plots,
+                stats.levels,
+                stats.shapes,
+                stats.drawing_objects,
+                stats.boxes,
+                stats.labels,
+                cap_note,
+            )
+        }
+        None => format!(
+            "Saved as active validated revision #{}. Preview statistics are unavailable.",
+            revision.revision_number,
+        ),
+    };
+    let assistant_text = format!("{assistant_report}\n\n{replay_receipt}");
     let assistant_payload = serde_json::json!({
         "revision_id": revision.id,
         "revision_number": revision.revision_number,
+        "revision_status": revision.status,
         "representation": "pine-lite",
         "kind": "indicator",
         "source": source,

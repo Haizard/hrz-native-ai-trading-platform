@@ -1089,6 +1089,33 @@ pub async fn replay_script_preview(
         plots: output.plots.len(),
         levels: output.hlines.len(),
         shapes: output.shapes.len(),
+        drawing_objects: output.objects.len()
+            + output.polylines.len()
+            + output.linefills.len()
+            + output.tables.len(),
+        boxes: output
+            .objects
+            .iter()
+            .filter(|object| {
+                matches!(
+                    object,
+                    pine_lite::interp::ScriptObject::Box { .. }
+                        | pine_lite::interp::ScriptObject::BoxTime { .. }
+                )
+            })
+            .count(),
+        labels: output
+            .objects
+            .iter()
+            .filter(|object| {
+                matches!(
+                    object,
+                    pine_lite::interp::ScriptObject::Label { .. }
+                        | pine_lite::interp::ScriptObject::LabelTime { .. }
+                )
+            })
+            .count(),
+        objects_truncated: output.objects_truncated,
         overlays: usize::from(header.overlay),
         strategy: output.simulation.is_some(),
         trades: output

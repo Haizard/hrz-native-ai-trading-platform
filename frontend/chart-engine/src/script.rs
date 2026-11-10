@@ -302,7 +302,7 @@ pub fn script_pane(
     slot: f64,
     plot: &crate::scene::Plot,
 ) -> Result<SceneScriptPane, String> {
-    let (header, output) = run_script(spec, candles)?;
+    let (header, output) = run_script(spec, candles, 0)?;
     pane_from_output(&header, &output, slot, plot)
 }
 
@@ -318,8 +318,37 @@ pub fn script_pane_full(
     plot: &crate::scene::Plot,
     equity_plot: &crate::scene::Plot,
     frame: &crate::scene::Frame,
-) -> Result<(SceneScriptPane, Option<ScriptStrategyLayer>, Option<ScriptEquityPane>), String> {
-    let (header, output) = run_script(spec, candles)?;
+) -> Result<
+    (
+        SceneScriptPane,
+        Option<ScriptStrategyLayer>,
+        Option<ScriptEquityPane>,
+    ),
+    String,
+> {
+    script_pane_full_for_window(spec, candles, 0, slot, plot, equity_plot, frame)
+}
+
+/// Window-aware form of [`script_pane_full`] for chart scenes that evaluate a
+/// visible candle slice while receiving request series aligned to full history.
+#[allow(private_interfaces)] // `Frame` is crate-private by design
+pub fn script_pane_full_for_window(
+    spec: &ScriptSpec,
+    candles: &[analytics_core::types::Candle],
+    window_from: usize,
+    slot: f64,
+    plot: &crate::scene::Plot,
+    equity_plot: &crate::scene::Plot,
+    frame: &crate::scene::Frame,
+) -> Result<
+    (
+        SceneScriptPane,
+        Option<ScriptStrategyLayer>,
+        Option<ScriptEquityPane>,
+    ),
+    String,
+> {
+    let (header, output) = run_script(spec, candles, window_from)?;
     let pane = pane_from_output(&header, &output, slot, plot)?;
     let title = header.title.clone().unwrap_or_else(|| "script".into());
     let layer = scene_strategy_layer(&title, &output, slot, frame);
@@ -348,10 +377,48 @@ pub fn script_pane_full(
 /// so both spell the sorting the same way.
 #[must_use]
 pub fn inputs_from_spec(spec: &ScriptSpec, chart_symbol: &str) -> Inputs {
+    inputs_from_spec_with_window(spec, chart_symbol, None)
+}
+
+/// Build script inputs aligned to the visible slice of the chart candles.
+///
+/// The request vectors are aligned to the full chart history by the shell.
+/// A zoomed scene runs over only its visible candles, so its auxiliary series
+/// must use the same window or their values silently come from different bars.
+#[must_use]
+pub fn inputs_from_spec_for_window(
+    spec: &ScriptSpec,
+    chart_symbol: &str,
+    window_from: usize,
+    window_len: usize,
+) -> Inputs {
+    inputs_from_spec_with_window(spec, chart_symbol, Some((window_from, window_len)))
+}
+
+fn aligned_values<T: Clone>(values: &[T], window: Option<(usize, usize)>) -> Vec<T> {
+    match window {
+        Some((from, len)) => values.iter().skip(from).take(len).cloned().collect(),
+        None => values.to_vec(),
+    }
+}
+
+fn inputs_from_spec_with_window(
+    spec: &ScriptSpec,
+    chart_symbol: &str,
+    window: Option<(usize, usize)>,
+) -> Inputs {
     let mut inputs = Inputs {
-        security: spec.security.clone(),
-        series_pool: spec.series_pool.clone(),
-        data_series: spec.data_series.clone(),
+        security: aligned_values(&spec.security, window),
+        series_pool: spec
+            .series_pool
+            .iter()
+            .map(|(key, values)| (key.clone(), aligned_values(values, window)))
+            .collect(),
+        data_series: spec
+            .data_series
+            .iter()
+            .map(|(name, values)| (name.clone(), aligned_values(values, window)))
+            .collect(),
         // Contract execution (Deriv multipliers) when the chart's instrument
         // is a Deriv product: the sim reads qty as stake and caps the loss.
         contracts: market_data::broker::VenueSymbol::parse(chart_symbol).broker == "deriv",
@@ -383,11 +450,12 @@ pub fn inputs_from_spec(spec: &ScriptSpec, chart_symbol: &str) -> Inputs {
 fn run_script(
     spec: &ScriptSpec,
     candles: &[analytics_core::types::Candle],
+    window_from: usize,
 ) -> Result<(pine_lite::Header, Output), String> {
     let (header, parsed) =
         pine_lite::vet(&spec.source).map_err(|errs| format_script_errors(&errs))?;
     let chart_symbol = candles.first().map(|c| c.symbol.as_str()).unwrap_or("");
-    let inputs = inputs_from_spec(spec, chart_symbol);
+    let inputs = inputs_from_spec_for_window(spec, chart_symbol, window_from, candles.len());
     let output: Output = run(&parsed, candles, &inputs).map_err(|err| err.to_string())?;
     Ok((header, output))
 }
@@ -1577,6 +1645,128 @@ mod tests {
             other => panic!("expected a label: {other:?}"),
         }
         let _ = header;
+    }
+
+    #[test]
+    fn prompt1_top_down_script_projects_both_closed_timeframe_zones() {
+        const SOURCE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-fixtures/light-pine/top_down_zones.pine"
+        ));
+        let bar_nanos = 300_000_000_000i64;
+        let start = 1_700_000_000_000_000_000i64;
+        let candles: Vec<Candle> = (0..40)
+            .map(|i| Candle {
+                symbol: "BTCUSDT".into(),
+                timeframe: Timeframe::M5,
+                open_time: start + i as i64 * bar_nanos,
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.0,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            })
+            .collect();
+        let aligned_pool = |bars_per_period: usize, levels: &[(f64, f64)]| {
+            (0..40)
+                .map(|i| {
+                    let period = i / bars_per_period;
+                    let (high, low) = levels[period];
+                    Candle {
+                        symbol: "BTCUSDT".into(),
+                        timeframe: Timeframe::M5,
+                        open_time: start + (period * bars_per_period) as i64 * bar_nanos,
+                        open: 100.0,
+                        high,
+                        low,
+                        close: 100.0,
+                        volume: 1.0,
+                        buy_volume: 0.5,
+                        sell_volume: 0.5,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut series_pool = std::collections::HashMap::new();
+        series_pool.insert(
+            "BTCUSDT@15M".into(),
+            aligned_pool(
+                3,
+                &[
+                    (100.0, 90.0),
+                    (108.0, 94.0),
+                    (112.0, 104.0),
+                    (110.0, 103.0),
+                    (111.0, 102.0),
+                    (112.0, 103.0),
+                    (113.0, 104.0),
+                    (114.0, 105.0),
+                    (115.0, 106.0),
+                    (116.0, 107.0),
+                    (117.0, 108.0),
+                    (118.0, 109.0),
+                    (119.0, 110.0),
+                    (120.0, 111.0),
+                ],
+            ),
+        );
+        series_pool.insert(
+            "BTCUSDT@1H".into(),
+            aligned_pool(
+                12,
+                &[
+                    (100.0, 90.0),
+                    (110.0, 95.0),
+                    (115.0, 105.0),
+                    (120.0, 110.0),
+                ],
+            ),
+        );
+        let spec = ScriptSpec {
+            source: SOURCE.into(),
+            inputs: Default::default(),
+            security: Vec::new(),
+            series_pool,
+            data_series: Default::default(),
+        };
+        let (header, parsed) = pine_lite::vet(SOURCE).expect("fixture vets");
+        let output = run(&parsed, &candles, &inputs_from_spec(&spec, "BTCUSDT"))
+            .expect("fixture runs");
+        assert!(header.overlay, "the output is an overlay");
+
+        let frame = crate::scene::Frame {
+            plot: plot_rect(),
+            from: start,
+            to: start + 40 * bar_nanos,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let draws = scene_overlay_objects(&output, 10.0, &frame);
+        let boxes: Vec<_> = draws
+            .iter()
+            .filter_map(|draw| match draw {
+                ScriptDraw::Box { x1, y1, x2, y2, .. } => Some((*x1, *y1, *x2, *y2)),
+                _ => None,
+            })
+            .collect();
+        let labels: Vec<_> = draws
+            .iter()
+            .filter_map(|draw| match draw {
+                ScriptDraw::Label { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(boxes.len(), 2, "one positioned zone for each timeframe: {draws:?}");
+        assert_eq!(labels, ["15m FVG", "1h FVG"]);
+        for (x1, y1, x2, y2) in boxes {
+            assert!(x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite());
+            assert!(x1 >= frame.plot.x && x1 < frame.plot.x + frame.plot.w);
+            assert!(y1 < y2, "higher zone prices map higher on canvas");
+        }
     }
 
     #[test]
