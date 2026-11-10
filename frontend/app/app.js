@@ -11413,8 +11413,8 @@ async function chatAttachFiles(files) {
   }
   renderChatChips();
 }
-/// The agent asked for an indicator. Its persistent workspace is embedded in
-/// AI chat so the generated revision and its editing tools stay in context.
+/// The agent asked for an indicator. Continue in the selected workspace when
+/// it matches this chart so follow-up requests refine the active revision.
 async function chatRunIndicator(description, attachments) {
   const working = chatBubble(`<p>Building your indicator — drafting, validating, previewing…</p><div class="skl-line skeleton w70"></div><div class="skl-line skeleton w45"></div>`, "working");
   try {
@@ -11423,13 +11423,17 @@ async function chatRunIndicator(description, attachments) {
     const timeframe = activeTimeframe();
     const list = await api("/indicator-workspaces");
     const wss = Array.isArray(list) ? list : (list.workspaces || []);
-    let ws = wss.find((w) => w.name === "AI Chat Indicator" && w.symbol === symbol && w.timeframe === timeframe);
+    let ws = wss.find((w) => w.id === wsActiveId && w.symbol === symbol && w.timeframe === timeframe)
+      || wss.find((w) => w.name === "AI Chat Indicator" && w.symbol === symbol && w.timeframe === timeframe);
     if (!ws) {
       ws = await api("/indicator-workspaces", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: "AI Chat Indicator", symbol, timeframe }),
       });
+    }
+    if (ws.active_revision_id) {
+      working.querySelector(".bubble").innerHTML = `<p>Refining <b>${escapeHtml(ws.name)}</b> from its active revision…</p><div class="skl-line skeleton w70"></div>`;
     }
     const conceptStates = activeConceptStateDeclarations(32);
     if (conceptStates.length && /\b(indicator|plot|visualization)\b/i.test(description) && /\b(concept|state|combine|compose)\b/i.test(description)) {
@@ -11449,11 +11453,9 @@ async function chatRunIndicator(description, attachments) {
         body: JSON.stringify({ name, summary: `Composed from ${states.map((state) => state.alias).join(" + ")}`.slice(0, 280), states }),
       });
       if (!revision || !revision.preview) throw new Error("The concept composition did not return a validated indicator preview");
-      const workspaceTools = el("chatIndicatorWorkspace");
-      if (workspaceTools) workspaceTools.open = true;
       await selectWorkspace(ws.id);
       loadLibrary();
-      working.querySelector(".bubble").innerHTML = `<p>Built <b>${escapeHtml(name)}</b> from ${states.length} trader-edited concept state${states.length === 1 ? "" : "s"} across the active chart. The composition is attached; its pinned revision and editing tools are in Indicator workspaces below this chat.</p>`;
+      working.querySelector(".bubble").innerHTML = `<p>Built <b>${escapeHtml(name)}</b> from ${states.length} trader-edited concept state${states.length === 1 ? "" : "s"} across the active chart. The composition is attached; revision history and alerts are in the indicator workspace, and script source opens in the Pine Editor tab.</p>`;
       el("chatStream").scrollTop = el("chatStream").scrollHeight;
       return;
     }
@@ -11466,14 +11468,19 @@ async function chatRunIndicator(description, attachments) {
         ...(attachments && attachments.images && attachments.images.length ? { images: attachments.images } : {}),
         ...(attachments && attachments.document ? { document: attachments.document } : {}) }),
     });
-    // Opening the embedded workspace exposes its full revision history,
-    // editable source files, alerts and publishing controls.
-    const workspaceTools = el("chatIndicatorWorkspace");
-    if (workspaceTools) workspaceTools.open = true;
+    // Keep workspace history available, while source and editing live in the
+    // separate Pine Editor dock.
     await selectWorkspace(ws.id);
+    if (resp && resp.revision && resp.revision.id && isCodeDockOpen()) {
+      await openCodeFile(ws.id, resp.revision.id);
+    }
     const report = resp && resp.assistant_message ? resp.assistant_message.content : "Built — see the chart.";
     loadLibrary();
-    working.querySelector(".bubble").innerHTML = report.split(/\n{2,}/).map((para) => `<p>${escapeHtml(para)}</p>`).join("");
+    const sourceButton = resp && resp.revision && resp.revision.id
+      ? `<button type="button" class="ws-source-open" onclick="openCodeFile('${escapeHtml(ws.id)}','${escapeHtml(resp.revision.id)}')">Open source in Pine Editor</button>`
+      : "";
+    working.querySelector(".bubble").innerHTML =
+      report.split(/\n{2,}/).map((para) => `<p>${escapeHtml(para)}</p>`).join("") + sourceButton;
   } catch (e) {
     working.querySelector(".bubble").innerHTML = `<p class="fail">The build failed: ${escapeHtml(e.message)}</p>`;
   }
@@ -16907,7 +16914,7 @@ function runPaneLoaders(name) {
   if (name === "concepts") loadConceptPanel();
   if (name === "skills") loadSkills();
   if (name === "strategy") loadLibrary();
-  // The dock's two tabs return before the watchlist branch: they are panels on
+  // The dock panels return before the watchlist branch: they are panels on
   // the Charts destination, and the trailing `else` would stop the rail's
   // ticker for a user who never left the page.
   if (name === "alerts") {
@@ -16916,6 +16923,10 @@ function runPaneLoaders(name) {
   }
   if (name === "orders") {
     loadDockOrders();
+    return;
+  }
+  if (name === "code") {
+    loadCodeDock();
     return;
   }
   if (name === "watchlist") {
@@ -18466,6 +18477,11 @@ async function selectWorkspace(id) {
   // (docs/29): the generation may still finish server-side, and its message
   // lands the next time that workspace loads.
   if (wsGenAbort && id !== wsActiveId) wsGenAbort.abort();
+  if (wsActiveId !== id) {
+    wsCodeFile = null;
+    const editor = el("wsCodeEditor");
+    if (editor) editor.hidden = true;
+  }
   wsActiveId = id;
   scheduleWorkspaceSave();
   // Re-fetch workspace list so active_revision_id is current (a new
@@ -18476,8 +18492,11 @@ async function selectWorkspace(id) {
   el("wsListView").hidden = true;
   el("wsActive").hidden = false;
   el("wsActiveName").textContent = ws.name;
+  const codeWorkspaceName = el("wsCodeWorkspaceName");
+  if (codeWorkspaceName) codeWorkspaceName.textContent = `${ws.name} · ${ws.symbol} ${ws.timeframe}`;
   el("wsChatMsg").textContent = "";
   await Promise.all([loadRevisions(id), loadMessages(id), loadAlerts(id)]);
+  if (isCodeDockOpen() && !wsCodeFile) await loadCodeDock();
   if (ws.active_revision_id && activePane) {
     try {
       const message = await attachWorkspaceRevision(ws, activePane);
@@ -18522,7 +18541,7 @@ async function loadRevisions(wsId) {
           <button onclick="attachRevisionToChart('${wsId}','${r.id}')" title="Attach this indicator to a chart">Attach to chart</button>
           <button onclick="restoreRevision('${wsId}','${r.id}')" title="Set as active">Restore</button>
           <button onclick="viewRevision('${wsId}','${r.id}')" title="View source and preview">View</button>
-          <button onclick="openCodeFile('${wsId}','${r.id}')" title="Open this revision's source in the code panel">Code</button>
+          <button onclick="openCodeFile('${wsId}','${r.id}')" title="Open this revision's source in the Pine Editor">Code</button>
           ${r.status === "validated" ? `<button onclick="openPublishForm('${wsId}','${r.id}')" title="Publish this revision to the community">Publish</button>` : ""}
           ${isActive ? '' : `<button onclick="diffRevision('${wsId}','${r.id}')" title="Draw this revision faded under the active one, to see what changed">Diff vs active</button>`}
         </div>
@@ -18589,7 +18608,7 @@ async function sendPublish() {
 }
 
 // ---------------------------------------------------------------------------
-// The code panel: the workspace's revisions as files, Pine-editor style.
+// The Pine Editor: the workspace's revisions as files, TradingView-style.
 // ---------------------------------------------------------------------------
 
 // The file currently open in the editor, { revisionId, name, source, fresh }.
@@ -18603,7 +18622,7 @@ function renderCodeFiles() {
   const host = el("wsCodeFiles");
   if (!host) return;
   if (!wsRevisions.length) {
-    host.innerHTML = `<p class="empty">No files yet — generate a revision first.</p>`;
+    host.innerHTML = `<p class="empty">No revisions yet.</p>`;
     const editor = el("wsCodeEditor");
     if (editor) editor.hidden = true;
     return;
@@ -18611,21 +18630,34 @@ function renderCodeFiles() {
   const activeId = (wsWorkspaces.find((w) => w.id === wsActiveId) || {}).active_revision_id;
   host.innerHTML = wsRevisions.map((r) => `
     <div class="row" style="padding:2px 0;border-bottom:1px solid var(--line)">
-      <button type="button" class="ws-code-file" data-revision="${r.id}" title="Open in the code panel">${escapeHtml(r.summary || "indicator")}</button>
+      <button type="button" class="ws-code-file" data-revision="${r.id}" title="Open in the Pine Editor">${escapeHtml(r.summary || "indicator")}</button>
       <span class="muted" style="font-size:11px">rev #${r.revision_number}${r.id === activeId ? " · active" : ""}</span>
     </div>`).join("");
 }
 
-/// Open one revision's source in the code panel.
+/// Open one revision's source in the Pine Editor dock.
 async function openCodeFile(wsId, revId) {
   try {
     const rev = await api(`/indicator-workspaces/${wsId}/revisions/${revId}`);
     if (!rev.source) { alert("This revision has no stored source."); return; }
     wsCodeFile = { wsId, revisionId: revId, name: rev.summary || `rev #${rev.revision_number}`, source: rev.source, fresh: false };
-    paintCodeEditor(false);
+    paintCodeEditor(true);
+    window.Shell?.selectDockTab?.("code");
   } catch (e) {
     alert(`Could not open: ${e.message}`);
   }
+}
+
+function isCodeDockOpen() {
+  const shellState = window.Shell?.state?.();
+  return Boolean(shellState && shellState.destination === "charts" && shellState.dockOpen && shellState.dockTab === "code");
+}
+
+async function loadCodeDock() {
+  if (!wsActiveId || (wsCodeFile && wsCodeFile.wsId === wsActiveId)) return;
+  const workspace = wsWorkspaces.find((candidate) => candidate.id === wsActiveId);
+  if (!workspace || !workspace.active_revision_id) return;
+  await openCodeFile(wsActiveId, workspace.active_revision_id);
 }
 
 /// Paint the editor for `wsCodeFile`. `readOnlyView` keeps the textarea
@@ -19012,15 +19044,14 @@ async function viewRevision(wsId, revId) {
   }
   out.innerHTML = wsMessages.map(m => {
     const isUser = m.role === "user";
-    // Revision messages carry the generated YAML in their payload so the
-    // user can read exactly what was produced instead of trusting a claim.
+    // Keep source in the dedicated editor pane rather than expanding it into
+    // the conversation transcript.
     const src = !isUser && m.payload && typeof m.payload.source === "string" ? m.payload.source : null;
-    const srcBlock = src ? `
-      <details>
-        <summary>Generated source (read-only, ${src.split("\n").length} lines)</summary>
-        <pre class="ws-source">${escapeHtml(src)}</pre>
-      </details>
-    ` : "";
+    const srcRevisionId = src && m.payload && typeof m.payload.revision_id === "string"
+      ? m.payload.revision_id : "";
+    const srcBlock = srcRevisionId
+      ? `<button type="button" class="ws-source-open" data-revision="${escapeHtml(srcRevisionId)}">Open source in Pine Editor</button>`
+      : "";
     // The auto-backtest card: the generation replay's own numbers, so "is
     // this idea even viable" is answered in the same breath that produced it.
     const statsCard = !isUser && m.payload && m.payload.preview_stats
@@ -19048,6 +19079,15 @@ async function viewRevision(wsId, revId) {
       </div>
     `;
   }).join("");
+  if (!out.dataset.sourceWired) {
+    out.addEventListener("click", (event) => {
+      const button = event.target.closest(".ws-source-open");
+      if (button && wsActiveId && button.dataset.revision) {
+        openCodeFile(wsActiveId, button.dataset.revision);
+      }
+    });
+    out.dataset.sourceWired = "1";
+  }
   for (const generated of wsGeneratedImages.get(wsId) || []) {
     appendGeneratedImageCard(out, generated, false);
   }
@@ -19343,6 +19383,9 @@ function appendGeneratedImageCard(out, generated, includePrompt = true) {
       msg.textContent = `Revision #${resp.revision.revision_number} created — attaching to chart…`;
     }
     await selectWorkspace(wsActiveId);
+    if (resp && resp.revision && resp.revision.id && isCodeDockOpen()) {
+      await openCodeFile(wsActiveId, resp.revision.id);
+    }
     msg.textContent = "Done.";
   } catch (e) {
     msg.textContent = e.name === "AbortError"

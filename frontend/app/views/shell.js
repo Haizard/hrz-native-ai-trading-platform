@@ -91,10 +91,10 @@
     community: "communityHost", bots: "botsHost",
     billing: "accountHost", brokers: "accountHost", aimodel: "accountHost",
   };
-  const DOCK_TABS = ["alerts", "orders", "console"];
+  const DOCK_TABS = ["alerts", "orders", "console", "code"];
   /// The dock tabs whose body is a panel in `#dockBody`. Studio has no entry:
   /// its body is `pane-indicator`, moved in by `mountIndicator`.
-  const DOCK_PANELS = { alerts: "dockAlerts", orders: "dockOrders", console: "dockConsole" };
+  const DOCK_PANELS = { alerts: "dockAlerts", orders: "dockOrders", console: "dockConsole", code: "dockCode" };
   const DOCK_DEFAULT_HEIGHT = 240;
   const DOCK_MIN_HEIGHT = 160;
 

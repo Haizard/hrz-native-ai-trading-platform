@@ -949,7 +949,7 @@ async fn run_workspace_turn(
     // the report field.
     let assistant_text = generated.report.clone().unwrap_or_else(|| {
         format!(
-            "Generated and validated revision {} (pine-lite script, {} model attempt(s)). Attached to the chart: {} plot(s) and {} marker(s) in its preview window; {}{}. The source is stored as code -- open the Code panel to read or edit it.",
+            "Generated and validated revision {} (pine-lite script, {} model attempt(s)). Attached to the chart: {} plot(s) and {} marker(s) in its preview window; {}{}. The source is stored as code -- open the Pine Editor tab to read or edit it.",
             revision.revision_number,
             attempts,
             plots,

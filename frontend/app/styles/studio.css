@@ -83,6 +83,27 @@
 
 #wsListView { overflow-y: auto; }
 
+.ws-code-panel { flex-direction: column; gap: 6px; }
+.ws-code-head { flex: 0 0 22px; min-width: 0; }
+.ws-code-head > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-code-layout {
+  display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
+  flex: 1 1 auto; min-height: 0; gap: var(--space-3);
+}
+#wsCodeFiles { min-width: 0; min-height: 0; overflow: auto; border-right: 1px solid var(--line); padding-right: var(--space-2); }
+#wsCodeFiles .ws-code-file { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#wsCodeFiles .empty { margin: 0; font-size: 11px; font-style: normal; }
+#wsCodeEditor { display: flex; flex-direction: column; min-width: 0; min-height: 0; gap: 6px; }
+#wsCodeEditor[hidden] { display: none; }
+.ws-code-toolbar, .ws-code-footer { flex: 0 0 auto; margin: 0; }
+.ws-code-toolbar > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#wsCodeSource {
+  flex: 1 1 auto; min-width: 0; min-height: 80px; resize: none;
+  font: 11px/1.5 var(--mono); background: var(--bg-canvas); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+}
+.ws-source-open { margin-top: 6px; font-size: 11px; }
+
 /* The equity curve. The points arrive already fitted to a 0..100 box (see
    `plot.rs`), so the viewBox *is* the box and the shell only writes them
    out. `preserveAspectRatio="none"` lets the panel be any width, and
@@ -176,6 +197,10 @@
 .ws-extra[open] { padding-bottom: 8px; }
 
 .ws-revision { padding: 8px 0; border-bottom: 1px solid var(--line); }
+
+@media (max-width: 600px) {
+  .ws-code-layout { grid-template-columns: minmax(100px, 30%) minmax(0, 1fr); gap: 6px; }
+}
 
 /* ---- Chips ---- */
 .aiChip, .modelChip {
