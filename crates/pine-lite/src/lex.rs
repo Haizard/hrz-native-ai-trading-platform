@@ -69,7 +69,11 @@ pub fn lex(source: &str) -> Result<(Header, Vec<Token>), Vec<ScriptError>> {
         if trimmed.starts_with("//") {
             if let Some(rest) = trimmed.strip_prefix("//@pine_lite") {
                 if header_seen {
-                    errors.push(err(line, 1, "a second @pine_lite annotation; one per script"));
+                    errors.push(err(
+                        line,
+                        1,
+                        "a second @pine_lite annotation; one per script",
+                    ));
                 }
                 header_seen = true;
                 match parse_header(line, rest) {
@@ -87,7 +91,10 @@ pub fn lex(source: &str) -> Result<(Header, Vec<Token>), Vec<ScriptError>> {
             Ok(()) => {}
             Err(mut errs) => errors.append(&mut errs),
         }
-        tokens.push(Token { kind: TokenKind::Newline, span: Span::new(line, col + trimmed.len()) });
+        tokens.push(Token {
+            kind: TokenKind::Newline,
+            span: Span::new(line, col + trimmed.len()),
+        });
     }
 
     if !header_seen {
@@ -98,7 +105,10 @@ pub fn lex(source: &str) -> Result<(Header, Vec<Token>), Vec<ScriptError>> {
         ));
     }
     if errors.is_empty() {
-        tokens.push(Token { kind: TokenKind::Eof, span: Span::new(source.lines().count() + 1, 1) });
+        tokens.push(Token {
+            kind: TokenKind::Eof,
+            span: Span::new(source.lines().count() + 1, 1),
+        });
         Ok((header, tokens))
     } else {
         Err(errors)
@@ -180,12 +190,19 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
         } else if let Some(rest) = key.strip_prefix("strategy(") {
             let mut subs: Vec<String> = Vec::new();
             if !rest.is_empty() {
-                subs.push(format!("{}={}", rest.trim_end_matches('='), value.trim_end_matches(')')));
+                subs.push(format!(
+                    "{}={}",
+                    rest.trim_end_matches('='),
+                    value.trim_end_matches(')')
+                ));
             }
             pi += 1;
             while pi < parts.len() {
                 let (k2, v2) = &parts[pi];
-                if matches!(k2.as_str(), "version" | "overlay" | "title" | "sec" | "max_bars_back") {
+                if matches!(
+                    k2.as_str(),
+                    "version" | "overlay" | "title" | "sec" | "max_bars_back"
+                ) {
                     break;
                 }
                 subs.push(format!("{}={}", k2, v2.trim_end_matches(')')));
@@ -386,10 +403,14 @@ fn lex_line(
     let col = start_col;
     // Offsets in the *line*, so spans land where the editor's caret does.
     fn push(kind: TokenKind, col: usize, out: &mut Vec<Token>, line: usize) {
-        out.push(Token { kind, span: Span::new(line, col) });
+        out.push(Token {
+            kind,
+            span: Span::new(line, col),
+        });
     }
 
     while i < chars.len() {
+        let before = i;
         let c = chars[i];
         let here = col + i;
         match c {
@@ -561,31 +582,13 @@ fn lex_line(
             }
             other => errors.push(err(line, here, &format!("unexpected character `{other}`"))),
         }
-        if !matches!(
-            out.last().map(|t| &t.kind),
-            Some(TokenKind::Number(_))
-                | Some(TokenKind::Str(_))
-                | Some(TokenKind::Color(_))
-                | Some(TokenKind::Op(_))
-                | Some(TokenKind::Cmp(_))
-                | Some(TokenKind::Assign(_))
-                | Some(TokenKind::Question)
-                | Some(TokenKind::Colon)
-                | Some(TokenKind::LParen)
-                | Some(TokenKind::RParen)
-                | Some(TokenKind::LBracket)
-                | Some(TokenKind::RBracket)
-                | Some(TokenKind::Comma)
-                | Some(TokenKind::Dot)
-                | Some(TokenKind::Keyword(_))
-                | Some(TokenKind::Ident(_))
-                | Some(TokenKind::Newline)
-        ) {
-            // A malformed token above may not have advanced `i`; guarantee
-            // progress so a bad line cannot loop the lexer forever.
-            if i < chars.len() && errors.last().is_some() {
-                i += 1;
-            }
+        // A malformed token above may not have advanced `i`; guarantee
+        // progress so a bad line cannot loop the lexer forever. The test is
+        // the position, not the last token: any emitted token used to mean
+        // "progress", which stranded the cursor on every stray character
+        // that followed a valid one.
+        if i == before {
+            i += 1;
         }
     }
 
@@ -619,8 +622,11 @@ mod tests {
 
     #[test]
     fn comments_are_skipped_but_the_header_is_found() {
-        let (_, tokens) = lex("// a comment\n//@pine_lite version=1\n// another\nx = 1").expect("ok");
-        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(w) if w == "x")));
+        let (_, tokens) =
+            lex("// a comment\n//@pine_lite version=1\n// another\nx = 1").expect("ok");
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(&t.kind, TokenKind::Ident(w) if w == "x")));
     }
 
     #[test]
@@ -634,8 +640,12 @@ mod tests {
     #[test]
     fn colors_and_strings_lex() {
         let (_, tokens) = lex("//@pine_lite version=1\nc = #ff0000\ns = \"hi\"").expect("ok");
-        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Color(c) if *c == 0xFF_FF_00_00)));
-        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Str(s) if s == "hi")));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(&t.kind, TokenKind::Color(c) if *c == 0xFF_FF_00_00)));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(&t.kind, TokenKind::Str(s) if s == "hi")));
     }
 
     #[test]
@@ -647,6 +657,28 @@ mod tests {
     #[test]
     fn compound_assignments_do_not_confuse_the_comparison_reader() {
         let (_, tokens) = lex("//@pine_lite version=1\na += 1").expect("ok");
-        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Assign(op) if op == "+=")));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(&t.kind, TokenKind::Assign(op) if op == "+=")));
+    }
+
+    #[test]
+    fn an_unexpected_character_mid_line_errors_and_finishes() {
+        // The old progress guard only fired while no token had been emitted,
+        // so a stray character after any token looped forever pushing errors
+        // (the generation agent hung with the whole vet pipeline inside lex).
+        for source in [
+            "//@pine_lite version=1\nx = 1\ny = 2 $ 3",
+            "//@pine_lite version=1\nplot(close, title=\"p\") █",
+            "//@pine_lite version=1\nx = 1; y = 2",
+            "//@pine_lite version=1\ns = “curly”",
+        ] {
+            let errs = lex(source).expect_err("a stray character must be refused");
+            assert!(
+                errs.iter()
+                    .any(|e| e.message.contains("unexpected character")),
+                "expected an unexpected-character error for {source:?}, got {errs:?}"
+            );
+        }
     }
 }

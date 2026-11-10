@@ -257,6 +257,13 @@ to report.
 `BILLING_WEBHOOK_SECRET` is the HMAC-SHA256 key. Neither value is ever logged;
 the config's `Debug` prints `<configured>`/`<absent>`.
 
+For local indicator-generation testing, a debug build in internal billing mode
+can set `BILLING_TEST_UNLIMITED_AI_USER_ID=<account UUID>`. Only that account
+gets unlimited AI credits, labeled **Ultimate (Testing)**; its underlying plan,
+other limits and features remain unchanged. The setting is ignored in release
+builds and provider billing mode. It is not part of the public plan catalog or
+the subscription API, and should not be configured in a deployment.
+
 ### Webhooks
 
 `POST /billing/webhook` is public in the HTTP sense -- a provider has no JWT --

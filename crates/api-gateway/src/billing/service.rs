@@ -245,7 +245,8 @@ impl BillingService {
         let now = Utc::now();
         let row = self.reconciled(user_id, now).await?;
         let access = access_for(row.as_ref(), now);
-        let limits = plan(access.plan).limits;
+        let test_unlimited_ai = self.config.has_test_unlimited_ai_for(user_id);
+        let (plan_name, limits, features) = entitlement_details(access.plan, test_unlimited_ai);
 
         let usage_period = access.period_start.date_naive();
         let rows = db::usage_for_period(self.database.pool(), user_id, usage_period).await?;
@@ -259,9 +260,9 @@ impl BillingService {
 
         Ok(Entitlements {
             plan: access.plan,
-            plan_name: plan(access.plan).name,
+            plan_name,
             limits,
-            features: plan(access.plan).features,
+            features,
             subscription: SubscriptionView {
                 status: access.status,
                 cycle: access.cycle,
@@ -731,6 +732,20 @@ fn line(used: i64, limit: i64) -> UsageLine {
     }
 }
 
+fn entitlement_details(
+    plan_id: PlanId,
+    test_unlimited_ai: bool,
+) -> (&'static str, Limits, super::plans::Features) {
+    let plan = plan(plan_id);
+    if test_unlimited_ai {
+        let mut limits = plan.limits;
+        limits.max_ai_credits = -1;
+        ("Ultimate (Testing)", limits, plan.features)
+    } else {
+        (plan.name, plan.limits, plan.features)
+    }
+}
+
 fn is_live_paid(row: &SubscriptionRow, now: DateTime<Utc>) -> bool {
     PlanId::parse(&row.plan_id).is_some_and(|plan| plan.is_paid())
         && row.status != "expired"
@@ -866,6 +881,28 @@ fn month_bounds(now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ultimate_only_removes_the_ai_credit_cap() {
+        let free = plan(PlanId::Free);
+        let (name, limits, features) = entitlement_details(PlanId::Free, true);
+        let mut expected_limits = free.limits;
+        expected_limits.max_ai_credits = -1;
+
+        assert_eq!(name, "Ultimate (Testing)");
+        assert_eq!(limits, expected_limits);
+        assert_eq!(features, free.features);
+        assert_eq!(line(42, limits.max_ai_credits).remaining, -1);
+    }
+
+    #[test]
+    fn normal_accounts_keep_the_public_plan_details() {
+        let free = plan(PlanId::Free);
+        assert_eq!(
+            entitlement_details(PlanId::Free, false),
+            (free.name, free.limits, free.features)
+        );
+    }
 
     fn row(status: &str, period_end: DateTime<Utc>) -> SubscriptionRow {
         SubscriptionRow {

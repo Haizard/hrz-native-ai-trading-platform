@@ -174,7 +174,14 @@ impl FallbackClient {
     /// Build a client that tries the supplied providers in order.
     #[must_use]
     pub fn new(clients: Vec<std::sync::Arc<dyn crate::llm_client::LlmClient>>) -> Self {
-        let name = format!("fallback[{}]", clients.iter().map(|client| client.name()).collect::<Vec<_>>().join(" -> "));
+        let name = format!(
+            "fallback[{}]",
+            clients
+                .iter()
+                .map(|client| client.name())
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        );
         Self { clients, name }
     }
 }
@@ -185,9 +192,11 @@ impl crate::llm_client::LlmClient for FallbackClient {
         &self,
         request: crate::llm_client::LlmRequest,
     ) -> Result<crate::llm_client::LlmResponse, AgentError> {
-        let needs_vision = request.messages.iter().flat_map(|message| &message.content).any(
-            |block| matches!(block, crate::llm_client::ContentBlock::Image { .. }),
-        );
+        let needs_vision = request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|block| matches!(block, crate::llm_client::ContentBlock::Image { .. }));
         let mut failures = Vec::new();
         let mut skipped = Vec::new();
         for client in &self.clients {
@@ -228,19 +237,28 @@ impl crate::llm_client::LlmClient for FallbackClient {
             )
         };
         if !skipped.is_empty() {
-            message.push_str(&format!(" ({} skipped for want of image input)", skipped.join(", ")));
+            message.push_str(&format!(
+                " ({} skipped for want of image input)",
+                skipped.join(", ")
+            ));
         }
         Err(AgentError::Llm(message))
     }
 
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     fn supports_image_input(&self) -> bool {
-        self.clients.iter().any(|client| client.supports_image_input())
+        self.clients
+            .iter()
+            .any(|client| client.supports_image_input())
     }
 
     fn supports_image_generation(&self) -> bool {
-        self.clients.iter().any(|client| client.supports_image_generation())
+        self.clients
+            .iter()
+            .any(|client| client.supports_image_generation())
     }
 
     async fn generate_image(
@@ -250,7 +268,9 @@ impl crate::llm_client::LlmClient for FallbackClient {
     ) -> Result<crate::llm_client::GeneratedImage, AgentError> {
         let mut last_error = None;
         for client in &self.clients {
-            if !client.supports_image_generation() { continue; }
+            if !client.supports_image_generation() {
+                continue;
+            }
             match client.generate_image(prompt, reference_images).await {
                 Ok(image) => return Ok(image),
                 Err(error) => {
@@ -259,7 +279,9 @@ impl crate::llm_client::LlmClient for FallbackClient {
                 }
             }
         }
-        Err(AgentError::Llm(last_error.unwrap_or_else(|| "no image-generation provider is configured".into())))
+        Err(AgentError::Llm(last_error.unwrap_or_else(|| {
+            "no image-generation provider is configured".into()
+        })))
     }
 }
 
@@ -269,6 +291,8 @@ pub const ENV_PROVIDER: &str = "AI_PROVIDER";
 pub const ENV_MODEL: &str = "AI_MODEL";
 /// Environment variable carrying the primary provider's API key.
 pub const ENV_API_KEY: &str = "AI_API_KEY";
+/// APInex's existing `.env` key spelling, accepted as an alias for `AI_API_KEY`.
+pub const ENV_APINEX_API_KEY: &str = "apinex_api_key";
 /// Environment variable overriding the primary provider's default base URL.
 pub const ENV_BASE_URL: &str = "AI_BASE_URL";
 /// Environment variable setting the primary provider's request timeout.
@@ -289,6 +313,15 @@ pub const ENV_GROQ_API_KEY: &str = "GROQ_API_KEY";
 /// Environment variable naming the Groq fallback model id (optional).
 pub const ENV_GROQ_MODEL: &str = "GROQ_MODEL";
 
+fn deployment_api_key(primary: Option<String>, apinex: Option<String>) -> String {
+    primary
+        .filter(|key| !key.trim().is_empty())
+        .or(apinex)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
 /// The providers tried, in order, when `AI_FALLBACK_ORDER` is unset.
 ///
 /// Listing a provider here costs nothing when its credentials are absent --
@@ -301,8 +334,7 @@ pub const DEFAULT_FALLBACK_ORDER: &str = "cloudflare,gemini,grok,groq";
 pub fn fallback_clients_from_env(
     exclude: Option<ProviderId>,
 ) -> Vec<std::sync::Arc<dyn crate::llm_client::LlmClient>> {
-    let order = std::env::var(ENV_FALLBACK_ORDER)
-        .unwrap_or_else(|_| DEFAULT_FALLBACK_ORDER.into());
+    let order = std::env::var(ENV_FALLBACK_ORDER).unwrap_or_else(|_| DEFAULT_FALLBACK_ORDER.into());
     fallback_clients_from(&order, exclude, |name| std::env::var(name).ok())
 }
 
@@ -311,45 +343,56 @@ fn fallback_clients_from(
     exclude: Option<ProviderId>,
     var: impl Fn(&str) -> Option<String>,
 ) -> Vec<std::sync::Arc<dyn crate::llm_client::LlmClient>> {
-    order.split(',').filter_map(|name| {
-        let provider = ProviderId::from_name(name.trim())?;
-        if Some(provider) == exclude { return None; }
-        let (model, key, base_url) = match provider {
-            ProviderId::Cloudflare => {
-                let account = var("CLOUDFLARE_ACCOUNT_ID")?;
-                let key = var("CLOUDFLARE_API_TOKEN")?;
-                let model = var("CLOUDFLARE_AI_MODEL")
-                    .unwrap_or_else(|| provider.default_model().into());
-                let base = format!("https://api.cloudflare.com/client/v4/accounts/{}/ai/v1", account.trim());
-                (model, key, base)
+    order
+        .split(',')
+        .filter_map(|name| {
+            let provider = ProviderId::from_name(name.trim())?;
+            if Some(provider) == exclude {
+                return None;
             }
-            ProviderId::Gemini => {
-                let key = var("GEMINI_API_KEY")?;
-                let model = var("GEMINI_MODEL").unwrap_or_else(|| provider.default_model().into());
-                (model, key, provider.default_base_url().into())
+            let (model, key, base_url) = match provider {
+                ProviderId::Cloudflare => {
+                    let account = var("CLOUDFLARE_ACCOUNT_ID")?;
+                    let key = var("CLOUDFLARE_API_TOKEN")?;
+                    let model = var("CLOUDFLARE_AI_MODEL")
+                        .unwrap_or_else(|| provider.default_model().into());
+                    let base = format!(
+                        "https://api.cloudflare.com/client/v4/accounts/{}/ai/v1",
+                        account.trim()
+                    );
+                    (model, key, base)
+                }
+                ProviderId::Gemini => {
+                    let key = var("GEMINI_API_KEY")?;
+                    let model =
+                        var("GEMINI_MODEL").unwrap_or_else(|| provider.default_model().into());
+                    (model, key, provider.default_base_url().into())
+                }
+                ProviderId::Grok => {
+                    let token = var(ENV_GROK_API_TOKEN).or_else(|| var(ENV_XAI_API_KEY))?;
+                    let model =
+                        var(ENV_GROK_MODEL).unwrap_or_else(|| provider.default_model().into());
+                    let base = var(ENV_GROK_BASE_URL)
+                        .unwrap_or_else(|| provider.default_base_url().into());
+                    (model, token, base)
+                }
+                ProviderId::Groq => {
+                    let key = var(ENV_GROQ_API_KEY)?;
+                    let model =
+                        var(ENV_GROQ_MODEL).unwrap_or_else(|| provider.default_model().into());
+                    (model, key, provider.default_base_url().into())
+                }
+                _ => return None,
+            };
+            if key.trim().is_empty() || model.trim().is_empty() {
+                return None;
             }
-            ProviderId::Grok => {
-                let token = var(ENV_GROK_API_TOKEN).or_else(|| var(ENV_XAI_API_KEY))?;
-                let model = var(ENV_GROK_MODEL)
-                    .unwrap_or_else(|| provider.default_model().into());
-                let base = var(ENV_GROK_BASE_URL)
-                    .unwrap_or_else(|| provider.default_base_url().into());
-                (model, token, base)
-            }
-            ProviderId::Groq => {
-                let key = var(ENV_GROQ_API_KEY)?;
-                let model = var(ENV_GROQ_MODEL)
-                    .unwrap_or_else(|| provider.default_model().into());
-                (model, key, provider.default_base_url().into())
-            }
-            _ => return None,
-        };
-        if key.trim().is_empty() || model.trim().is_empty() { return None; }
-        let mut config = OpenAiCompatConfig::for_provider(provider, model.trim(), key.trim());
-        config.base_url = base_url;
-        let client = OpenAiCompatClient::new(config).ok()?;
-        Some(std::sync::Arc::new(client) as std::sync::Arc<dyn crate::llm_client::LlmClient>)
-    }).collect()
+            let mut config = OpenAiCompatConfig::for_provider(provider, model.trim(), key.trim());
+            config.base_url = base_url;
+            let client = OpenAiCompatClient::new(config).ok()?;
+            Some(std::sync::Arc::new(client) as std::sync::Arc<dyn crate::llm_client::LlmClient>)
+        })
+        .collect()
 }
 
 fn with_env_fallbacks(
@@ -401,7 +444,10 @@ pub fn from_deployment_env(
             // place, and this registry adds no third spelling of them.
             let client = BedrockClient::from_env()?;
             let model = client.model_id().to_string();
-            Ok((with_env_fallbacks(std::sync::Arc::new(client), ProviderId::Bedrock), model))
+            Ok((
+                with_env_fallbacks(std::sync::Arc::new(client), ProviderId::Bedrock),
+                model,
+            ))
         }
         provider @ (ProviderId::OpenAi
         | ProviderId::Anthropic
@@ -424,10 +470,11 @@ pub fn from_deployment_env(
                         ProviderId::Groq => Some(ENV_GROQ_MODEL),
                         _ => None,
                     };
-                    provider_model_var.and_then(|name| std::env::var(name).ok())
+                    provider_model_var
+                        .and_then(|name| std::env::var(name).ok())
                         .filter(|model| !model.trim().is_empty())
                         .unwrap_or_else(|| provider.default_model().to_string())
-                },
+                }
             };
             if model.is_empty() {
                 return Err(AgentError::NotConfigured(format!(
@@ -443,10 +490,13 @@ pub fn from_deployment_env(
                 ProviderId::Groq => Some(ENV_GROQ_API_KEY),
                 _ => None,
             };
-            let api_key = std::env::var(ENV_API_KEY)
-                .ok()
-                .or_else(|| provider_key_var.and_then(|name| std::env::var(name).ok()))
-                .unwrap_or_default().trim().to_string();
+            let apinex_key = (provider == ProviderId::OpenAiCompat)
+                .then(|| std::env::var(ENV_APINEX_API_KEY).ok())
+                .flatten();
+            let api_key = deployment_api_key(
+                std::env::var(ENV_API_KEY).ok(),
+                apinex_key.or_else(|| provider_key_var.and_then(|name| std::env::var(name).ok())),
+            );
             if api_key.is_empty() && provider.needs_api_key() {
                 return Err(AgentError::NotConfigured(format!(
                     "{ENV_API_KEY} is not set; the `{}` provider cannot be used without it. \
@@ -488,7 +538,10 @@ pub fn from_deployment_env(
             let model = config.model_id.clone();
             let client = OpenAiCompatClient::new(config)
                 .map_err(|e| AgentError::NotConfigured(e.to_string()))?;
-            Ok((with_env_fallbacks(std::sync::Arc::new(client), provider), model))
+            Ok((
+                with_env_fallbacks(std::sync::Arc::new(client), provider),
+                model,
+            ))
         }
     }
 }
@@ -496,8 +549,8 @@ pub fn from_deployment_env(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm_client::{ContentBlock, LlmRequest, LlmResponse, Message, StopReason, Usage};
     use crate::llm_client::LlmClient as _;
+    use crate::llm_client::{ContentBlock, LlmRequest, LlmResponse, Message, StopReason, Usage};
 
     /// One rung of a chain, named, that either answers or refuses.
     struct Rung {
@@ -519,14 +572,21 @@ mod tests {
                 None => Err(AgentError::Llm(format!("{} is out of quota", self.label))),
             }
         }
-        fn supports_image_input(&self) -> bool { self.vision }
-        fn name(&self) -> &str { self.label }
+        fn supports_image_input(&self) -> bool {
+            self.vision
+        }
+        fn name(&self) -> &str {
+            self.label
+        }
     }
 
     fn chain(rungs: Vec<Rung>) -> FallbackClient {
         FallbackClient::new(
-            rungs.into_iter()
-                .map(|rung| std::sync::Arc::new(rung) as std::sync::Arc<dyn crate::llm_client::LlmClient>)
+            rungs
+                .into_iter()
+                .map(|rung| {
+                    std::sync::Arc::new(rung) as std::sync::Arc<dyn crate::llm_client::LlmClient>
+                })
                 .collect(),
         )
     }
@@ -548,7 +608,10 @@ mod tests {
             role: crate::llm_client::Role::User,
             content: vec![
                 ContentBlock::Text("read this chart".into()),
-                ContentBlock::Image { media_type: "image/png".into(), data: "eA==".into() },
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data: "eA==".into(),
+                },
             ],
         });
         request
@@ -559,10 +622,21 @@ mod tests {
     #[tokio::test]
     async fn a_failing_provider_moves_the_request_to_the_next_one() {
         let client = chain(vec![
-            Rung { label: "first", vision: true, answer: None },
-            Rung { label: "second", vision: true, answer: Some("the POC is 103250") },
+            Rung {
+                label: "first",
+                vision: true,
+                answer: None,
+            },
+            Rung {
+                label: "second",
+                vision: true,
+                answer: Some("the POC is 103250"),
+            },
         ]);
-        let response = client.complete(text_request()).await.expect("second rung answers");
+        let response = client
+            .complete(text_request())
+            .await
+            .expect("second rung answers");
         assert_eq!(response.text(), "the POC is 103250");
     }
 
@@ -573,14 +647,28 @@ mod tests {
     #[tokio::test]
     async fn a_chain_that_all_fails_names_every_rung_that_refused() {
         let client = chain(vec![
-            Rung { label: "first", vision: true, answer: None },
-            Rung { label: "second", vision: true, answer: None },
+            Rung {
+                label: "first",
+                vision: true,
+                answer: None,
+            },
+            Rung {
+                label: "second",
+                vision: true,
+                answer: None,
+            },
         ]);
-        let err = client.complete(text_request()).await.expect_err("nothing answered");
+        let err = client
+            .complete(text_request())
+            .await
+            .expect_err("nothing answered");
         let message = err.to_string();
         assert!(message.contains("first"), "{message}");
         assert!(message.contains("second"), "{message}");
-        assert!(message.contains("all 2 configured providers failed"), "{message}");
+        assert!(
+            message.contains("all 2 configured providers failed"),
+            "{message}"
+        );
     }
 
     /// A picture cannot be handed to a text-only rung. It is skipped, and the
@@ -588,14 +676,28 @@ mod tests {
     #[tokio::test]
     async fn a_picture_skips_a_rung_that_cannot_read_one_and_says_so() {
         let client = chain(vec![
-            Rung { label: "blind", vision: false, answer: Some("never reached") },
-            Rung { label: "sighted", vision: true, answer: None },
+            Rung {
+                label: "blind",
+                vision: false,
+                answer: Some("never reached"),
+            },
+            Rung {
+                label: "sighted",
+                vision: true,
+                answer: None,
+            },
         ]);
-        let err = client.complete(picture_request()).await.expect_err("sighted refused");
+        let err = client
+            .complete(picture_request())
+            .await
+            .expect_err("sighted refused");
         let message = err.to_string();
         assert!(message.contains("sighted is out of quota"), "{message}");
         assert!(!message.contains("never reached"), "{message}");
-        assert!(message.contains("skipped for want of image input"), "{message}");
+        assert!(
+            message.contains("skipped for want of image input"),
+            "{message}"
+        );
         assert!(message.contains("blind"), "{message}");
     }
 
@@ -603,10 +705,15 @@ mod tests {
     /// the answer has to name the fix, not the exception.
     #[tokio::test]
     async fn a_picture_with_no_vision_rung_says_what_to_configure() {
-        let client = chain(vec![
-            Rung { label: "blind(a)", vision: false, answer: Some("never reached") },
-        ]);
-        let err = client.complete(picture_request()).await.expect_err("no eyes anywhere");
+        let client = chain(vec![Rung {
+            label: "blind(a)",
+            vision: false,
+            answer: Some("never reached"),
+        }]);
+        let err = client
+            .complete(picture_request())
+            .await
+            .expect_err("no eyes anywhere");
         let message = err.to_string();
         assert!(message.contains("cannot process image input"), "{message}");
         assert!(message.contains("blind(a)"), "{message}");
@@ -617,11 +724,21 @@ mod tests {
     /// count for a provider that never had a neighbour.
     #[tokio::test]
     async fn a_single_provider_reports_its_own_failure_plainly() {
-        let client = chain(vec![Rung { label: "lonely", vision: true, answer: None }]);
-        let err = client.complete(text_request()).await.expect_err("one rung, refusing");
+        let client = chain(vec![Rung {
+            label: "lonely",
+            vision: true,
+            answer: None,
+        }]);
+        let err = client
+            .complete(text_request())
+            .await
+            .expect_err("one rung, refusing");
         let message = err.to_string();
         assert!(message.contains("lonely"), "{message}");
-        assert!(!message.contains("configured providers failed"), "{message}");
+        assert!(
+            !message.contains("configured providers failed"),
+            "{message}"
+        );
         assert!(!message.contains("skipped"), "{message}");
     }
 
@@ -629,8 +746,14 @@ mod tests {
     #[tokio::test]
     async fn an_empty_chain_says_nothing_is_configured() {
         let client = FallbackClient::new(Vec::new());
-        let err = client.complete(text_request()).await.expect_err("no rungs at all");
-        assert!(err.to_string().contains("no AI provider is configured"), "{err}");
+        let err = client
+            .complete(text_request())
+            .await
+            .expect_err("no rungs at all");
+        assert!(
+            err.to_string().contains("no AI provider is configured"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -710,6 +833,7 @@ mod tests {
             (ENV_PROVIDER, "deepseek"),
             (ENV_MODEL, "deepseek-chat"),
             (ENV_API_KEY, ""),
+            (ENV_APINEX_API_KEY, ""),
         ]);
         let err = match from_deployment_env() {
             Ok(_) => panic!("no key, no provider"),
@@ -717,6 +841,41 @@ mod tests {
         };
         assert!(err.to_string().contains(ENV_API_KEY), "{err}");
         drop(guard);
+    }
+
+    #[test]
+    fn apinex_key_alias_configures_a_custom_chat_endpoint() {
+        let _serial = env_serial();
+        let guard = EnvGuard::set(&[
+            (ENV_PROVIDER, "openai-compat"),
+            (ENV_MODEL, "free/kimi-k3"),
+            (ENV_API_KEY, ""),
+            (ENV_APINEX_API_KEY, "apinex-test-key"),
+            (ENV_BASE_URL, "https://api.apinex.bond/v1"),
+        ]);
+        let (client, model) = from_deployment_env().expect("the APInex alias supplies a key");
+        assert_eq!(model, "free/kimi-k3");
+        assert!(client.name().contains("openai-compat(free/kimi-k3)"));
+        drop(guard);
+    }
+
+    #[test]
+    fn apinex_key_alias_fills_an_empty_primary_key() {
+        assert_eq!(
+            deployment_api_key(Some(" ".into()), Some("apinex-test-key".into())),
+            "apinex-test-key"
+        );
+    }
+
+    #[test]
+    fn standard_primary_key_takes_precedence_over_apinex_alias() {
+        assert_eq!(
+            deployment_api_key(
+                Some("primary-test-key".into()),
+                Some("apinex-test-key".into())
+            ),
+            "primary-test-key"
+        );
     }
 
     #[test]
@@ -743,11 +902,9 @@ mod tests {
     /// no warning.
     #[test]
     fn a_configured_grok_token_makes_grok_a_fallback() {
-        let clients = fallback_clients_from(
-            "cloudflare,gemini,grok",
-            None,
-            |name| (name == ENV_GROK_API_TOKEN).then(|| "k".into()),
-        );
+        let clients = fallback_clients_from("cloudflare,gemini,grok", None, |name| {
+            (name == ENV_GROK_API_TOKEN).then(|| "k".into())
+        });
         assert_eq!(clients.len(), 1, "only Grok has credentials here");
         assert!(
             clients[0].name().starts_with("grok("),
@@ -758,24 +915,28 @@ mod tests {
 
     #[test]
     fn xai_api_key_alias_configures_grok_fallback() {
-        let clients = fallback_clients_from(
-            "cloudflare,gemini,grok",
-            None,
-            |name| (name == ENV_XAI_API_KEY).then(|| "xai-test-key".into()),
-        );
+        let clients = fallback_clients_from("cloudflare,gemini,grok", None, |name| {
+            (name == ENV_XAI_API_KEY).then(|| "xai-test-key".into())
+        });
         assert_eq!(clients.len(), 1);
-        assert!(clients[0].name().starts_with("grok("), "{}", clients[0].name());
+        assert!(
+            clients[0].name().starts_with("grok("),
+            "{}",
+            clients[0].name()
+        );
     }
 
     #[test]
     fn configured_groq_key_builds_a_vision_capable_fallback() {
-        let clients = fallback_clients_from(
-            "groq",
-            None,
-            |name| (name == ENV_GROQ_API_KEY).then(|| "groq-test-key".into()),
-        );
+        let clients = fallback_clients_from("groq", None, |name| {
+            (name == ENV_GROQ_API_KEY).then(|| "groq-test-key".into())
+        });
         assert_eq!(clients.len(), 1);
-        assert!(clients[0].name().starts_with("groq("), "{}", clients[0].name());
+        assert!(
+            clients[0].name().starts_with("groq("),
+            "{}",
+            clients[0].name()
+        );
         assert!(clients[0].supports_image_input());
 
         let with_model = fallback_clients_from("groq", None, |name| match name {
@@ -790,12 +951,13 @@ mod tests {
     /// provider's own when the operator has no opinion.
     #[test]
     fn grok_defaults_to_xai_and_honours_its_overrides() {
-        let with_defaults = fallback_clients_from(
-            "grok",
-            None,
-            |name| (name == ENV_GROK_API_TOKEN).then(|| "k".into()),
+        let with_defaults = fallback_clients_from("grok", None, |name| {
+            (name == ENV_GROK_API_TOKEN).then(|| "k".into())
+        });
+        assert_eq!(
+            with_defaults[0].name(),
+            format!("grok({})", ProviderId::Grok.default_model())
         );
-        assert_eq!(with_defaults[0].name(), format!("grok({})", ProviderId::Grok.default_model()));
 
         let with_model = fallback_clients_from("grok", None, |name| match name {
             ENV_GROK_API_TOKEN => Some("k".into()),
@@ -814,16 +976,15 @@ mod tests {
     /// them and get a provider error back for every one.
     #[test]
     fn a_text_only_grok_is_not_counted_as_a_vision_rung() {
-        let clients = fallback_clients_from(
-            "grok",
-            None,
-            |name| match name {
-                ENV_GROK_API_TOKEN => Some("k".into()),
-                ENV_GROK_MODEL => Some("grok-3".into()),
-                _ => None,
-            },
+        let clients = fallback_clients_from("grok", None, |name| match name {
+            ENV_GROK_API_TOKEN => Some("k".into()),
+            ENV_GROK_MODEL => Some("grok-3".into()),
+            _ => None,
+        });
+        assert!(
+            !clients[0].supports_image_input(),
+            "grok-3 reads no pictures"
         );
-        assert!(!clients[0].supports_image_input(), "grok-3 reads no pictures");
     }
 
     /// Missing credentials are not an error: the provider is absent from the
@@ -834,11 +995,9 @@ mod tests {
         let clients = fallback_clients_from(DEFAULT_FALLBACK_ORDER, None, |_| None);
         assert!(clients.is_empty(), "no configured provider has a key");
 
-        let only_gemini = fallback_clients_from(
-            DEFAULT_FALLBACK_ORDER,
-            None,
-            |name| (name == "GEMINI_API_KEY").then(|| "k".into()),
-        );
+        let only_gemini = fallback_clients_from(DEFAULT_FALLBACK_ORDER, None, |name| {
+            (name == "GEMINI_API_KEY").then(|| "k".into())
+        });
         assert_eq!(only_gemini.len(), 1);
         assert!(only_gemini[0].name().starts_with("gemini("));
     }
@@ -858,10 +1017,18 @@ mod tests {
             .then(|| "k".into())
         };
         let with_grok = |name: &str| {
-            if name == ENV_GROK_API_TOKEN { Some("k".into()) } else { baseline(name) }
+            if name == ENV_GROK_API_TOKEN {
+                Some("k".into())
+            } else {
+                baseline(name)
+            }
         };
-        assert_eq!(fallback_clients_from(DEFAULT_FALLBACK_ORDER, None, with_grok).len(), 4);
-        let clients = fallback_clients_from(DEFAULT_FALLBACK_ORDER, Some(ProviderId::Grok), with_grok);
+        assert_eq!(
+            fallback_clients_from(DEFAULT_FALLBACK_ORDER, None, with_grok).len(),
+            4
+        );
+        let clients =
+            fallback_clients_from(DEFAULT_FALLBACK_ORDER, Some(ProviderId::Grok), with_grok);
         assert_eq!(clients.len(), 3, "grok excluded from its own chain");
         assert!(clients.iter().all(|c| !c.name().starts_with("grok(")));
     }
@@ -901,6 +1068,7 @@ mod tests {
                 ENV_PROVIDER,
                 ENV_MODEL,
                 ENV_API_KEY,
+                ENV_APINEX_API_KEY,
                 ENV_BASE_URL,
                 ENV_TIMEOUT_SECS,
             ] {

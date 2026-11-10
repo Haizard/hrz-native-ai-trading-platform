@@ -78,6 +78,8 @@ pub struct BillingConfig {
     pub mode: BillingMode,
     /// The webhook HMAC secret, when one is configured.
     webhook_secret: Option<Arc<Vec<u8>>>,
+    /// A development-only account allowed unlimited AI credits.
+    test_unlimited_ai_user_id: Option<Uuid>,
 }
 
 impl std::fmt::Debug for BillingConfig {
@@ -91,6 +93,10 @@ impl std::fmt::Debug for BillingConfig {
                 } else {
                     "<absent>"
                 },
+            )
+            .field(
+                "test_unlimited_ai_user_configured",
+                &self.test_unlimited_ai_user_id.is_some(),
             )
             .finish()
     }
@@ -119,9 +125,35 @@ impl BillingConfig {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .map(|value| Arc::new(value.into_bytes()));
+        let test_unlimited_ai_user_id = match std::env::var("BILLING_TEST_UNLIMITED_AI_USER_ID") {
+            Ok(value) if mode == BillingMode::Internal && cfg!(debug_assertions) => {
+                match Uuid::parse_str(value.trim()) {
+                    Ok(user_id) => Some(user_id),
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "ignoring invalid BILLING_TEST_UNLIMITED_AI_USER_ID"
+                        );
+                        None
+                    }
+                }
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    "ignoring BILLING_TEST_UNLIMITED_AI_USER_ID outside debug internal billing"
+                );
+                None
+            }
+            Err(std::env::VarError::NotPresent) => None,
+            Err(error) => {
+                tracing::warn!(%error, "could not read BILLING_TEST_UNLIMITED_AI_USER_ID");
+                None
+            }
+        };
         Self {
             mode,
             webhook_secret: secret,
+            test_unlimited_ai_user_id,
         }
     }
 
@@ -131,7 +163,16 @@ impl BillingConfig {
         Self {
             mode: BillingMode::Internal,
             webhook_secret: None,
+            test_unlimited_ai_user_id: None,
         }
+    }
+
+    /// Whether this account has the development-only unlimited AI allowance.
+    #[must_use]
+    pub(crate) fn has_test_unlimited_ai_for(&self, user_id: Uuid) -> bool {
+        self.mode == BillingMode::Internal
+            && cfg!(debug_assertions)
+            && self.test_unlimited_ai_user_id == Some(user_id)
     }
 
     /// Whether a webhook secret is configured.
@@ -329,5 +370,16 @@ mod tests {
     fn debug_never_prints_the_secret() {
         let rendered = format!("{:?}", HmacProvider::new(b"super-secret".to_vec()));
         assert!(!rendered.contains("super-secret"));
+    }
+
+    #[test]
+    fn test_ai_allowance_is_account_scoped_and_hidden_from_debug() {
+        let user_id = Uuid::new_v4();
+        let mut config = BillingConfig::internal();
+        config.test_unlimited_ai_user_id = Some(user_id);
+
+        assert!(config.has_test_unlimited_ai_for(user_id));
+        assert!(!config.has_test_unlimited_ai_for(Uuid::new_v4()));
+        assert!(!format!("{config:?}").contains(&user_id.to_string()));
     }
 }

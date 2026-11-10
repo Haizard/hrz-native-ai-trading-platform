@@ -38,25 +38,40 @@ const FIREABLE_SCRIPT: &str = concat!(
     "plot(e, title=\"EMA9\", color=color.orange)\n",
 );
 
-/// A scripted agent whose one draft is [`FIREABLE_SCRIPT`].
-fn scripted_agent() -> Arc<ai_agent::Agent> {
-    let response = LlmResponse {
-        message: Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolUse {
-                id: "d1".into(),
-                name: "submit_script".into(),
-                input: json!({ "script": FIREABLE_SCRIPT }),
-            }],
-        },
-        stop_reason: StopReason::ToolUse,
-        usage: Usage::default(),
-    };
+const RUNTIME_FAILURE_SCRIPT: &str = concat!(
+    "//@pine_lite version=1 overlay=false title=\"Runtime failure\"\n",
+    "reset_time = input.timeframe(defval=\"D\", title=\"Reset CVD on\")\n",
+    "plot(timeframe.change(reset_time) ? close : na, title=\"Reset\")\n",
+);
+
+/// A scripted agent whose drafts are returned in order.
+fn scripted_agent_with_scripts(scripts: &[&str]) -> Arc<ai_agent::Agent> {
+    let responses = scripts
+        .iter()
+        .enumerate()
+        .map(|(index, script)| LlmResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: format!("d{}", index + 1),
+                    name: "submit_script".into(),
+                    input: json!({ "script": script }),
+                }],
+            },
+            stop_reason: StopReason::ToolUse,
+            usage: Usage::default(),
+        })
+        .collect();
     Arc::new(ai_agent::Agent::new(
-        Arc::new(ScriptedClient::new(vec![response])),
+        Arc::new(ScriptedClient::new(responses)),
         ai_agent::SkillLibrary::new(),
         AgentConfig::default(),
     ))
+}
+
+/// A scripted agent whose one draft is [`FIREABLE_SCRIPT`].
+fn scripted_agent() -> Arc<ai_agent::Agent> {
+    scripted_agent_with_scripts(&[FIREABLE_SCRIPT])
 }
 
 /// Now, in unix nanoseconds -- matching the platform's clock.
@@ -151,7 +166,9 @@ async fn a_generation_turn_stores_a_non_empty_validated_preview() {
     // The stored source is the script, and read back through the API the
     // stored revision is the same non-empty one.
     assert!(
-        revision["source"].as_str().is_some_and(|s| s.contains("//@pine_lite")),
+        revision["source"]
+            .as_str()
+            .is_some_and(|s| s.contains("//@pine_lite")),
         "the revision stores the script as source: {revision}"
     );
     let listed = h
@@ -171,6 +188,132 @@ async fn a_generation_turn_stores_a_non_empty_validated_preview() {
         .await
         .expect("workspace cleanup");
     db::repositories::delete_candles_for_symbol(h.database.pool(), &symbol)
+        .await
+        .expect("candle cleanup");
+    user.cleanup(&h.database).await;
+}
+
+#[tokio::test]
+async fn runtime_preview_error_is_sent_back_for_repair_before_revision_creation() {
+    let Some(h) = common::Harness::with_agent(scripted_agent_with_scripts(&[
+        RUNTIME_FAILURE_SCRIPT,
+        FIREABLE_SCRIPT,
+    ]))
+    .await
+    else {
+        eprintln!("no database; skipping");
+        return;
+    };
+    let user = h.register().await;
+    let symbol = format!("ZZREPAIR{}", uuid::Uuid::new_v4().simple()).to_uppercase();
+    db::repositories::insert_candles(&h.database.pool(), &seed_candles(&symbol))
+        .await
+        .expect("seeding candles must succeed");
+    let workspace_id = h
+        .created(
+            "/indicator-workspaces",
+            json!({ "name": "Runtime repair probe", "symbol": symbol, "timeframe": "5m" }),
+            Some(&user.token),
+        )
+        .await;
+
+    let (status, body) = h
+        .post(
+            &format!("/indicator-workspaces/{workspace_id}/messages"),
+            json!({ "content": "plot the reset event" }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::CREATED,
+        "the runtime repair did not recover: {body}"
+    );
+    let revision = &body["revision"];
+    assert_eq!(revision["validation"]["attempts"], 2);
+    assert!(
+        revision["validation"]["repaired_errors"]
+            .as_array()
+            .is_some_and(|errors| errors.iter().any(|e| {
+                e.as_str()
+                    .is_some_and(|message| message.contains("runtime preview failed"))
+            })),
+        "the runtime failure should be recorded with the repaired revision: {revision}"
+    );
+    assert!(
+        revision["source"]
+            .as_str()
+            .is_some_and(|s| s.contains("plot(e")),
+        "the repaired source, not the failed candidate, must be stored: {revision}"
+    );
+    assert!(
+        revision["preview"]["zones"]
+            .as_array()
+            .is_some_and(|zones| !zones.is_empty()),
+        "the repaired revision must include a usable plotted preview: {revision}"
+    );
+
+    db::delete_indicator_workspace(h.database.pool(), user.id, workspace_id.parse().unwrap())
+        .await
+        .expect("workspace cleanup");
+    db::repositories::delete_candles_for_symbol(&h.database.pool(), &symbol)
+        .await
+        .expect("candle cleanup");
+    user.cleanup(&h.database).await;
+}
+
+#[tokio::test]
+async fn unrepaired_runtime_preview_error_does_not_create_a_revision() {
+    let Some(h) = common::Harness::with_agent(scripted_agent_with_scripts(&[
+        RUNTIME_FAILURE_SCRIPT,
+        RUNTIME_FAILURE_SCRIPT,
+    ]))
+    .await
+    else {
+        eprintln!("no database; skipping");
+        return;
+    };
+    let user = h.register().await;
+    let symbol = format!("ZZNOREPAIR{}", uuid::Uuid::new_v4().simple()).to_uppercase();
+    db::repositories::insert_candles(&h.database.pool(), &seed_candles(&symbol))
+        .await
+        .expect("seeding candles must succeed");
+    let workspace_id = h
+        .created(
+            "/indicator-workspaces",
+            json!({ "name": "Runtime failure probe", "symbol": symbol, "timeframe": "5m" }),
+            Some(&user.token),
+        )
+        .await;
+
+    let (status, body) = h
+        .post(
+            &format!("/indicator-workspaces/{workspace_id}/messages"),
+            json!({ "content": "plot the reset event" }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "{body}"
+    );
+    assert_eq!(body["error"]["code"], "INDICATOR_PREVIEW_FAILED");
+    let revisions = h
+        .ok(
+            &format!("/indicator-workspaces/{workspace_id}/revisions"),
+            Some(&user.token),
+        )
+        .await;
+    assert!(
+        revisions.as_array().is_some_and(Vec::is_empty),
+        "a script that still fails runtime preview must not be persisted: {revisions}"
+    );
+
+    db::delete_indicator_workspace(h.database.pool(), user.id, workspace_id.parse().unwrap())
+        .await
+        .expect("workspace cleanup");
+    db::repositories::delete_candles_for_symbol(&h.database.pool(), &symbol)
         .await
         .expect("candle cleanup");
     user.cleanup(&h.database).await;

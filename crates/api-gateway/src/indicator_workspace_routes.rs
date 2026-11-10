@@ -805,9 +805,11 @@ async fn run_workspace_turn(
         CREDIT_WORKSPACE_TURN,
     )
     .await?;
-    let generated = crate::pine_codegen::generate_script(
+    let system_prompt =
+        crate::pine_codegen::script_system_prompt(&workspace.symbol, &workspace.timeframe);
+    let mut generated = crate::pine_codegen::generate_script(
         agent.llm().as_ref(),
-        crate::pine_codegen::script_system_prompt(&workspace.symbol, &workspace.timeframe),
+        system_prompt.clone(),
         &content,
         // Iterative editing: a workspace with an active revision revises THAT
         // script instead of starting over -- "make the bands tighter" tightens
@@ -834,49 +836,83 @@ async fn run_workspace_turn(
     )
     .await
     .map_err(ApiError::from)?;
-    let source = generated.source.clone();
-    let attempts = generated.attempts;
-    let repaired_errors = generated.repaired_errors.clone();
-    let header = generated.header.clone();
 
     // Preview: run the vetted script over the workspace's stored candles so
     // the response carries honest numbers, while the revision stores the
     // SOURCE -- the shell attaches scripts as definitions and re-runs them
     // on the chart's own data every frame (the document path's live
-    // concepts, in code form).
-    let title = header.title.clone().unwrap_or_else(|| "script".to_string());
-    let revision_tag = format!("script:{}", title);
+    // concepts, in code form). A failed preview cannot produce a revision.
     // The vet passed; the replay is the last wait before the answer (docs/36).
     if let Some(sink) = progress {
         let _ = sink.unbounded_send(crate::pine_codegen::GenerationEvent::Previewing);
     }
-    let (preview, preview_stats, preview_note) =
-        match crate::indicator_preview::replay_script_preview(
+    let mut source = generated.source.clone();
+    let mut attempts = generated.attempts;
+    let mut repaired_errors = generated.repaired_errors.clone();
+    let mut preview_result = crate::indicator_preview::replay_script_preview(
+        &state,
+        database,
+        &workspace.symbol,
+        &workspace.timeframe,
+        &source,
+    )
+    .await;
+    if let Err(reason) = preview_result.as_ref() {
+        let Some(reason) = reason.strip_prefix("the script failed at run time: ") else {
+            return Err(ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "INDICATOR_PREVIEW_UNAVAILABLE",
+                format!("the generated script could not be previewed: {reason}"),
+            ));
+        };
+        let reason = reason.to_string();
+        repaired_errors.push(format!("runtime preview failed: {reason}"));
+        let repair_request = format!(
+            "{content}\n\nThe previous Pine-Lite script passed static validation but failed \
+             during runtime preview on {} {}. Repair the current script while preserving \
+             the requested features. Exact runtime error: {reason}",
+            workspace.symbol, workspace.timeframe
+        );
+        generated = crate::pine_codegen::generate_script(
+            agent.llm().as_ref(),
+            system_prompt,
+            &repair_request,
+            Some(&source),
+            agent.max_tokens(),
+            agent.temperature(),
+            progress,
+            &screenshots,
+        )
+        .await
+        .map_err(ApiError::from)?;
+        attempts += generated.attempts;
+        repaired_errors.extend(generated.repaired_errors.clone());
+        source = generated.source.clone();
+        if let Some(sink) = progress {
+            let _ = sink.unbounded_send(crate::pine_codegen::GenerationEvent::Previewing);
+        }
+        preview_result = crate::indicator_preview::replay_script_preview(
             &state,
             database,
             &workspace.symbol,
             &workspace.timeframe,
             &source,
         )
-        .await
-        {
-            Ok((output, stats, run_note)) => (output, Some(stats), run_note),
-            Err(reason) => (
-                chart_engine::IndicatorOutput {
-                    revision_id: revision_tag.clone(),
-                    name: Some(title.clone()),
-                    concepts: Vec::new(),
-                    registry_concepts: Vec::new(),
-                    evidence: Vec::new(),
-                    zones: Vec::new(),
-                    markers: Vec::new(),
-                    links: Vec::new(),
-                    trendlines: Vec::new(),
-                },
-                None,
-                serde_json::Value::String(reason),
-            ),
-        };
+        .await;
+    }
+    let (preview, preview_stats, preview_note) = preview_result
+        .map_err(|reason| {
+            ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "INDICATOR_PREVIEW_FAILED",
+                format!(
+                    "the generated script still failed preview after the runtime repair pass: {reason}"
+                ),
+            )
+        })
+        .map(|(output, stats, note)| (output, Some(stats), note))?;
+    let header = generated.header.clone();
+    let title = header.title.clone().unwrap_or_else(|| "script".to_string());
     let preview_json = serde_json::to_value(&preview)
         .map_err(|err| ApiError::internal(format!("could not store indicator preview: {err}")))?;
     // The declared inputs ride the validation record (docs/25 layer

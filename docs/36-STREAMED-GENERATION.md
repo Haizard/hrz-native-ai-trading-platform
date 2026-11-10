@@ -31,6 +31,17 @@ stages: every frame is a thing the pipeline actually did.
 Keep-alive `: ping` comments ride every 15s so a proxy cannot mistake the
 long LLM wait for a dead connection.
 
+## Runtime preview gate
+
+Static vet alone is not enough to persist a generated script. If replay on the
+workspace candles reports a Pine-Lite interpreter runtime error, the route
+sends that exact error and the current source back through one additional
+generation/repair pass, then replays the repaired source. Only a successful
+preview creates and attaches a revision; a second runtime failure returns
+`INDICATOR_PREVIEW_FAILED`, while missing candles or other preview setup
+failures return `INDICATOR_PREVIEW_UNAVAILABLE` without spending a model
+repair.
+
 ## The pipeline is not changed by being observed
 
 `create_message` and `create_message_stream` share one body,
@@ -55,6 +66,10 @@ POST — the client works against old and new gateways alike.
   `drafting → repairing(carrying the vet's own words) → drafting`, in order.
 - `pine_codegen::tests::no_listener_means_no_events_and_no_change` — the
   `None` sink keeps the pipeline byte-identical to its pre-stream behavior.
+- `indicator_preview_flow::runtime_preview_error_is_sent_back_for_repair_before_revision_creation`
+  and `indicator_preview_flow::unrepaired_runtime_preview_error_does_not_create_a_revision`
+  — runtime failure gets one model repair; a failure that survives it is not
+  stored or attached.
 
 ## What this is not
 

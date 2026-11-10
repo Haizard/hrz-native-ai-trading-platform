@@ -15204,6 +15204,7 @@ function paintBillingCurrent() {
   const statusText =
     BILLING_STATUS_TEXT[state.subscription.status] || state.subscription.status;
   const cycle = state.subscription.cycle === "annual" ? "annual" : "monthly";
+  const displayName = state.plan_name || (plan ? plan.name : state.plan);
   const price = !plan
     ? state.plan
     : state.plan === "free"
@@ -15229,7 +15230,7 @@ function paintBillingCurrent() {
   const resets = new Date(state.usage.resets_at);
   out.innerHTML =
     `<div class="billingCurrent">` +
-    `<div class="planName">${escapeHtml(plan ? plan.name : state.plan)} · ${escapeHtml(statusText)}</div>` +
+    `<div class="planName">${escapeHtml(displayName)} · ${escapeHtml(statusText)}</div>` +
     `<span class="muted">${escapeHtml(lines.join(" · "))}</span>` +
     billingMeter("AI credits", state.usage.ai_credits) +
     billingMeter("Backtests", state.usage.backtests) +
@@ -15345,9 +15346,11 @@ function refreshBillingPane() {
   paintBillingModeNote();
   paintBillingCurrent();
   paintBillingPlans();
-  const plan = billingState && billingState.plan ? String(billingState.plan) : "";
+  const plan = billingState
+    ? String(billingState.plan_name || billingState.plan || "")
+    : "";
   if (window.Shell) {
-    Shell.setPlan(plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : "");
+    Shell.setPlan(plan);
   }
   // The dashboard's Plan card is a second view of the same state, and this is
   // the one function every subscription write already calls -- so the card
@@ -19821,7 +19824,9 @@ window.HRZApp = {
     }
   },
   planName() {
-    const raw = billingState && billingState.plan ? String(billingState.plan) : "";
+    const raw = billingState
+      ? String(billingState.plan_name || billingState.plan || "")
+      : "";
     return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : "";
   },
   runPaneLoaders,
