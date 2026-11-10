@@ -259,6 +259,13 @@ Pine-Lite with the language's explicit `na`/series mapping.
 
 Layered, cheapest first, all of it deterministic:
 
+Vetting diagnostics expose stable phase codes (`PINE-LEX-001`,
+`PINE-PARSE-001`, `PINE-TYPE-001`, `PINE-LIMIT-001`) and a structured
+`span: { line, col }`. Codes classify the producing layer, not a particular
+message; human-readable wording may improve without changing the code.
+`/scripts/vet` keeps the existing top-level `line` and `col` fields for
+compatibility, while AI repair feedback carries both those fields and `span`.
+
 1. **Parse** — grammar refusal with line/col, error list not first-error (the
    AI repair loop needs the full list).
 2. **Type check** — unknown identifiers/functions, arity, Pine casting rules

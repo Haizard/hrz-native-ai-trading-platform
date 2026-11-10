@@ -38,6 +38,7 @@ pub use interp::{run, Inputs, Output, Plot, PlotKind, PlotStyle, ScriptObject, S
 pub use lex::Token;
 pub use parse::{Expr, Item};
 
+use serde::Serialize;
 use thiserror::Error;
 
 /// A vetting failure: one parse/type/limit problem, with where it happened.
@@ -53,6 +54,43 @@ pub struct ScriptError {
     pub span: Span,
     /// Human-readable, written to be shown to the author (human or model).
     pub message: String,
+}
+
+impl ScriptError {
+    /// Stable phase-level identifier for machine consumers. The prose in
+    /// `message` can improve without changing this code.
+    #[must_use]
+    pub const fn diagnostic_code(&self) -> DiagnosticCode {
+        match self.kind {
+            ErrorKind::Lex => DiagnosticCode::Lex,
+            ErrorKind::Parse => DiagnosticCode::Parse,
+            ErrorKind::Type => DiagnosticCode::Type,
+            ErrorKind::Limit => DiagnosticCode::Limit,
+        }
+    }
+}
+
+/// Stable diagnostic categories exposed to API and AI consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticCode {
+    Lex,
+    Parse,
+    Type,
+    Limit,
+}
+
+impl DiagnosticCode {
+    /// The public identifier. These phase-level codes remain stable across
+    /// message wording changes.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lex => "PINE-LEX-001",
+            Self::Parse => "PINE-PARSE-001",
+            Self::Type => "PINE-TYPE-001",
+            Self::Limit => "PINE-LIMIT-001",
+        }
+    }
 }
 
 /// Which vetting layer produced an error.
@@ -84,7 +122,7 @@ pub const fn kind_name(kind: ErrorKind) -> &'static str {
 pub use typecheck::Checked;
 
 /// A position in the source, 1-indexed, as the editor shows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Span {
     /// Line, 1-indexed.
     pub line: usize,
@@ -310,6 +348,30 @@ fn reads_strategy_state(script: &parse::Script) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_codes_are_stable_for_each_vetting_layer() {
+        let cases = [
+            (ErrorKind::Lex, "PINE-LEX-001"),
+            (ErrorKind::Parse, "PINE-PARSE-001"),
+            (ErrorKind::Type, "PINE-TYPE-001"),
+            (ErrorKind::Limit, "PINE-LIMIT-001"),
+        ];
+        for (kind, expected) in cases {
+            let error = ScriptError {
+                kind,
+                span: Span::new(2, 4),
+                message: "test".to_string(),
+            };
+            assert_eq!(error.diagnostic_code().as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn source_span_serializes_as_editor_coordinates() {
+        let value = serde_json::to_value(Span::new(2, 4)).expect("serializable span");
+        assert_eq!(value, serde_json::json!({"line": 2, "col": 4}));
+    }
 
     #[test]
     fn a_valid_script_vets_clean() {

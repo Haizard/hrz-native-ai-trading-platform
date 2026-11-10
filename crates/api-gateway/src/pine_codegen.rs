@@ -813,10 +813,28 @@ fn vet_report(source: &str) -> String {
         Ok(_) => String::new(),
         Err(errs) => errs
             .iter()
-            .map(|e| format!("line {} col {} [{}]: {}", e.span.line, e.span.col, pine_lite::kind_name(e.kind), e.message))
+            .map(|e| format!(
+                "line {} col {} [{} {}]: {}",
+                e.span.line,
+                e.span.col,
+                e.diagnostic_code().as_str(),
+                pine_lite::kind_name(e.kind),
+                e.message
+            ))
             .collect::<Vec<_>>()
             .join("\n"),
     }
+}
+
+fn repair_error_json(error: &pine_lite::ScriptError) -> serde_json::Value {
+    serde_json::json!({
+        "code": error.diagnostic_code().as_str(),
+        "kind": pine_lite::kind_name(error.kind),
+        "line": error.span.line,
+        "col": error.span.col,
+        "span": error.span,
+        "message": error.message,
+    })
 }
 
 /// The second-instrument symbol a script wants, without asking the model:
@@ -1047,12 +1065,9 @@ pub(crate) async fn generate_script(
                     // next to them names what the compiler accepts instead, so
                     // the model repairs from the language's real surface
                     // rather than re-deriving it from the system prompt.
-                    content: crate::pine_cheatsheet::repair_content(errs.iter().map(|e| serde_json::json!({
-                        "kind": pine_lite::kind_name(e.kind),
-                        "line": e.span.line,
-                        "col": e.span.col,
-                        "message": e.message,
-                    })).collect::<Vec<_>>()),
+                    content: crate::pine_cheatsheet::repair_content(
+                        errs.iter().map(repair_error_json).collect(),
+                    ),
                     is_error: true,
                 }]));
             }
@@ -1290,6 +1305,18 @@ mod tests {
         let bad = "//@pine_lite version=1\nx = close + true\nplot(x)\n";
         let report = vet_report(bad);
         assert!(report.contains("line 2"), "{report}");
+        assert!(report.contains("PINE-TYPE-001"), "{report}");
+    }
+
+    #[test]
+    fn ai_repair_errors_include_stable_codes_and_structured_spans() {
+        let bad = "//@pine_lite version=1\nx = close + true\n";
+        let errors = pine_lite::vet(bad).expect_err("type error");
+        let diagnostic = repair_error_json(&errors[0]);
+
+        assert_eq!(diagnostic["code"], "PINE-TYPE-001");
+        assert_eq!(diagnostic["span"]["line"], diagnostic["line"]);
+        assert_eq!(diagnostic["span"]["col"], diagnostic["col"]);
     }
 
     #[test]

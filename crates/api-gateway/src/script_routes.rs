@@ -28,12 +28,16 @@ pub struct VetRequest {
 /// One vetting failure.
 #[derive(Debug, Serialize)]
 pub struct ScriptIssue {
+    /// Stable phase-level diagnostic identifier.
+    pub code: &'static str,
     /// Which layer refused: `lex | parse | type | limit`.
     pub kind: String,
     /// Line, 1-indexed.
     pub line: usize,
     /// Column, 1-indexed.
     pub col: usize,
+    /// Structured source location, retained alongside `line` and `col`.
+    pub span: pine_lite::Span,
     /// The message, written to be fed back to the author (human or model).
     pub message: String,
 }
@@ -109,9 +113,11 @@ pub fn vet_response(source: &str) -> VetResponse {
                 issues: type_errors
                     .into_iter()
                     .map(|e| ScriptIssue {
+                        code: e.diagnostic_code().as_str(),
                         kind: pine_lite::kind_name(e.kind).to_string(),
                         line: e.span.line,
                         col: e.span.col,
+                        span: e.span,
                         message: e.message,
                     })
                     .collect(),
@@ -129,9 +135,11 @@ pub fn vet_response(source: &str) -> VetResponse {
             issues: errs
                 .iter()
                 .map(|e| ScriptIssue {
+                    code: e.diagnostic_code().as_str(),
                     kind: pine_lite::kind_name(e.kind).to_string(),
                     line: e.span.line,
                     col: e.span.col,
+                    span: e.span,
                     message: e.message.clone(),
                 })
                 .collect(),
@@ -260,6 +268,24 @@ mod tests {
         assert!(!response.valid);
         assert!(response.issues.len() >= 2, "{:?}", response.issues);
         assert!(response.header.is_none());
+    }
+
+    #[test]
+    fn vet_issues_include_stable_codes_and_structured_spans() {
+        let response = vet_response(
+            "//@pine_lite version=1\n\
+             x = close + true\n",
+        );
+        let issue = response.issues.first().expect("type diagnostic");
+        assert_eq!(issue.code, "PINE-TYPE-001");
+        assert_eq!(issue.kind, "type");
+        assert_eq!(issue.span.line, issue.line);
+        assert_eq!(issue.span.col, issue.col);
+
+        let json = serde_json::to_value(response).expect("serializable response");
+        assert_eq!(json["issues"][0]["code"], "PINE-TYPE-001");
+        assert_eq!(json["issues"][0]["span"]["line"], json["issues"][0]["line"]);
+        assert_eq!(json["issues"][0]["span"]["col"], json["issues"][0]["col"]);
     }
 
     #[test]
