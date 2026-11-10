@@ -148,7 +148,9 @@ Multi-value calls are taken apart on the assignment line, one name per
 output: `macd_line, signal_line, hist = ta.macd(close, 12, 26, 9)`,
 `basis, upper, lower = ta.bb(close, 20, 2)`, `k, d = ta.stoch(close, 14)`.
 A multi-output call read as a single value is a compile error naming the
-fix; `ta.stoch` alone still reads as its %K.
+fix; `ta.stoch` alone still reads as its %K. Other multi-output calls are
+`ta.dmi(length)`, `ta.kc(length, mult)`, and
+`ta.supertrend(mult, atr_length)`.
 
 ### Cross-market reads (`sec=` / `request.*`)
 
@@ -185,6 +187,13 @@ and timeframe must be quoted literals, the pool caps at 8 keys per script.
   on this chart.
 
 ## Builtin namespaces
+
+Call arity, static result kinds, and multi-output shapes are registered in
+`pine-lite::builtins::CATALOG` (schema version 1). The generator prompt and
+repair cheatsheet include a section rendered from that catalog, and the type
+checker reads the same metadata. Parameter names/defaults, host-data
+requirements, and runtime semantics are still documented and implemented
+separately; the registry does not yet replace those contracts.
 
 | Namespace | Contents (v1) |
 | --- | --- |
@@ -239,11 +248,12 @@ Pine-Lite with the language's explicit `na`/series mapping.
   `plotshape`-class evidence so a strategy script renders exactly like an
   indicator script plus trade markers.
 
-> **Status (2026-09-30):** the chart-side half of this spec — real strategy
-> builtins, simulated orders/positions/equity in preview and on the chart —
-> is designed in **docs/24** (phases S1–S4). The replay adapter
-> (`backtester::script_strategy`) exists and is tested; wiring and the
-> in-VM simulator are the open work.
+> **Status:** strategy simulation is implemented in the Pine-Lite VM and
+> rendered by the chart engine (docs/24, phases S1–S3). S4 remains pending.
+> `backtester::script_strategy` is a separate replay adapter; it is tested,
+> but the audit found no production path constructing it. Do not treat the
+> adapter or chart preview as live-bot deployment: the production bot path
+> remains based on the Strategy DSL and its sandbox.
 
 ## Vetting: "the platform vets scripts" — concretely
 

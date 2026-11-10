@@ -1240,18 +1240,12 @@ impl Cx {
                 _ => Ty::Float,
             };
         }
-        match callee {
-            "ta.crossover" | "ta.crossunder" | "ta.cross" | "ta.rising" | "ta.falling" => {
-                Ty::Bool
-            }
-            "map.contains" => Ty::Bool,
-            "timeframe.change" => Ty::Bool,
-            "str.tostring" | "str.format" | "array.join" => Ty::String,
-            "color.new" | "color.rgb" | "color.from_gradient" => Ty::Color,
-            "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
-                Ty::Bool
-            }
-            _ => Ty::Float,
+        match crate::builtins::lookup(callee).map(|spec| spec.result) {
+            Some(crate::builtins::BuiltinReturn::Bool) => Ty::Bool,
+            Some(crate::builtins::BuiltinReturn::String) => Ty::String,
+            Some(crate::builtins::BuiltinReturn::Color) => Ty::Color,
+            Some(crate::builtins::BuiltinReturn::Number | crate::builtins::BuiltinReturn::InputKind)
+            | None => Ty::Float,
         }
     }
 
@@ -1294,168 +1288,23 @@ impl Cx {
 }
 
 /// Namespaced constants and reads the checker can type statically.
-/// Positional-argument bounds per builtin. The single source of truth for
-/// what an author may write: `interp.rs` dispatches exactly these shapes, so
-/// a call that passes here runs.
+/// Compatibility wrapper for the compiler's builtin metadata registry.
 fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
-    Some(match callee {
-        "na" | "nz" => (1, 2),
-        "fixnan" => (1, 1),
-        // Session filters: the bare words are series reads, and models write
-        // the call form `hour(time)` just as reflexively. The argument is
-        // conventionally `time`; the value is the current bar's UTC clock.
-        "hour" | "minute" | "dayofweek" | "year" | "month" | "dayofmonth" => (1, 1),
-        // time("0800-1200") -- the session filter (nanos in-session, na out).
-        "time" => (1, 1),
-        "timestamp" => (5, 5),
-        "ta.sma" | "ta.ema" | "ta.rma" | "ta.wma" | "ta.rsi" | "ta.highest" | "ta.lowest"
-        | "ta.mom" | "ta.roc" => (2, 2),
-        "ta.atr" | "ta.change" => (1, 1),
-        "ta.tr" | "ta.vwap" => (0, 0),
-        "ta.stoch" => (2, 2),
-        "ta.macd" => (3, 4),
-        "ta.bb" => (2, 3),
-        "ta.stdev" | "ta.variance" | "ta.hma" | "ta.rising" | "ta.falling" => (2, 2),
-        "ta.vwma" | "ta.tema" => (2, 2),
-        "ta.obv" | "ta.pvt" | "ta.nvi" | "ta.wad" | "ta.ad" => (0, 0),
-        "ta.swma" => (1, 1),
-        "ta.alma" => (2, 4),
-        "ta.lsma" | "ta.linreg" => (3, 3),
-        "ta.correlation" | "ta.covariance" => (3, 3),
-        "ta.deviation" | "ta.median" | "ta.mode" | "ta.percentrank" | "ta.range" => (2, 2),
-        "ta.percentile_linear_interpolation" | "ta.percentile_nearest_rank" => (3, 3),
-        "ta.cci" | "ta.mfi" | "ta.willr" | "ta.highestbars" | "ta.lowestbars"
-        | "ta.barssince" | "ta.cum" => (1, 1),
-        "ta.valuewhen" | "ta.pivothigh" | "ta.pivotlow" => (3, 3),
-        "ta.dmi" => (2, 2),
-        "ta.kc" => (2, 2),
-        "ta.supertrend" => (2, 2),
-        "ta.crossover" | "ta.crossunder" | "ta.cross" => (2, 2),
-        "str.tostring" => (1, 2),
-        "str.format" => (1, 9),
-        "math.round_to_mintick" | "math.abs" | "math.floor" | "math.ceil" | "math.round" | "math.sqrt" | "math.log"
-        | "math.exp" | "math.sign" => (1, 1),
-        "math.sin" | "math.cos" | "math.tan" | "math.asin" | "math.acos" | "math.atan"
-        | "math.toradians" | "math.todegrees" => (1, 1),
-        "math.atan2" => (2, 2),
-        "timeframe.change" => (1, 1),
-        "alert" => (1, 2),
-        "math.min" | "math.max" | "math.avg" => (1, 8),
-        "math.sum" => (2, 2),
-        "math.pow" => (2, 2),
-        // Arrays: a variable holds a handle from `array.new()`; readers are
-        // functions, mutators are statements.
-        "array.new" => (0, 0),
-        "array.get" => (2, 2),
-        "array.size" | "array.first" | "array.last" | "array.min" | "array.max"
-        | "array.avg" => (1, 1),
-        "array.includes" => (2, 2),
-        "matrix.new" => (2, 3),
-        "matrix.get" => (3, 3),
-        "matrix.set" => (4, 4),
-        "matrix.rows" | "matrix.columns" => (1, 1),
-        "matrix.fill" => (2, 2),
-        "map.new" => (0, 0),
-        "map.put" => (3, 3),
-        "map.get" | "map.contains" | "map.remove" => (2, 2),
-        "map.size" | "map.clear" => (1, 1),
-        "array.new_string" => (0, 0),
-        "array.from" => (0, 8),
-        "array.slice" => (3, 3),
-        "array.join" => (1, 2),
-        "array.indexof" => (2, 2),
-        "array.concat" => (2, 2),
-        "array.fill" => (2, 4),
-        "array.push" => (2, 2),
-        "array.pop" | "array.shift" | "array.clear" => (1, 1),
-        "array.set" => (3, 3),
-        // The second instrument (`sec=` in the header): the host fetches and
-        // aligns its candles; the script reads them through these. `time` is
-        // the aligned bar's open time (docs/28) -- a change in it is the
-        // other market's new bar.
-        "request.symbol" | "request.open" | "request.high" | "request.low"
-        | "request.close" | "request.volume" | "request.time" => (0, 0),
-        // Phase 11: the full Pine form, any pair, any timeframe. Arity is
-        // checked in `call` (which also vets the literal strings and fills
-        // the series pool); the entry here keeps `unknown()` away from it.
-        "request.security" => (3, 3),
-        // Phase 13 drawing objects: positional anchors + named knobs. They
-        // are STATEMENTS (no value), so the checker's call path only vets
-        // arity here; the dispatch pushes to the object heap. The `_time`
-        // twins (docs/28) anchor by unix-nanos timestamps instead of bar
-        // indexes, for drawings over pooled higher timeframes.
-        "line.new" => (4, 7),
-        "label.new" => (3, 4),
-        // Boxes: 4 anchors + color + the docs/31 border knobs
-        // (border_color, border_width, border_style).
-        "box.new" => (4, 8),
-        "line.new_time" => (4, 7),
-        "label.new_time" => (3, 4),
-        "box.new_time" => (4, 8),
-        // Tier 1 D: drawing setters mutate through the constructor's
-        // handle; deletes free the slot.
-        "line.set_x1" | "line.set_x2" | "line.set_y1" | "line.set_y2"
-        | "line.set_color" | "line.set_extend" | "box.set_left" | "box.set_right"
-        | "box.set_top" | "box.set_bottom" | "box.set_border_color"
-        | "box.set_border_width" | "box.set_bgcolor" | "label.set_x" | "label.set_y"
-        | "label.set_text" | "label.set_color" => (2, 2),
-        "line.delete" | "label.delete" | "box.delete" => (1, 1),
-        "linefill.new" => (3, 3),
-        "linefill.delete" => (1, 1),
-        "polyline.new" => (1, 7),
-        "chart.point.new" => (2, 2),
-        "polyline.delete" => (1, 1),
-        // table.new(position, columns, rows, ...) returns the panel handle;
-        // table.cell writes one cell.
-        "table.new" => (3, 5),
-        "table.cell" => (4, 6),
-        // The color constructors evaluate to a packed 0xAARRGGBB value.
-        "color.new" => (2, 2),
-        "color.rgb" => (3, 4),
-        "color.from_gradient" => (4, 5),
-        // The registry primitive (docs/37): 4 anchors + the named color.
-        "fib.new" => (4, 5),
-        // Phase 14: platform-native data by name. The literal name is
-        // vetted (the host cannot serve a computed name); the series itself
-        // is host-supplied, so an unknown name is a RUNTIME report.
-        "request.data" => (1, 1),
-        "plot" | "plotshape" | "plotchar" | "plotarrow" => (1, 8),
-        // plotcandle(open, high, low, close, title=, color=, wickcolor=, ...).
-        "plotcandle" | "plotbar" => (4, 8),
-        "hline" => (1, 4),
-        "fill" => (2, 6),
-        "bgcolor" | "barcolor" => (1, 4),
-        "input.int" | "input.float" | "input.bool" | "input.string" | "input.color"
-        | "input.source" | "input.timeframe" | "input.time" | "input.price" | "input.symbol" => (0, 6),
-        "strategy.entry" | "strategy.exit" | "strategy.close" | "strategy.cancel" => (1, 9),
-        "strategy.risk.max_position_size" | "strategy.risk.max_intraday_loss"
-        | "strategy.risk.max_drawdown" | "strategy.risk.allow_entry_in" => (1, 1),
-        // Zero-arg: close everything.
-        "strategy.close_all" => (0, 6),
-        _ => return None,
-    })
+    crate::builtins::lookup(callee).map(|entry| (entry.min_args, entry.max_args))
 }
 
 /// How many values a multi-output builtin hands back. Only these may appear on
 /// the right of `a, b, c = ...`.
 fn multi_output_count(callee: &str) -> Option<usize> {
-    match callee {
-        "ta.macd" | "ta.bb" | "ta.dmi" | "ta.kc" => Some(3),
-        "ta.supertrend" => Some(2),
-        // `ta.stoch` reads as its %K alone, and destructures to %K and %D.
-        "ta.stoch" => Some(2),
-        _ => None,
-    }
+    crate::builtins::lookup(callee).and_then(|entry| entry.multi_output_count)
 }
 
 /// Multi-output builtins with NO single-value reading: using one as a scalar
 /// is always a mistake worth naming.
 fn multi_only_count(callee: &str) -> Option<usize> {
-    match callee {
-        "ta.macd" | "ta.bb" | "ta.dmi" | "ta.kc" => Some(3),
-        "ta.supertrend" => Some(2),
-        _ => None,
-    }
+    crate::builtins::lookup(callee)
+        .filter(|entry| entry.multi_output_only)
+        .and_then(|entry| entry.multi_output_count)
 }
 
 fn namespace_const(name: &str) -> Option<Ty> {
@@ -1528,6 +1377,24 @@ mod tests {
              plot(r)\n",
         );
         assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    #[test]
+    fn dmi_arity_matches_its_runtime_and_documented_signature() {
+        assert!(check_src(
+            "//@pine_lite version=1\n\
+             plus, minus, adx = ta.dmi(14)\n"
+        )
+        .is_empty());
+
+        let errors = check_src(
+            "//@pine_lite version=1\n\
+             plus, minus, adx = ta.dmi(14, 14)\n",
+        );
+        assert!(
+            errors.iter().any(|error| error.message.contains("takes at most 1")),
+            "{errors:?}"
+        );
     }
 
     #[test]

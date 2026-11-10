@@ -356,6 +356,8 @@ Call `submit_script` with `script` (the whole pine-lite source) AND `report` (th
     ) + "\n\n"
         + language_reference()
         + "\n\n"
+        + &pine_lite::builtins::prompt_reference()
+        + "\n\n"
         + &format!(
             r##"## SMC zones (order blocks, fair value gaps, breaker blocks): draw BOXES, never markers
 
@@ -1182,6 +1184,31 @@ mod tests {
         }
         // The reference and the cheatsheet share one source now.
         assert_eq!(language_reference(), crate::pine_cheatsheet::language_reference());
+    }
+
+    #[test]
+    fn ai_language_reference_names_every_registered_builtin() {
+        let reference = pine_lite::builtins::prompt_reference();
+        let missing: Vec<_> = pine_lite::builtins::CATALOG
+            .builtins
+            .iter()
+            .flat_map(|spec| spec.names)
+            .filter(|name| !reference.contains(**name))
+            .copied()
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "AI language reference omits registered builtins: {missing:?}"
+        );
+        assert!(reference
+            .contains("`ta.dmi`: 1 argument(s); result `number`; destructures to 3 values"));
+        assert!(script_system_prompt("BTCUSDT", "1h").contains(&reference));
+    }
+
+    #[test]
+    fn repair_cheatsheet_includes_compiler_registered_call_bounds() {
+        let sheet = crate::pine_cheatsheet::sheet();
+        assert!(sheet.contains(&pine_lite::builtins::prompt_reference()));
     }
 
     #[test]

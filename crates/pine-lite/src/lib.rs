@@ -25,6 +25,7 @@
 //! dynamic fuel (the sandbox's job, not this crate's) is killed and reported,
 //! never drawn half-way.
 
+pub mod builtins;
 pub mod interp;
 pub mod lex;
 pub mod limits;

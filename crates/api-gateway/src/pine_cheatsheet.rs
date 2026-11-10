@@ -38,6 +38,8 @@ pub(crate) fn sheet() -> String {
         "PINE-LITE CHEATSHEET -- the compiler accepts exactly what is listed here; anything else is refused.\n\n",
     );
     out.push_str(language_reference());
+    out.push_str("\n\n");
+    out.push_str(&pine_lite::builtins::prompt_reference());
     out
 }
 
@@ -107,7 +109,7 @@ const SHEET_SCRIPT: &str = concat!(
     "    strategy.close_all()\n",
     // ---- the tier surface: every family the reference now names ----
     "st, dirn = ta.supertrend(3.0, 10)\n",
-    "dip, dim, adx = ta.dmi(14, 14)\n",
+    "dip, dim, adx = ta.dmi(14)\n",
     "kc_b, kc_u, kc_l = ta.kc(20, 1.5)\n",
     "trend_sw = switch\n",
     "    basis > upper => 2.0\n",
