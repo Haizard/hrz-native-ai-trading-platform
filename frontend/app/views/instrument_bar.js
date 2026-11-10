@@ -596,10 +596,7 @@
 
     byId("attachStudio").addEventListener("click", () => {
       close();
-      if (shell().openInspector) shell().openInspector("ai");
-      const tools = document.getElementById("chatIndicatorWorkspace");
-      if (tools) tools.open = true;
-      if (app().runPaneLoaders) app().runPaneLoaders("indicator");
+      if (shell().go) shell().go("indicator-workspace");
     });
     byId("attachCommunity").addEventListener("click", () => {
       close();

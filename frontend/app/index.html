@@ -61,6 +61,9 @@
     <button type="button" class="topNav__btn" data-dest="charts" aria-label="Charts" title="Charts" disabled>
       <span data-icon="chart" data-icon-size="18"></span>
     </button>
+    <button type="button" class="topNav__btn" data-dest="indicator-workspace" aria-label="Indicator Workspace" title="Indicator Workspace" disabled>
+      <span data-icon="sparkles" data-icon-size="18"></span>
+    </button>
   </nav>
 
   <!--
@@ -3500,7 +3503,7 @@
         <div class="dockPanel ws-code-panel" id="dockCode" hidden>
           <div class="dockSectionHead ws-code-head">
             <h2>Pine Editor</h2>
-            <span class="muted" id="wsCodeWorkspaceName">Select an indicator chat to view its source.</span>
+            <span class="muted" id="wsCodeWorkspaceName">Select an indicator workspace to view its source.</span>
           </div>
           <div class="ws-code-layout">
             <div id="wsCodeFiles"><p class="empty">No revisions yet.</p></div>
@@ -3561,7 +3564,7 @@
           <p class="inspectorNote" id="indicatorNote"></p>
           <div class="inspectorActions">
             <button type="button" id="indicatorDetach" class="hrz-btn hrz-btn--secondary hrz-btn--sm">Detach</button>
-            <button type="button" id="indicatorStudio" class="hrz-btn hrz-btn--ghost hrz-btn--sm">Open AI chat tools</button>
+            <button type="button" id="indicatorStudio" class="hrz-btn hrz-btn--ghost hrz-btn--sm">Open Indicator Workspace</button>
             <button type="button" id="indicatorAlerts" class="hrz-btn hrz-btn--ghost hrz-btn--sm">Alerts</button>
           </div>
         </div>
@@ -3605,10 +3608,6 @@
     </div>
   </div>
   <div class="chat-stream" id="chatStream"></div>
-  <details class="chat-workspace-tools" id="chatIndicatorWorkspace">
-    <summary>Indicator workspace · revisions, alerts and publishing</summary>
-    <div id="chatIndicatorWorkbench"></div>
-  </details>
   <div class="chat-compose">
     <div id="chatChips" class="chat-chips" hidden></div>
     <textarea id="chatInput" rows="2" placeholder="Ask anything — analyze this chart, build an indicator, scan the market, create a strategy…"></textarea>
@@ -3940,12 +3939,6 @@
       <div id="venuesOut"><p class="empty">Loading venues…</p></div>
     </div>
 
-    <!--
-      Indicator workspaces embedded in AI chat. The chat is the product here, so it leads: a list of
-      conversations, then one open conversation with the composer pinned under
-      the stream. Revisions and alerts collapse out of the way — they are the
-      history of what the chat produced, not the thing you came to do.
-    -->
     <div class="pane" id="pane-indicator" hidden>
       <div id="wsListView">
         <div class="aiHero">
@@ -4256,6 +4249,12 @@
   <button type="button" id="asideShow" hidden title="Show the side panel" aria-label="Show the side panel"><span data-icon="chevron-left"></span></button>
     </section>
 
+    <section class="destination" id="dest-indicator-workspace"
+             aria-labelledby="dest-indicator-workspace-title" hidden>
+      <h1 class="destHeading" id="dest-indicator-workspace-title" tabindex="-1">Indicator Workspace</h1>
+      <div class="destHost" id="indicatorWorkspaceHost"></div>
+    </section>
+
   </main>
 </div>
 
@@ -4403,6 +4402,10 @@
   <button type="button" class="phoneNav__btn" data-dest="charts" aria-label="Charts" disabled>
     <span data-icon="chart" data-icon-size="20"></span>
     <span class="phoneNav__label">Charts</span>
+  </button>
+  <button type="button" class="phoneNav__btn" data-dest="indicator-workspace" aria-label="Indicator Workspace" disabled>
+    <span data-icon="sparkles" data-icon-size="20"></span>
+    <span class="phoneNav__label">Workspace</span>
   </button>
 </nav>
 
@@ -4557,7 +4560,7 @@
   <div class="barPopList" id="attachPopList"></div>
   <p class="barPopNote" id="attachPopNote" role="status"></p>
   <div class="barPopRow barPopRow--end">
-    <button id="attachStudio" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">Open AI chat tools</button>
+    <button id="attachStudio" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">Open Indicator Workspace</button>
     <button id="attachCommunity" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">Community library</button>
   </div>
 </div>

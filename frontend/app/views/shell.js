@@ -34,6 +34,7 @@
   const NAV = [
     { id: "dashboard", kind: "page", label: "Dashboard" },
     { id: "charts", kind: "page", label: "Charts" },
+    { id: "indicator-workspace", kind: "page", label: "Indicator Workspace" },
     { id: "community", kind: "panel", label: "Community", width: "wide" },
     { id: "bots", kind: "panel", label: "Bots", width: "wide" },
     { id: "concepts", kind: "panel", label: "Indicators", width: "wide", view: "charts" },
@@ -79,22 +80,23 @@
   const DEST_FROM_LEGACY = {
     chat: "charts", thesis: "charts", book: "charts", trade: "charts",
     watchlist: "charts",
-    indicator: "charts", scan: "charts", strategy: "charts", skills: "charts",
+    indicator: "indicator-workspace", scan: "charts", strategy: "charts", skills: "charts",
     community: "community", bots: "bots",
     billing: "account", brokers: "account", aimodel: "account",
   };
   const HOSTS = {
     chat: "inspectorPaneHost", book: "inspectorPaneHost",
     trade: "inspectorPaneHost", thesis: "inspectorPaneHost",
-    indicator: "chatIndicatorWorkbench", scan: "studioHost",
+    indicator: "indicatorWorkspaceHost", scan: "studioHost",
     strategy: "studioHost", skills: "studioHost",
     community: "communityHost", bots: "botsHost",
     billing: "accountHost", brokers: "accountHost", aimodel: "accountHost",
   };
   const DOCK_TABS = ["alerts", "orders", "console", "code"];
-  /// The dock tabs whose body is a panel in `#dockBody`. Studio has no entry:
-  /// its body is `pane-indicator`, moved in by `mountIndicator`.
-  const DOCK_PANELS = { alerts: "dockAlerts", orders: "dockOrders", console: "dockConsole", code: "dockCode" };
+  const DOCK_PANELS = {
+    alerts: "dockAlerts", orders: "dockOrders", console: "dockConsole",
+    code: "dockCode",
+  };
   const DOCK_DEFAULT_HEIGHT = 240;
   const DOCK_MIN_HEIGHT = 160;
 
@@ -137,6 +139,7 @@
   // three hosts; `syncPanel` is the only thing that asks it to show one.
   let workPanel = null;
   let applyingRestore = false;
+  let restoreWorkspaceRoute = false;
   let drawer = null;
   // The chat the current route already asked the app to open. `go` applies the
   // destination directly and the hashchange applies it again a moment later;
@@ -196,7 +199,7 @@
   function mountIndicator() {
     const pane = el("pane-indicator");
     if (!pane) return;
-    const host = el("chatIndicatorWorkbench");
+    const host = el("indicatorWorkspaceHost");
     if (host && pane.parentElement !== host) host.appendChild(pane);
   }
 
@@ -206,8 +209,8 @@
     const visible = new Set();
     if (state.destination === "charts") {
       if (state.inspectorOpen) visible.add(INSPECTOR_VIEWS[state.inspectorTab]);
-      const workspace = el("chatIndicatorWorkspace");
-      if (workspace && workspace.open) visible.add("pane-indicator");
+    } else if (state.destination === "indicator-workspace") {
+      visible.add("pane-indicator");
     } else if (state.destination === "studio") {
       visible.add(STUDIO_PANES[state.studioPane]);
     }
@@ -617,7 +620,7 @@
       let workspaceId;
       try { workspaceId = parts[1] ? decodeURIComponent(parts[1]) : undefined; }
       catch { workspaceId = parts[1]; }
-      return { page: "charts", panel: null, inspectorTab: "ai", workspaceId, indicatorWorkspace: true };
+      return { page: "indicator-workspace", panel: null, workspaceId };
     }
     if (PANELS.includes(parts[0])) {
       const route = { page: "charts", panel: parts[0] };
@@ -632,7 +635,7 @@
       route.panel = second;
       const section = panelSection(second, parts[2]);
       if (section !== undefined) route.section = section;
-    } else if (route.page === "studio" && second) {
+    } else if (route.page === "indicator-workspace" && second) {
       // An id is user data from the address bar. A malformed escape is a bad
       // link, not a router crash: fall back to the raw segment and let the
       // workspace lookup reject it. A workspace named exactly like a panel is
@@ -649,8 +652,8 @@
   /// The address for a page, with the panel it carries if none is given.
   function hashFor(page, opts = {}) {
     const panel = opts.panel === undefined ? state.panel : opts.panel;
-    if (page === "studio" && opts.workspaceId && !panel) {
-      return `#/studio/${encodeURIComponent(opts.workspaceId)}`;
+    if (page === "indicator-workspace" && opts.workspaceId && !panel) {
+      return `#/indicator-workspace/${encodeURIComponent(opts.workspaceId)}`;
     }
     if (!panel) return `#/${page}`;
     if (panel === "account") {
@@ -676,8 +679,7 @@
 
   function setDestination(destination, opts = {}) {
     if (destination === "studio") {
-      destination = "charts";
-      opts = { ...opts, inspectorTab: "ai", indicatorWorkspace: true };
+      destination = "indicator-workspace";
     }
     if (!PAGES.includes(destination)) destination = "dashboard";
     const previous = state.destination;
@@ -697,11 +699,8 @@
       state.inspectorOpen = true;
       load = true;
     }
-    if (opts.indicatorWorkspace || opts.workspaceId) {
-      state.inspectorTab = "ai";
-      state.inspectorOpen = true;
-      const tools = el("chatIndicatorWorkspace");
-      if (tools) tools.open = true;
+    if (destination === "indicator-workspace") {
+      state.dockOpen = false;
       load = true;
     }
     if (opts.workspaceId) {
@@ -790,8 +789,14 @@
   /// never a push: the old shape is a second name for the same screen, and a
   /// Back press should leave the screen, not one spelling of it.
   function fromHash() {
-    const route = parse(location.hash);
+    let route = parse(location.hash);
     if (!route) return false;
+    if (restoreWorkspaceRoute) {
+      restoreWorkspaceRoute = false;
+      if (route.page === "charts" && !route.panel) {
+        route = { page: "indicator-workspace", panel: null };
+      }
+    }
     setDestination(route.page, {
       panel: route.panel,
       section: route.section,
@@ -830,15 +835,13 @@
     const load = app().runPaneLoaders;
     if (!load) return;
     // The watchlist prices itself only while it is on screen: the ticker has no
-    // reason to keep running behind Studio, and the way back to Charts is
-    // supposed to find it fresh rather than waiting for the next tick.
+    // reason to keep running behind the Indicator Workspace, and the way back to
+    // Charts is supposed to find it fresh rather than waiting for the next tick.
     if (state.destination === "charts") {
       load("watchlist");
-      // A restored workspace can open on Alerts, Orders or Console, and no tab
-      // click happens in that case -- the panel would sit empty until the user
-      // switched away and back.
       if (state.dockOpen) loadDock(state.dockTab);
-    } else if (state.destination === "studio") load(state.studioPane);
+    } else if (state.destination === "indicator-workspace") load("workspace");
+    else if (state.destination === "studio") load(state.studioPane);
     else if (state.destination === "dashboard") {
       // No pane is on screen -- and the loader's own `else` is what stops the
       // watchlist ticker, so the dashboard's page clock is the only one left
@@ -999,10 +1002,7 @@
   function selectLegacyPane(name) {
     if (!ready || applyingRestore) return;
     if (name === "indicator") {
-      selectInspector("ai");
-      const tools = el("chatIndicatorWorkspace");
-      if (tools) tools.open = true;
-      if (app().runPaneLoaders) app().runPaneLoaders("indicator");
+      go("indicator-workspace");
       return;
     }
     const destination = DEST_FROM_LEGACY[name];
@@ -1032,6 +1032,7 @@
     if (state.panel === "bots") return "bots";
     if (state.panel === "account") return LEGACY_FROM_ACCOUNT[state.accountSection] || "billing";
     if (state.destination === "charts") return LEGACY_FROM_TAB[state.inspectorTab] || "chat";
+    if (state.destination === "indicator-workspace") return "indicator";
     if (state.destination === "studio") return state.studioPane;
     return "chat";
   }
@@ -1065,7 +1066,11 @@
     // allowed to say which page to land on, but opening a modal is the hash's
     // work, and nothing here reads or writes `state.panel`.
     const named = saved.destination || DEST_FROM_LEGACY[saved.activeTab];
-    let destination = PAGES.includes(saved.destination) ? saved.destination : null;
+    const restoringWorkspace = saved.destination === "studio" ||
+      (saved.destination === "charts" && saved.dockTab === "workspace");
+    let destination = restoringWorkspace
+      ? "indicator-workspace"
+      : PAGES.includes(saved.destination) ? saved.destination : null;
     if (!destination && PANELS.includes(named)) destination = "charts";
     if (!destination) {
       if (PAGES.includes(named)) destination = named;
@@ -1074,6 +1079,8 @@
     }
     state.destination = destination;
     const legacy = saved.activeTab;
+    restoreWorkspaceRoute = restoringWorkspace ||
+      (!PAGES.includes(saved.destination) && legacy === "indicator");
     if (legacy && destination === "studio" && STUDIO_PANES[legacy]) {
       state.studioPane = legacy;
     }
@@ -1090,7 +1097,9 @@
     if (typeof saved.watchlistCollapsed === "boolean") {
       state.watchlistCollapsed = saved.watchlistCollapsed;
     }
-    if (typeof saved.dockOpen === "boolean") state.dockOpen = saved.dockOpen;
+    if (typeof saved.dockOpen === "boolean") {
+      state.dockOpen = restoringWorkspace ? false : saved.dockOpen;
+    }
     if (DOCK_TABS.includes(saved.dockTab)) state.dockTab = saved.dockTab;
     if (Number.isFinite(saved.dockHeight)) state.dockHeight = clampDock(saved.dockHeight);
     setWidth("--watch-w", saved.watchlistWidth, 200, 360);
@@ -1228,8 +1237,6 @@
     for (const button of document.querySelectorAll("#dock [data-dock]")) {
       button.addEventListener("click", () => selectDockTab(button.dataset.dock));
     }
-    const indicatorWorkspace = el("chatIndicatorWorkspace");
-    if (indicatorWorkspace) indicatorWorkspace.addEventListener("toggle", showDestination);
     const collapse = el("dockCollapse");
     if (collapse) {
       // The chevron collapses the body, not the bar: the bar is where the
@@ -1288,12 +1295,7 @@
     }
     const toStudio = el("indicatorStudio");
     if (toStudio) {
-      toStudio.addEventListener("click", () => {
-        selectInspector("ai");
-        const tools = el("chatIndicatorWorkspace");
-        if (tools) tools.open = true;
-        if (app().runPaneLoaders) app().runPaneLoaders("indicator");
-      });
+      toStudio.addEventListener("click", () => go("indicator-workspace"));
     }
     // Alerts is the dock's tab: the same watch events that fire for every
     // chart, not a list owned by this layer. The dock paints them from the

@@ -15124,10 +15124,9 @@ async function setCommunityStatus(slug, status) {
 
 /// Open an indicator workspace from elsewhere in the shell (an install).
 async function openWorkspaceById(workspaceId) {
-  if (window.Shell) Shell.openInspector("ai");
-  const tools = el("chatIndicatorWorkspace");
-  if (tools) tools.open = true;
-  runPaneLoaders("indicator");
+  if (window.Shell) {
+    Shell.go("indicator-workspace");
+  }
   await selectWorkspace(workspaceId);
 }
 
@@ -16907,6 +16906,10 @@ const PANEL_PANES = new Set(["community", "bots", "concepts", "billing", "broker
 function runPaneLoaders(name) {
   if (name === "bots") refreshVenues();
   if (name === "indicator") loadWorkspaces();
+  if (name === "workspace") {
+    loadWorkspaces();
+    return;
+  }
   if (name === "brokers") { refreshBrokers(); loadBrokerCatalog(); }
   if (name === "aimodel") refreshAiModel();
   if (name === "billing") loadBilling();

@@ -73,15 +73,11 @@
       },
       {
         id: "action:chat",
-        // The AI chat owns indicator workspaces now; focus its create-name
-        // field so the palette does not invent a workspace name.
-        label: "New indicator chat",
-        hint: "AI chat",
+        // Indicator workspaces have their own page.
+        label: "New indicator workspace",
+        hint: "Indicator Workspace",
         run: () => {
-          if (shell()) shell().openInspector("ai");
-          const tools = document.getElementById("chatIndicatorWorkspace");
-          if (tools) tools.open = true;
-          if (app() && app().runPaneLoaders) app().runPaneLoaders("indicator");
+          if (shell()) shell().go("indicator-workspace");
           if (app() && app().newWorkspace) app().newWorkspace();
         },
       },
@@ -129,7 +125,7 @@
       id: `chat:${chat.id}`,
       label: chat.name || "Untitled chat",
       hint: [chat.symbol, chat.timeframe].filter(Boolean).join(" "),
-      run: () => shell() && shell().go("charts", { workspaceId: chat.id, indicatorWorkspace: true }),
+      run: () => shell() && shell().go("indicator-workspace", { workspaceId: chat.id }),
     }));
   }
 
