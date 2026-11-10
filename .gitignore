@@ -32,6 +32,9 @@ Thumbs.db
 *.dump
 /backups/
 
+# Local reference repositories and research notes (kept out of the product repo).
+/rust indicator language/
+
 # Node (only if the React+TS fallback path from docs/14 is chosen)
 node_modules/
 frontend/app/dist/

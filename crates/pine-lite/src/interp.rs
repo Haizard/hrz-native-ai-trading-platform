@@ -1741,6 +1741,21 @@ impl<'a> Vm<'a> {
                 let border_style = self.arg_str(args, "border_style").unwrap_or_else(|| "solid".into());
                 ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color, border_color, border_width, border_style }
             }
+            "fib.new" => {
+                self.tick()?;
+                let bar1 = self.arg_f(args, 0)?.unwrap_or(NA);
+                let price1 = self.arg_f(args, 1)?.unwrap_or(NA);
+                let bar2 = self.arg_f(args, 2)?.unwrap_or(NA);
+                let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
+                let color = self.arg_color(args).unwrap_or(0xFF_D4_A0_17_u32);
+                ScriptObject::Fib {
+                    bar1,
+                    price1,
+                    bar2,
+                    price2,
+                    color,
+                }
+            }
             _ => return Ok(None),
         };
         // Per-kind caps (the header's max_lines_count & friends): Pine's
@@ -2169,24 +2184,6 @@ impl<'a> Vm<'a> {
             _ if self.linefill_stmt(callee, args)? => Ok(()),
             _ if self.polyline_handle(callee, args)?.is_some() => Ok(()),
             _ if self.polyline_stmt(callee, args)? => Ok(()),
-            // ---- the registry primitive (docs/37): the VM stores the raw
-            // anchors; the decomposition into levels and labels is the
-            // engine's, because positioning is the engine's.
-            "fib.new" => {
-                self.tick()?;
-                if self.out.objects.len() < MAX_OBJECTS {
-                    let bar1 = self.arg_f(args, 0)?.unwrap_or(NA);
-                    let price1 = self.arg_f(args, 1)?.unwrap_or(NA);
-                    let bar2 = self.arg_f(args, 2)?.unwrap_or(NA);
-                    let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
-                    // Gold, the TradingView fib color, in the VM's packing.
-                    let color = self.arg_color(args).unwrap_or(0xFF_D4_A0_17_u32);
-                    self.out.objects.push(ScriptObject::Fib { bar1, price1, bar2, price2, color });
-                } else {
-                    self.out.objects_truncated = true;
-                }
-                Ok(())
-            }
             // ---- array mutators: statements, because they act on the heap
             // and their value (if any) is rarely used. `array.push` grows
             // with a cap; `array.pop`/`shift` shrink; `array.set` writes.

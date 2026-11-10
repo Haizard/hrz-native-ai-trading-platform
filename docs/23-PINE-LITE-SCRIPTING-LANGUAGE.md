@@ -10,12 +10,15 @@ vocabulary:
 - **Code, not data.** An indicator is an imperative script — math, loops,
   functions, series — written by the AI studio or a developer, exactly the way
   Pine Script is written.
-- **Compiled & executed per bar.** The script runs once per closed candle with
+- **Interpreted & executed per bar.** The script runs once per closed candle with
   series history indexing (`close[1]`), Pine-like `na` semantics, and state that
   accumulates across bars (`var`).
 - **The platform vets scripts.** Static validation (parse, type check, limits)
-  plus dynamic isolation (the existing WASM sandbox with fuel and memory caps)
-  refuse unsafe or resource-heavy code before it ever draws.
+  and runtime budgets refuse invalid or resource-heavy code before it draws.
+  Current status: the browser chart engine runs Pine-Lite in its WASM artifact;
+  gateway preview runs the metered interpreter in-process. The server-side
+  `sandbox-guest` currently serves the Strategy DSL and does not link
+  `pine-lite`, so Pine-Lite guest isolation remains pending.
 - **Arbitrary plots.** `plot()`, `plotshape()`, `plotchar()`, `hline()`,
   `fill()`, and annotations, on the price pane (`overlay=true`) or in their own
   sub-pane, with per-plot inputs.
@@ -47,10 +50,19 @@ Non-goals (deliberate):
 
 New crate `crates/pine-lite` (leaf, like `analytics-core`):
 
+Current Pine-Lite dependency edges:
+
 ```
-pine-lite -> analytics-core (and nothing else internal; must build for wasm32)
-sandbox-guest -> pine-lite, strategy-runtime
+pine-lite -> analytics-core
+chart-engine -> pine-lite
+api-gateway -> pine-lite
+backtester -> pine-lite
 ```
+
+`sandbox-guest` currently depends on `strategy-runtime` and `strategy-dsl`, not
+`pine-lite`. Whether to add a Pine-Lite guest front-end or retain the
+fuel-metered in-process gateway preview is an open isolation decision; do not
+describe the current preview path as WASM-sandboxed.
 
 `ai-agent` must never depend on `pine-lite` (its rule stands): the AI emits
 *text*; the gateway calls `pine-lite` to vet it. `analytics-core` is the only
@@ -176,19 +188,22 @@ and timeframe must be quoted literals, the pool caps at 8 keys per script.
 
 | Namespace | Contents (v1) |
 | --- | --- |
-| `ta.` | sma, ema, rma (Wilder), wma, rsi, atr, tr, change, mom, roc, highest, lowest, vwap, crossover/crossunder/cross; multi-value: macd → (line, signal, hist), bb → (basis, upper, lower), stoch → (k, d) |
+| `ta.` | sma, ema, rma (Wilder), wma, rsi, atr, tr, change, mom, roc, highest, lowest, UTC-day session VWAP, crossover/crossunder/cross; multi-value: macd → (line, signal, hist), bb → (basis, upper, lower), stoch → (k, d) |
 | `math.` | abs, min, max, floor, ceil, round, pow, sqrt, log, exp, sign, avg, sum |
 | `input.` | int, float, bool, string, color — with `defval`, `minval`, `maxval`, `title`; values are host-supplied per chart |
 | `strategy.` | entry, exit, close, close_all, cancel — see Phase 7 |
 | `color.` | 17 named colors + hex |
 | free functions | `na`, `nz`, `fixnan`, `barstate.isconfirmed` (always true in this platform — the host only runs on closed bars), `bar_index`, `last_bar_index`, `time`, `time_close`, `open/high/low/close/volume`, `hl2/hlc3/ohlc4`, `syminfo.ticker` |
 
-`ta.*` is implemented over `analytics-core`'s existing functions — `ta.rsi` is
-`indicators::rsi` (Wilder smoothing), `ta.ema` is `indicators::ema` (SMA-seeded)
-— so a script's numbers are the same numbers the chart, scanner and validator
-already produce. New ta functions that do not exist in `analytics-core` (macd,
-stoch, bb…) are added **there first**, then exposed; `pine-lite` never owns
-indicator math.
+`ta.sma`, `ta.ema`, `ta.rsi`, and `ta.atr` currently wrap their
+`analytics-core` counterparts; `ta.vwap` uses its per-bar UTC-session series
+API. Other formulas live in `pine-lite/src/ta.rs`, including functions with
+existing `analytics-core` equivalents (for example MACD, Bollinger bands,
+stochastic, CCI, MFI, Williams %R, OBV, and Supertrend). Their warm-up and
+edge-case semantics must be compared before consolidating them; do not assume
+cross-crate numerical parity from the function name alone. New shared
+indicator formulas should be added to `analytics-core` first, then exposed by
+Pine-Lite with the language's explicit `na`/series mapping.
 
 ## Plot contract
 
@@ -265,8 +280,10 @@ script" for code-first workspaces:
 2. Gateway vets it through layers 1–3 and returns the **full error list**.
 3. The agent re-prompts with the script + errors, up to 5 attempts — the
    existing `max_attempts`/`repaired_errors` loop, unchanged in shape.
-4. The vetted script runs sandboxed over the preview window (7 days, the same
-   `indicator_preview` path), producing plot series and the evidence preview.
+4. The vetted script runs through the fuel-metered interpreter in the gateway
+   process over the preview window (7 days, the same `indicator_preview`
+   path), producing plot series and the evidence preview. This path is not
+   currently executed in `sandbox-guest`.
 5. Revision stored with `status: validated|rejected`, exactly like today.
 
 Because the validator is deterministic, "the platform vets scripts" is not a
@@ -284,8 +301,10 @@ backtest, or a bot.
   script's `input.*` declarations, values sent per request), remove (the
   existing chip).
 - Requests grow a `scripts: [{ id, source, inputs }]` field; the engine
-  compiles once per source change (cache by hash) and re-runs per frame
-  exactly like `live_indicator` concepts today.
+  currently vets and interprets scripts when building each scene; it does not
+  cache a compiled script by source hash. The current settings popover edits
+  boolean and numeric inputs; string/color declarations are shown as
+  code-only.
 
 ## Phased plan
 
@@ -299,8 +318,8 @@ backtest, or a bot.
 | 6 | Plot statements → `ScriptPane` output contract | Positioning tests in chart-engine | **done** (`chart_engine::script`, shell `drawScriptPanes`) |
 | 7 | Strategy calls → backtester replay intents | Golden replay vs a YAML equivalent | **done** (`backtester::script_strategy`) |
 | 8 | Static analyser + sandbox front-end + fuel budgets | Adversarial tests mirror docs/08's list | **partial** (static limits, VM fuel + recursion cap in; WASM guest front-end pending) |
-| 9 | Gateway: `/scripts/*` routes, workspace language switch, AI loop | `indicator_workspace_flow`-style gateway tests | **partial** (`POST /scripts/vet` done; workspace switch + AI loop pending) |
-| 10 | Chart engine + shell: rendering, inputs UI, pane management | Shell check script + visual parity vs RSI sub-pane | **partial** (rendering + `attachScript` done; inputs UI pending) |
+| 9 | Gateway: `/scripts/*` routes, workspace language switch, AI loop | `indicator_workspace_flow`-style gateway tests | **partial** (`POST /scripts/vet` and Pine-Lite workspace generation/edit, repair, preview, and revision storage are implemented; workspace language-switch status needs reconciliation) |
+| 10 | Chart engine + shell: rendering, inputs UI, pane management | Shell check script + visual parity vs RSI sub-pane | **partial** (rendering, `attachScript`, layer controls, and boolean/numeric input settings exist; string/color settings remain code-only, and pane/visual acceptance needs audit) |
 
 Phases 1–5 are the language core and land as one reviewable unit; 6–8 make it
 visible and safe; 9–10 wire it to users.
@@ -329,13 +348,13 @@ zones/labels their native form, 14 is gated on permissions and ships last.
 
 Decisions the code made that the spec above only implied:
 
-- **The VM is the isolation boundary until the guest lands.** Phase 8's
-  sandbox front-end is still pending, but the interpreter already meters
+- **The VM provides budgets, not process isolation.** The interpreter meters
   itself: `FUEL_PER_1000_BARS` (200k steps per 1000 bars) bounds total work,
   `MAX_CALL_DEPTH` (16) refuses recursion, zero-step `for` loops do not run,
-  and a script that exceeds fuel is an error, never a half-drawn pane. The
-  remaining guest work moves the *same* interpreter into WASM so untrusted
-  execution cannot touch host memory at all; the budgets transfer as-is.
+  and a script that exceeds fuel is an error, never a half-drawn pane. Gateway
+  preview still executes this VM in-process; the separate server-side WASM
+  guest integration remains pending and must be designed before claiming
+  process isolation for untrusted scripts.
 - **hline acts once.** `hline()` has no series; running it per bar would
   collect one level per bar. It acts at bar 0 only, like Pine's global
   declarations.

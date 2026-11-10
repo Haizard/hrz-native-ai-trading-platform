@@ -267,16 +267,13 @@ fn cross(a: &[f64], b: &[f64], over: bool) -> Series {
     out
 }
 
-/// `ta.vwap` over candles -- the session-anchored VWAP `analytics-core`
-/// computes for the chart's default levels.
+/// `ta.vwap` over candles, accumulated per bar and reset at each UTC day.
 #[must_use]
 pub fn ta_vwap(candles: &[Candle]) -> Series {
-    match analytics_core::vwap::calculate_vwap(candles) {
-        // A single scalar VWAP over the window: constant per bar, which is
-        // what the chart's vwap line is too.
-        Some(v) => vec![v; candles.len()],
-        None => vec![NA; candles.len()],
-    }
+    analytics_core::vwap::calculate_vwap_series(candles, true)
+        .into_iter()
+        .map(|value| value.unwrap_or(NA))
+        .collect()
 }
 
 /// `ta.stoch(close, high, low, length)` -- %K without smoothing (Pine's
@@ -769,6 +766,32 @@ mod tests {
         // bar0: ((10-9)-(11-10))/2 * 10 = 0; bar1: ((11-10)-(12-11))/2*10 = 0;
         // bar2: ((9-8.5)-(11.5-9))/3 * 20 = (0.5-2.5)/3*20 = -13.33; bar3 flat close mid.
         assert!((ad[2] - (-40.0 / 3.0)).abs() < 1e-6, "chaikin money-flow volume");
+    }
+
+    #[test]
+    fn vwap_is_causal_and_resets_at_the_utc_day_boundary() {
+        let mk = |price: f64, open_time: i64| Candle {
+            symbol: "T".to_string(),
+            timeframe: analytics_core::types::Timeframe::M1,
+            open_time,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            volume: 1.0,
+            buy_volume: 0.5,
+            sell_volume: 0.5,
+        };
+        let candles = vec![
+            mk(100.0, 0),
+            mk(200.0, 60_000_000_000),
+            mk(300.0, analytics_core::vwap::DAY_NS),
+        ];
+
+        let vwap = ta_vwap(&candles);
+        assert_eq!(vwap[0], 100.0, "bar zero must not see later prices");
+        assert_eq!(vwap[1], 150.0, "the current session accumulates so far");
+        assert_eq!(vwap[2], 300.0, "a new UTC day starts a fresh session");
     }
 
     #[test]

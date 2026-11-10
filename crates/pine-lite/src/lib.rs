@@ -211,6 +211,17 @@ pub fn vet(source: &str) -> Result<(Header, parse::Script), Vec<ScriptError>> {
     // header knows.
     errors.extend(typecheck::check_with_header(&script, &header));
     errors.extend(limits::check(&script));
+    if header
+        .strategy
+        .as_ref()
+        .is_some_and(|strategy| strategy.pyramiding > 0)
+    {
+        errors.push(crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span: crate::Span::new(1, 1),
+            message: "pyramiding > 0 is not supported; use pyramiding=0 until multi-position strategy execution is implemented".to_string(),
+        });
+    }
     // Refuse the unknowable (docs/24): a script that READS strategy account
     // state must declare the `strategy(...)` block the simulation reads its
     // knobs from. Indicators reading `strategy.equity` used to get a silent

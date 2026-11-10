@@ -145,7 +145,7 @@ pub(crate) fn language_reference() -> &'static str {
 7. PARTIAL EXITS: `strategy.exit("x1", limit=tp1, qty_percent=50)` closes that FRACTION when the level triggers, and the order is CONSUMED (Pine semantics) -- the remainder sits uncovered until a fresh `strategy.exit` arms the next leg. Detect a filled leg by the position SHRINKING: gate leg 2 on `strategy.position_size > 0 and strategy.position_size < <initial qty>`. The engine replays passes until intents stabilize, so leg-on-leg ladders converge. `strategy.close("id", qty_percent=50)` scales out at market the same way. THE REST IS 100: the fraction is of the position AT ORDER TIME -- after a 50% first leg, the second leg that closes "the rest" is `qty_percent=100` (another 50 would leave a quarter running).
 8. RISK RULES: `strategy.risk.max_position_size(2)` caps each entry order's quantity; `strategy.risk.max_intraday_loss(50)` halts entries for the rest of the day once the day's loss passes it (currency); `strategy.risk.max_drawdown(200)` halts entries permanently once peak-to-trough equity loss passes it; `strategy.risk.allow_entry_in(strategy.direction.short)` (also .long / .all / .none) refuses entries in the other direction.
 9. TRAILING STOPS: `strategy.exit("x", trail_points=300, trail_offset=150)` -- points/offset are TICKS (the activation distance from entry, then the distance the stop trails the peak); `trail_price=105.0` activates at an absolute price instead. The stop ratchets with the peak and never gives ground back; a bar that opens THROUGH it fills at the open (the gap rule, like every stop). Combine with qty_percent for trailing scale-outs.
-9. PYRAMIDING: `strategy(pyramiding=2)` in the header allows up to 3 stacked same-direction legs (1 + N); the position average price becomes the qty-weighted basis. Default 0 = one leg -- extra same-direction entries are refused.
+9. PYRAMIDING: only `strategy(pyramiding=0)` is supported; the vet rejects values above zero. This means one position at a time, and extra same-direction entries are refused while a position is open.
 8. `if cond` / `else` blocks contain assignments only (no `plot` inside them); a block body must not be empty.
 9. Loops: `for i = 0 to 99` (optional `by 2`), or `while cond` with a 4-space indented body. A `while` condition MUST eventually turn false (guard it with a `var` counter or state flag) -- a runaway loop is killed by the fuel budget with an error. Prefer `for` when a range is known. Keep loops small; budgets are enforced.
 9. `//` starts a comment.
@@ -183,7 +183,7 @@ Do not treat every later candle as an order block, rejection, or "engineering" e
 `open`, `high`, `low`, `close`, `volume`, `hl2`, `hlc3`, `ohlc4`, `bar_index`, `last_bar_index` (the window's final bar; the draw pass keys on it), `time`
 
 ## Functions (these are ALL of them; a function not listed here does not exist)
-Averages and oscillators: `ta.sma(source, length)`, `ta.ema(source, length)`, `ta.rma(source, length)`, `ta.wma(source, length)`, `ta.hma(source, length)`, `ta.vwma(source, length)` (volume-weighted), `ta.swma(source)` (fixed 4-bar), `ta.alma(source, length[, offset=0.85, sigma=6])` (Gaussian), `ta.linreg(source, length, offset)` / `ta.lsma(...)` (regression-line value; offset projects forward), `ta.tema(source, length)` (triple EMA), `ta.rsi(source, length)`, `ta.highest(source, length)`, `ta.lowest(source, length)`, `ta.mom(source, length)`, `ta.roc(source, length)`, `ta.change(source)`, `ta.atr(length)`, `ta.tr()`, `ta.vwap()`, `ta.stoch(source, length)` (returns 0..100), `ta.cci(length)`, `ta.mfi(length)`, `ta.willr(length)`, `ta.stdev(source, length)`, `ta.variance(source, length)`, `ta.cum(source)`.
+Averages and oscillators: `ta.sma(source, length)`, `ta.ema(source, length)`, `ta.rma(source, length)`, `ta.wma(source, length)`, `ta.hma(source, length)`, `ta.vwma(source, length)` (volume-weighted), `ta.swma(source)` (fixed 4-bar), `ta.alma(source, length[, offset=0.85, sigma=6])` (Gaussian), `ta.linreg(source, length, offset)` / `ta.lsma(...)` (regression-line value; offset projects forward), `ta.tema(source, length)` (triple EMA), `ta.rsi(source, length)`, `ta.highest(source, length)`, `ta.lowest(source, length)`, `ta.mom(source, length)`, `ta.roc(source, length)`, `ta.change(source)`, `ta.atr(length)`, `ta.tr()`, `ta.vwap()` (per-bar cumulative, resets at the UTC day boundary), `ta.stoch(source, length)` (returns 0..100), `ta.cci(length)`, `ta.mfi(length)`, `ta.willr(length)`, `ta.stdev(source, length)`, `ta.variance(source, length)`, `ta.cum(source)`.
 Volume classics (no arguments): `ta.obv()` (+/- volume by direction), `ta.pvt()` (volume weighted by the fractional move), `ta.nvi()` (moves only on falling-volume bars, starts 1000), `ta.wad()` (Williams true-edge accumulation), `ta.ad()` (Chaikin money-flow volume).
 Statistics: `ta.correlation(x, y, len)` (Pearson; na when either leg is flat), `ta.covariance(x, y, len)` (population), `ta.deviation(source, len)` (mean absolute deviation), `ta.median(source, len)`, `ta.mode(source, len)` (ties -> smallest), `ta.percentile_linear_interpolation(source, len, pct)` and `ta.percentile_nearest_rank(source, len, pct)` (percentile price channels, e.g. `p90 = ta.percentile_linear_interpolation(close, 50, 90)`), `ta.percentrank(close, len)` (0-100; strictly-below count over len-1), `ta.range(source, len)` (highest - lowest).
 Event helpers: `ta.pivothigh(source, left, right)` / `ta.pivotlow(source, left, right)` (the pivot's price on the bar that CONFIRMS it, else na), `ta.rising(source, length)` / `ta.falling(source, length)` (bool: strict monotone), `ta.barssince(cond)` (bars since cond held, na before it ever did), `ta.valuewhen(cond, source, occurrence)` (the source's value at the (occurrence+1)-th most recent true bar), `ta.highestbars(length)` / `ta.lowestbars(length)` (Pine's NEGATIVE offset to the window extreme: 0 is this bar, -3 is three back).
@@ -1214,6 +1214,20 @@ mod tests {
         );
         let errs = pine_lite::vet(src);
         assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+    }
+
+    #[test]
+    fn the_language_reference_does_not_teach_unsupported_pyramiding() {
+        let reference = language_reference();
+        assert!(reference.contains("only `strategy(pyramiding=0)` is supported"));
+        assert!(reference.contains("vet rejects values above zero"));
+        assert!(!reference.contains("pyramiding=2"));
+    }
+
+    #[test]
+    fn the_language_reference_documents_vwap_session_reset() {
+        assert!(language_reference()
+            .contains("ta.vwap()` (per-bar cumulative, resets at the UTC day boundary)"));
     }
 
     #[test]

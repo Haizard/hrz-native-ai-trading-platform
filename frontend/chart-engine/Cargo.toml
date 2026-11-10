@@ -21,9 +21,9 @@ crate-type = ["cdylib", "rlib"]
 # TypeScript.
 analytics-core = { workspace = true }
 
-# docs/23: Pine-lite scripts run here too -- the engine executes the same
-# language the gateway vets and the sandbox will isolate, and the shell paints
-# positioned output only.
+# docs/23: Pine-lite scripts run in this browser WASM engine; the gateway vets
+# and previews the same crate. The separate server sandbox guest does not
+# currently link pine-lite.
 pine-lite = { workspace = true }
 market-data = { path = "../../crates/market-data", default-features = false }
 
