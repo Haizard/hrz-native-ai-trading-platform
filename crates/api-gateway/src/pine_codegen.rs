@@ -141,7 +141,7 @@ pub(crate) fn language_reference() -> &'static str {
 3. Declare with `=`. Reassign with `:=`. `var x = ...` initializes once and keeps its value across bars (running counters, state).
 4. switch picks a value by matching: `trend = switch` then indented arms `fast > slow => 1.0` and a default `=> 0.0` (the subject-less form tests conditions in order); or match a subject: `bucket = switch math.floor(close / 2)` then `50.0 => 100.0`. All arms produce one type. In a text position keep the switch inline (label text=(switch ...) with arms indented past the statement) or bind its result to a string variable. Declarations may carry a type word: `float x = 1.5`, `int n = 2`, `bool b = close > open`, `color c = color.teal`, `var float acc = 0.0` (handles too: `line l = na`). The word must match the value -- a mismatch is a vet error. Square brackets are ONLY a history offset on a named series variable or a built-in series, with an integer: `close[1]`, `myVar[3]`, `high[0]`. NOTHING else may ever be in brackets: no list literals, no `ta.sma(close, 9)[1]`, no `foo()[0]`. To compare a function result with its past, assign it first: `s = ta.sma(close, 9)` then `s[1]`. Collections exist as ARRAY FUNCTIONS, never as bracket syntax: `a = array.new()`, `array.push(a, v)`, `array.get(a, i)`. Writing `a[i] = v` is a syntax error. The full array set: `array.from(v1, v2, ...)` (build from values), `array.slice(a, from, to)` (copy a window; end exclusive), `array.concat(a, b)` (new joined array), `array.indexof(a, v)` (first slot or -1), `array.fill(a, v[, from, to])` (overwrite a range), `array.includes(a, v)`, `array.size/first/last/min/max/avg(a)`, and `array.join(a, " | ")` (renders the values as one text). Allocate arrays ONCE with `var`: a per-bar array.slice/array.concat/array.from hits the 64-array cap by design.
 5. Multi-value calls are destructured on one line: `basis, upper, lower = ta.bb(close, 20, 2)`. The names must match the callee's output count. `ta.macd` and `ta.bb` return three values, `ta.stoch` returns two (%K, %D) -- and `ta.stoch` also reads as its %K alone.
-6. Numbers are floats; bools are `true`/`false`; `na` is the missing value (it propagates; comparisons with it are false). Ternary: `cond ? a : b`. Logic: `and`, `or`, `not`. Comparisons: `< <= > >= == !=`.
+6. Numbers are floats; bools are `true`/`false`; `na` is the missing value (it propagates; comparisons with it are false). `and`, `or`, and `not` require bool operands: never write `not` on a price, level, or other number. Compare numbers explicitly (for example, `high > level`); for missing-value checks use `na(value)` or `not na(value)`. Ternary: `cond ? a : b`. Comparisons: `< <= > >= == !=`.
 7. PARTIAL EXITS: `strategy.exit("x1", limit=tp1, qty_percent=50)` closes that FRACTION when the level triggers, and the order is CONSUMED (Pine semantics) -- the remainder sits uncovered until a fresh `strategy.exit` arms the next leg. Detect a filled leg by the position SHRINKING: gate leg 2 on `strategy.position_size > 0 and strategy.position_size < <initial qty>`. The engine replays passes until intents stabilize, so leg-on-leg ladders converge. `strategy.close("id", qty_percent=50)` scales out at market the same way. THE REST IS 100: the fraction is of the position AT ORDER TIME -- after a 50% first leg, the second leg that closes "the rest" is `qty_percent=100` (another 50 would leave a quarter running).
 8. RISK RULES: `strategy.risk.max_position_size(2)` caps each entry order's quantity; `strategy.risk.max_intraday_loss(50)` halts entries for the rest of the day once the day's loss passes it (currency); `strategy.risk.max_drawdown(200)` halts entries permanently once peak-to-trough equity loss passes it; `strategy.risk.allow_entry_in(strategy.direction.short)` (also .long / .all / .none) refuses entries in the other direction.
 9. TRAILING STOPS: `strategy.exit("x", trail_points=300, trail_offset=150)` -- points/offset are TICKS (the activation distance from entry, then the distance the stop trails the peak); `trail_price=105.0` activates at an absolute price instead. The stop ratchets with the peak and never gives ground back; a bar that opens THROUGH it fills at the open (the gap rule, like every stop). Combine with qty_percent for trailing scale-outs.
@@ -152,6 +152,33 @@ pub(crate) fn language_reference() -> &'static str {
 
 ## Scope discipline (build what was asked, nothing more)
 Build EXACTLY the concepts the user named. "Support and resistance" gets swing levels and zones -- NOT BOS/CHoCH labels, order blocks, FVGs, liquidity sweeps, or trendline breaks; those are separate concepts that join a script only when the user names them. Extra unrequested machinery makes the chart worse, not better: more objects, more noise, more heap pressure, more state to go wrong. When in doubt, leave it out. If a small extra genuinely belongs to the requested concept (break markers on an S/R level), it rides an input toggle that defaults to false and it never borrows another concept's vocabulary.
+
+## Liquidity sweeps: persistent state, one-bar events
+
+A buy-side sweep takes a prior high and closes back below it; a sell-side sweep mirrors this at a prior low. Exclude the current candle with a history offset (`ta.highest`/`ta.lowest`, then `[1]`). Keep candidate conditions separate from the event pulses; edge-trigger candidates with `candidate and not candidate[1]` so a condition held across several candles cannot emit a marker wall. Store the sweep candle's range and bar in `var` state. A later confirmation must require `bar_index > sweep_bar`, match a named directional rule (for example, a close through the sweep candle's opposite extreme), and expire after a bounded number of bars. Derive confirmation events BEFORE clearing pending state, clear on confirmation, invalidation, or expiry, then register a new same-bar sweep. Mirror every field and comparison for the sell side. Keep every `plotshape` at top level and gate its condition with the visibility input:
+
+    prior_highs = ta.highest(high, lookback)
+    prior_high = prior_highs[1]
+    buy_candidate = not na(prior_high) and high > prior_high and close < prior_high
+    buy_sweep = buy_candidate and not buy_candidate[1]
+    var float buy_sweep_bar = na
+    var float buy_sweep_high = na
+    var float buy_sweep_low = na
+    buy_confirm = not na(buy_sweep_bar) and bar_index > buy_sweep_bar and bar_index - buy_sweep_bar <= max_wait and close < buy_sweep_low
+    buy_expired = not na(buy_sweep_bar) and bar_index - buy_sweep_bar > max_wait
+    buy_invalid = not na(buy_sweep_bar) and close > buy_sweep_high
+    if buy_confirm or buy_expired or buy_invalid
+        buy_sweep_bar := na
+        buy_sweep_high := na
+        buy_sweep_low := na
+    if buy_sweep
+        buy_sweep_bar := bar_index
+        buy_sweep_high := high
+        buy_sweep_low := low
+    plotshape(show_sweeps and buy_sweep, shape="triangledown", color=color.red, location_value=high)
+    plotshape(show_confirmations and buy_confirm, shape="circle", color=color.orange, location_value=low)
+
+Do not treat every later candle as an order block, rejection, or "engineering" event unless its rule is explicitly defined. Never pass persistent pending state directly to `plotshape`, put a plot call inside an `if`, or clear the per-bar event before its plot call. Do not add a rolling-range box and call it an imbalance/FVG; those are separate features that require their own requested definition.
 ## Built-in series (bare names)
 `open`, `high`, `low`, `close`, `volume`, `hl2`, `hlc3`, `ohlc4`, `bar_index`, `last_bar_index` (the window's final bar; the draw pass keys on it), `time`
 
@@ -1137,6 +1164,11 @@ mod tests {
             "BTCUSDT",
             "## Output contract",
             "## Syntax rules",
+            "`and`, `or`, and `not` require bool operands",
+            "## Liquidity sweeps: persistent state, one-bar events",
+            "buy_sweep = buy_candidate and not buy_candidate[1]",
+            "plotshape(show_sweeps and buy_sweep",
+            "max_wait",
             "## Functions (these are ALL of them",
             "switch picks",
             "STRINGS ARE REAL VARIABLES",
@@ -1599,6 +1631,128 @@ mod tests {
         assert_eq!(boxes, 1, "the live gap draws exactly one box: {:?}", output.objects);
     }
 
+    const SWEEP_STATE_IDIOM_SCRIPT: &str = concat!(
+        "//@pine_lite version=1 overlay=true title=\"Sweep state\"\n",
+        "lookback = input.int(defval=3, title=\"Sweep lookback\")\n",
+        "max_wait = input.int(defval=3, title=\"Confirmation window\")\n",
+        "show_sweeps = input.bool(defval=true, title=\"Show sweeps\")\n",
+        "show_confirmations = input.bool(defval=true, title=\"Show confirmations\")\n",
+        "prior_highs = ta.highest(high, lookback)\n",
+        "prior_high = prior_highs[1]\n",
+        "prior_lows = ta.lowest(low, lookback)\n",
+        "prior_low = prior_lows[1]\n",
+        "buy_candidate = not na(prior_high) and high > prior_high and close < prior_high\n",
+        "sell_candidate = not na(prior_low) and low < prior_low and close > prior_low\n",
+        "buy_sweep = buy_candidate and not buy_candidate[1]\n",
+        "sell_sweep = sell_candidate and not sell_candidate[1]\n",
+        "var float buy_sweep_bar = na\n",
+        "var float buy_sweep_high = na\n",
+        "var float buy_sweep_low = na\n",
+        "var float sell_sweep_bar = na\n",
+        "var float sell_sweep_low = na\n",
+        "var float sell_sweep_high = na\n",
+        "buy_confirm = not na(buy_sweep_bar) and bar_index > buy_sweep_bar and bar_index - buy_sweep_bar <= max_wait and close < buy_sweep_low\n",
+        "sell_confirm = not na(sell_sweep_bar) and bar_index > sell_sweep_bar and bar_index - sell_sweep_bar <= max_wait and close > sell_sweep_high\n",
+        "buy_expired = not na(buy_sweep_bar) and bar_index - buy_sweep_bar > max_wait\n",
+        "sell_expired = not na(sell_sweep_bar) and bar_index - sell_sweep_bar > max_wait\n",
+        "buy_invalid = not na(buy_sweep_bar) and close > buy_sweep_high\n",
+        "sell_invalid = not na(sell_sweep_bar) and close < sell_sweep_low\n",
+        "if buy_confirm or buy_expired or buy_invalid\n",
+        "    buy_sweep_bar := na\n",
+        "    buy_sweep_high := na\n",
+        "    buy_sweep_low := na\n",
+        "if sell_confirm or sell_expired or sell_invalid\n",
+        "    sell_sweep_bar := na\n",
+        "    sell_sweep_low := na\n",
+        "    sell_sweep_high := na\n",
+        "if buy_sweep\n",
+        "    buy_sweep_bar := bar_index\n",
+        "    buy_sweep_high := high\n",
+        "    buy_sweep_low := low\n",
+        "if sell_sweep\n",
+        "    sell_sweep_bar := bar_index\n",
+        "    sell_sweep_low := low\n",
+        "    sell_sweep_high := high\n",
+        "plotshape(show_sweeps and buy_sweep, shape=\"triangledown\", color=color.red, location_value=high)\n",
+        "plotshape(show_sweeps and sell_sweep, shape=\"triangleup\", color=color.lime, location_value=low)\n",
+        "plotshape(show_confirmations and buy_confirm, shape=\"circle\", color=color.orange, location_value=low)\n",
+        "plotshape(show_confirmations and sell_confirm, shape=\"circle\", color=color.aqua, location_value=high)\n",
+    );
+
+    #[test]
+    fn the_taught_sweep_state_idiom_vets_runs_and_keeps_events_on_their_bars() {
+        let (_, parsed) = pine_lite::vet(SWEEP_STATE_IDIOM_SCRIPT)
+            .unwrap_or_else(|errors| panic!("the sweep-state example vets: {errors:?}"));
+        let ohlc: [(f64, f64, f64, f64); 10] = [
+            (100.0, 101.0, 99.0, 100.0),
+            (100.0, 102.0, 99.5, 101.0),
+            (101.0, 103.0, 100.0, 102.0),
+            (102.0, 104.0, 101.0, 102.5),
+            (102.5, 105.0, 102.0, 103.0),
+            (102.0, 103.0, 100.0, 100.5),
+            (101.0, 102.0, 100.5, 101.0),
+            (101.0, 102.0, 98.0, 100.5),
+            (101.5, 103.0, 97.0, 99.0),
+            (101.0, 103.0, 100.0, 102.5),
+        ];
+        let candles: Vec<analytics_core::types::Candle> = ohlc
+            .iter()
+            .enumerate()
+            .map(|(i, &(o, h, l, c))| analytics_core::types::Candle {
+                symbol: "TEST".into(),
+                timeframe: analytics_core::types::Timeframe::M1,
+                open_time: (i as i64) * 60_000_000_000,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            })
+            .collect();
+        let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default())
+            .expect("the sweep-state example runs");
+        let bars: Vec<usize> = output.shapes.iter().map(|shape| shape.bar).collect();
+        assert_eq!(bars, [3, 7, 5, 9], "each side emits one sweep and one later confirmation even when candidate conditions persist");
+    }
+
+    #[test]
+    fn the_taught_sweep_state_expires_without_a_late_confirmation() {
+        let (_, parsed) = pine_lite::vet(SWEEP_STATE_IDIOM_SCRIPT)
+            .unwrap_or_else(|errors| panic!("the sweep-state example vets: {errors:?}"));
+        let ohlc: [(f64, f64, f64, f64); 8] = [
+            (100.0, 101.0, 99.0, 100.0),
+            (100.0, 102.0, 99.5, 101.0),
+            (101.0, 103.0, 100.0, 102.0),
+            (102.0, 104.0, 101.0, 102.5),
+            (102.0, 103.0, 101.5, 102.0),
+            (102.0, 103.0, 101.5, 102.0),
+            (102.0, 103.0, 101.5, 102.0),
+            (101.0, 103.0, 100.0, 100.5),
+        ];
+        let candles: Vec<analytics_core::types::Candle> = ohlc
+            .iter()
+            .enumerate()
+            .map(|(i, &(o, h, l, c))| analytics_core::types::Candle {
+                symbol: "TEST".into(),
+                timeframe: analytics_core::types::Timeframe::M1,
+                open_time: (i as i64) * 60_000_000_000,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            })
+            .collect();
+        let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default())
+            .expect("the sweep-state example runs");
+        let bars: Vec<usize> = output.shapes.iter().map(|shape| shape.bar).collect();
+        assert_eq!(bars, [3], "an expired sweep cannot confirm outside its window");
+    }
+
     /// The strategy idiom the prompt teaches, verbatim (docs/24 S3): the
     /// `strategy(...)` header, gated entries, a `var`-ratcheted ATR trailing
     /// stop re-armed each bar, and the account read. This is the shape the
@@ -2007,7 +2161,7 @@ mod tests {
         // docs/36: a failing first draft then a passing one must stream
         // drafting, the verbatim vet complaint, drafting again -- real events,
         // no fake progress.
-        let bad = "//@pine_lite version=1\nplot(close"; // unparseable
+        let bad = "//@pine_lite version=1\ninvalid = not close\nplot(close)";
         let good = "//@pine_lite version=1\nplot(close)\n";
         let llm = ScriptedLlm {
             scripts: std::sync::Mutex::new(vec![bad.to_string(), good.to_string()]),
@@ -2017,6 +2171,14 @@ mod tests {
             .await
             .expect("the second attempt passes");
         assert_eq!(generated.attempts, 2);
+        assert!(
+            generated
+                .repaired_errors
+                .iter()
+                .any(|error| error.contains("compare numeric values explicitly")),
+            "the retry feedback carries the boolean fix: {:?}",
+            generated.repaired_errors
+        );
         drop(tx);
         let events: Vec<GenerationEvent> = futures::StreamExt::collect(rx).await;
         let stages: Vec<String> = events

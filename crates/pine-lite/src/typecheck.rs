@@ -687,6 +687,7 @@ impl Cx {
                         self.err(expr.span, "history indexing is for numeric, bool and string series");
                         Ty::Float
                     }
+                    Ty::Bool => Ty::Bool,
                     Ty::String => Ty::String,
                     _ => Ty::Float,
                 }
@@ -743,7 +744,12 @@ impl Cx {
                 match op {
                     UnOp::Not => {
                         if !matches!(inner, Ty::Bool | Ty::Na) {
-                            self.err(expr.span, "`not` needs a bool");
+                            self.err(
+                                expr.span,
+                                format!(
+                                    "`not` needs a bool, got {inner:?}; compare numeric values explicitly (for example, `x > level`) or use `na(x)` / `not na(x)` for missing-value checks"
+                                ),
+                            );
                         }
                         Ty::Bool
                     }
@@ -1543,6 +1549,43 @@ mod tests {
              x = close + true\n",
         );
         assert!(errs.iter().any(|e| e.message.contains("arithmetic needs numbers")), "{errs:?}");
+    }
+
+    #[test]
+    fn not_on_a_number_is_refused_with_boolean_fixes() {
+        let errs = check_src(
+            "//@pine_lite version=1\n\
+             x = not close\n",
+        );
+        let err = errs
+            .iter()
+            .find(|e| e.message.contains("`not` needs a bool"))
+            .expect("numeric negation is refused");
+        assert!(err.message.contains("got Float"), "{err:?}");
+        assert!(err.message.contains("compare numeric values explicitly"), "{err:?}");
+        assert!(err.message.contains("not na(x)"), "{err:?}");
+    }
+
+    #[test]
+    fn not_accepts_boolean_expressions_and_numeric_missing_checks() {
+        let errs = check_src(
+            "//@pine_lite version=1\n\
+             pool = ta.highest(high, 5)\n\
+             sweep = not na(pool) and high > pool and close < pool\n\
+             plotshape(sweep, shape=\"triangleup\")\n",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    #[test]
+    fn boolean_history_keeps_its_type_for_event_edges() {
+        let errs = check_src(
+            "//@pine_lite version=1\n\
+             candidate = close < open\n\
+             edge = candidate and not candidate[1]\n\
+             plotshape(edge)\n",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
     }
 
     #[test]

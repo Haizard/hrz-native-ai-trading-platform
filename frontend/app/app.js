@@ -7653,16 +7653,25 @@ function createChartPane(root, hooks = {}) {
     /// (docs/25). The caller passes { source, inputs } -- source already
     /// accepted by `POST /scripts/vet`; the browser never runs or parses it,
     /// it only sends it back so the engine can. Layers compose: attaching a
-    /// new script adds a layer beside the existing ones; re-attaching the
-    /// SAME source updates its layer in place, so saving the revision under
-    /// edit stays one gesture instead of stacking a duplicate per save.
+    /// new script adds a layer beside the existing ones; a workspace's stable
+    /// layerId updates that indicator in place as its source revision changes.
     attachScript(spec) {
       if (!spec || !spec.source) return;
-      const existing = attachedScripts.findIndex((s) => s.source === spec.source);
+      const byId = spec.layerId
+        ? attachedScripts.findIndex((s) => s.layerId === spec.layerId)
+        : -1;
+      const bySource = attachedScripts.findIndex((s) => s.source === spec.source);
+      const legacyByName = spec.layerId && spec.name
+        ? attachedScripts.findIndex((s) => !s.layerId && s.name === spec.name)
+        : -1;
+      const existing = byId >= 0 ? byId
+        : legacyByName >= 0 ? legacyByName
+          : spec.layerId ? -1 : bySource;
       // `inputsSpec` is the settings form's shape (docs/25): the input
       // declarations the vet recorded, carried by the revision's validation
       // record so an attach never re-vets just to learn the knobs.
       const layer = {
+        ...(spec.layerId ? { layerId: spec.layerId } : {}),
         source: spec.source,
         // On a re-attach (re-saving the revision under edit) the tuned
         // values survive -- wiping them would make the settings popover
@@ -7674,6 +7683,15 @@ function createChartPane(root, hooks = {}) {
       };
       if (existing >= 0) attachedScripts[existing] = layer;
       else attachedScripts.push(layer);
+      if (spec.layerId && spec.name) {
+        // Old snapshots lack layer identities. Collapse their same-name
+        // workspace revisions into this stable layer on the first update.
+        const layerCount = attachedScripts.length;
+        attachedScripts = attachedScripts.filter((s) =>
+          s === layer || s.layerId || s.name !== spec.name
+        );
+        if (attachedScripts.length !== layerCount) layerSettingsFor = null;
+      }
       renderNow();
       syncIndicatorChip();
       noteWorkspaceChange();
@@ -7713,6 +7731,7 @@ function createChartPane(root, hooks = {}) {
         indicator: indicator ? JSON.parse(JSON.stringify(indicator)) : null,
         concept_states: JSON.parse(JSON.stringify(conceptStates)),
         scripts: attachedScripts.map((script) => ({
+          layerId: script.layerId,
           source: script.source,
           inputs: script.inputs || {},
           name: script.name,
@@ -7752,6 +7771,7 @@ function createChartPane(root, hooks = {}) {
       attachedScripts = (Array.isArray(saved.scripts) ? saved.scripts : [])
         .filter((script) => script && typeof script.source === "string")
         .map((script) => ({
+          layerId: typeof script.layerId === "string" ? script.layerId : undefined,
           source: script.source,
           inputs: script.inputs || {},
           name: script.name,
@@ -11765,6 +11785,7 @@ async function libRowUse(type, id) {
       const rev = await api(`/indicator-workspaces/${id}/revisions/${ws.active_revision_id}`);
       if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
         activePane.attachScript({
+          layerId: `indicator-workspace:${id}`,
           source: rev.source,
           inputs: {},
           name: (rev.preview && rev.preview.name) || ws.name,
@@ -18455,6 +18476,7 @@ async function attachWorkspaceRevision(ws, target) {
   const preview = rev.preview;
   if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
     target.attachScript({
+      layerId: `indicator-workspace:${ws.id}`,
       source: rev.source,
       inputs: {},
       name: (preview && preview.name) || ws.name,
@@ -18647,6 +18669,9 @@ async function openCodeFile(wsId, revId) {
     const rev = await api(`/indicator-workspaces/${wsId}/revisions/${revId}`);
     if (!rev.source) { alert("This revision has no stored source."); return; }
     wsCodeFile = { wsId, revisionId: revId, name: rev.summary || `rev #${rev.revision_number}`, source: rev.source, fresh: false };
+    if (window.Shell?.state?.().destination !== "charts") {
+      window.Shell?.go?.("charts");
+    }
     paintCodeEditor(true);
     window.Shell?.selectDockTab?.("code");
   } catch (e) {
@@ -18721,13 +18746,11 @@ async function saveCodeAsRevision() {
     if (msg) msg.textContent = `Saved as rev #${resp.revision_number}${statNote}.`;
     wsCodeFile = { wsId: wsCodeFile.wsId, revisionId: resp.revision_id, name: resp.title, source, fresh: false };
     await loadRevisions(wsCodeFile.wsId);
-    // Attach straight to the chart: save and run are one gesture, the way
-    // the Pine editor does it. As a LAYER (docs/25): the script joins any
-    // layers already on the chart instead of replacing them -- re-saving the
-    // same source updates its own layer, and the layer chips toggle or remove
-    // each one.
+    // Attach straight to the chart. The workspace id keeps every saved revision
+    // in the same chart layer instead of stacking each changed source.
     if (activePane) {
       activePane.attachScript({
+        layerId: `indicator-workspace:${wsCodeFile.wsId}`,
         source,
         inputs: {},
         name: resp.title || "script",
@@ -18819,6 +18842,7 @@ async function attachRevisionToChart(wsId, revId) {
     if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
       // A layer (docs/25): joins whatever is already on the chart.
       target.attachScript({
+        layerId: `indicator-workspace:${wsId}`,
         source: rev.source,
         inputs: {},
         name: rev.preview.name || "script",
@@ -18874,6 +18898,7 @@ async function viewRevision(wsId, revId) {
       if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
         // A layer (docs/25): joins whatever is already on the chart.
         activePane.attachScript({
+          layerId: `indicator-workspace:${wsId}`,
           source: rev.source,
           inputs: {},
           name: rev.preview.name || "script",

@@ -222,6 +222,8 @@ mod tests {
             ":=",
             "request.security",
             "request.data",
+            "`and`, `or`, and `not` require bool operands",
+            "## Liquidity sweeps: persistent state, one-bar events",
             "style=\"linebr\"",
             "TRAILING STOPS",
             "trail_points",
@@ -251,6 +253,10 @@ mod tests {
         assert_eq!(content["valid"], json!(false));
         assert_eq!(content["errors"].as_array().map(Vec::len), Some(1));
         assert!(content["cheatsheet"].as_str().unwrap().contains("CHEATSHEET"));
+        assert!(content["cheatsheet"]
+            .as_str()
+            .unwrap()
+            .contains("Compare numbers explicitly"));
         assert!(content["instruction"]
             .as_str()
             .unwrap()
