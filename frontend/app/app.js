@@ -326,6 +326,16 @@ function scriptPoolKeys(source) {
   return keys;
 }
 
+function timeframeNanos(value) {
+  const text = String(value || "").trim().toLowerCase();
+  const unitNs = { m: 60_000_000_000, h: 3_600_000_000_000, d: 86_400_000_000_000, w: 604_800_000_000_000 };
+  if (text === "d") return unitNs.d;
+  if (text === "w") return unitNs.w;
+  const match = text.match(/^(\d+)([mhdw]?)$/);
+  if (!match) return null;
+  return Number(match[1]) * (unitNs[match[2] || "m"] || 0);
+}
+
 /// Every `request.data("NAME")` name a script reads (docs/23 Phase 14):
 /// platform feeds (`SYMBOL.field` ticker fields today). Plain regex — the
 /// vet layer has already refused non-literal names.
@@ -400,30 +410,6 @@ function alignedSecurityCandles(sec, primarySymbol, timeframe, primary) {
   return out;
 }
 
-/// The pooled series for `key` (`SYM@TF`) aligned onto `primary`'s bars.
-/// Repeated slots retain the source candle's timestamp and timeframe so the
-/// runtime can evaluate history at the requested cadence. Mirrors the
-/// gateway's `align_security_pooled`.
-function alignedPoolSeries(key, primary) {
-  const cached = securityCache.get(key);
-  if (!cached || !cached.candles || !cached.candles.length) return null;
-  const pooled = cached.candles;
-  const [sym, tfStr] = key.split("@");
-  const BAR_NS = { "1M": 60_000_000_000, "5M": 300_000_000_000, "15M": 900_000_000_000, "1H": 3_600_000_000_000, "4H": 14_400_000_000_000 };
-  const tfNanos = BAR_NS[tfStr] || 60_000_000_000;
-  const first = pooled[0];
-  const out = [];
-  let cursor = 0;
-  for (const bar of primary) {
-    while (cursor + 1 < pooled.length && pooled[cursor + 1].open_time <= bar.open_time) cursor += 1;
-    const usable = pooled[cursor].open_time <= bar.open_time;
-    const src = usable ? pooled[cursor] : first;
-    const fill = usable ? src.close : first.close;
-    out.push({ ...src, open_time: usable ? src.open_time : bar.open_time, open: usable ? src.open : fill, high: usable ? src.high : fill, low: usable ? src.low : fill, close: fill, volume: usable ? src.volume : 0, buy_volume: usable ? src.buy_volume : 0, sell_volume: usable ? src.sell_volume : 0, symbol: sym });
-  }
-  return out;
-}
-
 /// Refresh the security cache for `symbols` (fire and forget): one /candles
 /// call per symbol not cached within the TTL. Pool keys (`SYM@TF`) ride the
 /// same map, stored under the key string itself.
@@ -432,22 +418,32 @@ function refreshSecurityCandles(symbols, timeframe, barCount) {
     if (!sec) continue;
     const cached = securityCache.get(sec);
     const now = Date.now();
+    const [keySym, keyTf] = sec.includes("@") ? sec.split("@") : [sec, null];
+    const fetchTf = (keyTf ? keyTf : timeframe).toLowerCase();
+    const chartNs = timeframeNanos(timeframe);
+    const sourceNs = timeframeNanos(fetchTf);
+    const sourceCount = chartNs && sourceNs
+      ? Math.ceil(barCount * chartNs / sourceNs)
+      : barCount;
+    const requestedLimit = Math.min(Math.max(sourceCount, 1), 5000);
+    const cachedEnough = cached && cached.timeframe === fetchTf &&
+      (cached.candles.length >= requestedLimit || cached.requestedLimit >= requestedLimit);
     // fetchedAt=0 marks a failed attempt: retry right away instead of the
     // TTL silence a poisoned entry used to buy (60s of guaranteed-empty).
-    if (cached && (cached.pending || (cached.fetchedAt && now - cached.fetchedAt < SECURITY_TTL_NS))) continue;
+    if (cached && (cached.pending || (cachedEnough && cached.fetchedAt && now - cached.fetchedAt < SECURITY_TTL_NS))) continue;
     const entry = cached || { candles: [], fetchedAt: 0, pending: false };
     entry.pending = true;
     entry.fetchedAt = 0;
+    entry.timeframe = fetchTf;
+    entry.requestedLimit = requestedLimit;
     securityCache.set(sec, entry);
-    // A `SYM@TF` pool key fetches at ITS OWN timeframe; a bare symbol uses
-    // the chart's.
-    const [keySym, keyTf] = sec.includes("@") ? sec.split("@") : [sec, null];
-    const fetchTf = keyTf ? keyTf.toLowerCase() : timeframe;
-    api(`/candles?symbol=${encodeURIComponent(keySym)}&timeframe=${encodeURIComponent(fetchTf)}&limit=${Math.min(barCount, 1500)}`)
+    // Scale the pool request to cover the same loaded time span as the chart;
+    // lower-timeframe pools need more candles than chart bars.
+    api(`/candles?symbol=${encodeURIComponent(keySym)}&timeframe=${encodeURIComponent(fetchTf)}&limit=${requestedLimit}`)
       .then((resp) => {
         const list = resp && Array.isArray(resp.candles) ? resp.candles : [];
         if (!list.length) throw new Error(`empty candle list for ${sec}`);
-        securityCache.set(sec, { candles: list, fetchedAt: Date.now(), pending: false });
+        securityCache.set(sec, { candles: list, fetchedAt: Date.now(), pending: false, timeframe: fetchTf, requestedLimit });
         // The scene must rebuild with the data now that it exists. The
         // listener is the chart closure's `renderNow`, registered below;
         // before the chart exists there is nothing to rebuild.
@@ -456,7 +452,7 @@ function refreshSecurityCandles(symbols, timeframe, barCount) {
       .catch((err) => {
         // A failure leaves the slot EMPTY but unpoisoned: fetchedAt stays 0
         // so the next render retries, and the reason is on the console.
-        securityCache.set(sec, { candles: [], fetchedAt: 0, pending: false });
+        securityCache.set(sec, { candles: [], fetchedAt: 0, pending: false, timeframe: fetchTf, requestedLimit });
         console.warn(`security fetch failed for ${sec}:`, err && err.message);
       });
   }
@@ -4081,16 +4077,17 @@ function createChartPane(root, hooks = {}) {
           );
           if (aligned) spec.security = aligned;
         }
-        // Phase 11: every named pair, aligned onto this chart's bars. A key
-        // whose fetch has not landed yet is simply absent -- the engine's
-        // read reports the missing key, and the cache's listener rebuilds
-        // the scene when the data arrives.
+        // Phase 11: send raw timestamped source candles. The runtime aligns
+        // them to chart bars and retains full history for zoomed calculations.
+        // A missing fetch stays absent and triggers a visible missing-key error.
         const keys = scriptPoolKeys(s.source);
         if (keys.length) {
           const pool = {};
           for (const key of keys) {
-            const aligned = alignedPoolSeries(key, candles);
-            if (aligned) pool[key] = aligned;
+            const cached = securityCache.get(key);
+            if (cached && Array.isArray(cached.candles) && cached.candles.length) {
+              pool[key] = cached.candles;
+            }
           }
           if (Object.keys(pool).length) spec.series_pool = pool;
         }

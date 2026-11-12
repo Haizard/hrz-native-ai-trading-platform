@@ -80,6 +80,7 @@ pub fn check_with_header(script: &Script, header: &crate::Header) -> Vec<ScriptE
         sec: header.sec.clone(),
         series_pool: Vec::new(),
         in_security_expr: 0,
+        local_types: Vec::new(),
         input_timeframes: std::collections::HashMap::new(),
         security_outer: Vec::new(),
         stmt_call: false,
@@ -109,6 +110,7 @@ pub fn collect_series_pool(script: &Script, header: &crate::Header) -> Vec<Strin
         sec: header.sec.clone(),
         series_pool: Vec::new(),
         in_security_expr: 0,
+        local_types: Vec::new(),
         input_timeframes: std::collections::HashMap::new(),
         security_outer: Vec::new(),
         stmt_call: false,
@@ -193,6 +195,8 @@ struct Cx {
     /// `request.*` reads the PAIR (the VM swaps the candle set), so the
     /// no-`sec=` gate must not fire.
     in_security_expr: usize,
+    /// Function-local value kinds, innermost scope last.
+    local_types: Vec<HashMap<String, Ty>>,
     /// `tf = input.timeframe("4h")` bindings seen at the top level, so
     /// `request.security("SYM", tf, ...)` resolves its pool key the way the
     /// VM's registry does.
@@ -269,7 +273,7 @@ impl Cx {
 
     /// The `request.security_lower_tf` pool keys: `SYM@LTF#ltf` -- the
     /// suffix tells the host to pool the RAW lower-timeframe series (a
-    /// plain `SYM@LTF` key from request.security gets the aligned form).
+    /// plain `SYM@LTF` key from request.security gets the raw source form).
     fn check_lower_tf_pool(&mut self, args: &[Arg]) {
         if args.len() < 2 {
             return;
@@ -400,12 +404,8 @@ impl Cx {
                 self.type_fields.insert(name.clone(), fields.clone());
             }
             Item::Assign { span, name, mode, expr, decl_type, .. } => {
-                // An explicit type word must be a word we know, and must
-                // match the right-hand side: `float`/`int` take a number
-                // (they unify here), `bool` a bool, `color` a color, the
-                // handle words (line/label/box/table/linefill/polyline) a
-                // handle. `string` fails the way every string binding
-                // fails -- strings are expression-level only.
+                // An explicit type word must be known, and its right-hand
+                // side must have the corresponding value kind.
                 if let Some(word) = decl_type {
                     let known = matches!(
                         word.as_str(),
@@ -454,7 +454,7 @@ impl Cx {
                         }
                     }
                 }
-                let ty = self.expr(expr);
+                let mut ty = self.expr(expr);
                 // `p = Point.new(...)`: the var holds that type's instances.
                 if let ExprKind::Call { callee, .. } = &expr.kind {
                     if let Some(tn) = callee.strip_suffix(".new") {
@@ -464,23 +464,29 @@ impl Cx {
                     }
                 }
                 if let Some(word) = decl_type {
-                    let ok = match word.as_str() {
+                    let declared_ty = match word.as_str() {
                         "float" | "int" | "line" | "label" | "box" | "table" | "linefill"
-                        | "polyline" => matches!(ty, Ty::Float | Ty::Na),
-                        "bool" => matches!(ty, Ty::Bool | Ty::Na),
-                        "color" => matches!(ty, Ty::Color | Ty::Na),
+                        | "polyline" => Some(Ty::Float),
+                        "bool" => Some(Ty::Bool),
+                        "string" => Some(Ty::String),
+                        "color" => Some(Ty::Color),
                         // A user type word: instances are handles (floats).
-                        w if self.type_fields.contains_key(w) => matches!(ty, Ty::Float | Ty::Na),
-                        // `string`'s error is the string-binding one below.
-                        _ => true,
+                        w if self.type_fields.contains_key(w) => Some(Ty::Float),
+                        _ => None,
                     };
-                    if !ok {
-                        self.err(*span, format!(
-                            "`{name}` is declared `{word}` but the right-hand side is {ty:?} -- the declaration and the value must agree"
-                        ));
+                    if let Some(expected) = declared_ty {
+                        if ty == Ty::Na {
+                            ty = expected;
+                        } else if ty != expected {
+                            self.err(
+                                *span,
+                                format!(
+                                    "`{name}` is declared `{word}` but the right-hand side is {ty:?} -- the declaration and the value must agree"
+                                ),
+                            );
+                        }
                     }
                 }
-                // (Strings bind as real variables; nothing to refuse here.)
                 // `p.x := v`: legal only when p holds a UDT -- the field
                 // must exist and the value must match its type.
                 if let Some((base, field)) = name.split_once('.') {
@@ -509,7 +515,34 @@ impl Cx {
                         )),
                     }
                 }
-                self.out.var_types.insert(name.clone(), ty);
+                if !name.contains('.') {
+                    let previous = match self.local_types.last() {
+                        Some(scope) => scope.get(name).copied(),
+                        None => self.out.var_types.get(name).copied(),
+                    };
+                    if let Some(previous) = previous {
+                        if previous == Ty::Na {
+                            // `na` does not constrain a series until a concrete
+                            // value is assigned.
+                        } else if ty == Ty::Na {
+                            ty = previous;
+                        } else if previous != ty {
+                            self.err(
+                                *span,
+                                format!(
+                                    "`{name}` was previously {previous:?} and cannot be reassigned a {ty:?} value"
+                                ),
+                            );
+                        }
+                    }
+                }
+                if let Some(scope) = self.local_types.last_mut() {
+                    if !name.contains('.') {
+                        scope.insert(name.clone(), ty);
+                    }
+                } else {
+                    self.out.var_types.insert(name.clone(), ty);
+                }
                 if self.stmt_depth == 0 {
                     self.top_assigned.insert(name.clone());
                 }
@@ -522,8 +555,31 @@ impl Cx {
                 }
             }
             Item::Block { span, kind, exprs, loop_var, body, els } => {
-                for e in exprs {
-                    self.expr(e);
+                let expr_types: Vec<_> = exprs.iter().map(|expr| self.expr(expr)).collect();
+                match kind {
+                    BlockKind::If | BlockKind::While => {
+                        if let (Some(condition), Some(condition_ty)) = (exprs.first(), expr_types.first()) {
+                            if !matches!(condition_ty, Ty::Bool | Ty::Na) {
+                                self.err(
+                                    condition.span,
+                                    format!(
+                                        "{} condition must be bool, got {condition_ty:?}",
+                                        if *kind == BlockKind::If { "if" } else { "while" }
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    BlockKind::For => {
+                        for (expression, ty) in exprs.iter().zip(&expr_types) {
+                            if !matches!(ty, Ty::Float | Ty::Na) {
+                                self.err(
+                                    expression.span,
+                                    format!("for-loop bounds and step must be numeric, got {ty:?}"),
+                                );
+                            }
+                        }
+                    }
                 }
                 if *kind == BlockKind::For || *kind == BlockKind::While {
                     self.depth += 1;
@@ -531,7 +587,11 @@ impl Cx {
                         self.err(*span, "loop nesting deeper than 4 is refused");
                     }
                     if let Some(v) = loop_var {
-                        self.out.var_types.insert(v.clone(), Ty::Float);
+                        if let Some(scope) = self.local_types.last_mut() {
+                            scope.insert(v.clone(), Ty::Float);
+                        } else {
+                            self.out.var_types.insert(v.clone(), Ty::Float);
+                        }
                     }
                 }
                 self.stmt_depth += 1;
@@ -543,6 +603,11 @@ impl Cx {
                 self.depth = self.depth.saturating_sub(1);
             }
             Item::FuncDef { span, name, params, defaults, body, method_of } => {
+                let outer_var_types = self.out.var_types.clone();
+                let outer_variables = self.out.variables.clone();
+                let outer_udt_types = self.var_udt_types.clone();
+                let outer_input_timeframes = self.input_timeframes.clone();
+                let outer_input_symbols = self.input_symbols.clone();
                 if let Some(type_name) = method_of {
                     // A method: the receiver type must exist, the pair
                     // (type, name) must be new, and the receiver param
@@ -584,8 +649,19 @@ impl Cx {
                     .insert(name.clone(), FuncSig { params: params.clone(), defaults: defaults.clone() });
                 // Parameters are in scope inside the body; bind them as
                 // numbers so a recursive or self-referencing body checks.
+                let mut function_types = HashMap::new();
                 for p in params {
-                    self.out.var_types.insert(p.clone(), Ty::Float);
+                    function_types.insert(p.clone(), Ty::Float);
+                }
+                self.local_types.push(function_types);
+                for default in defaults.iter().flatten() {
+                    let ty = self.expr(default);
+                    if !matches!(ty, Ty::Float | Ty::Na) {
+                        self.err(
+                            default.span,
+                            format!("function parameter defaults must be numeric, got {ty:?}"),
+                        );
+                    }
                 }
                 self.stmt_depth += 1;
                 self.items(body);
@@ -602,6 +678,12 @@ impl Cx {
                     }
                 }
                 self.stmt_depth -= 1;
+                self.local_types.pop();
+                self.out.var_types = outer_var_types;
+                self.out.variables = outer_variables;
+                self.var_udt_types = outer_udt_types;
+                self.input_timeframes = outer_input_timeframes;
+                self.input_symbols = outer_input_symbols;
             }
             Item::Expr { span, expr } => {
                 if matches!(expr.kind, ExprKind::Call { .. }) {
@@ -733,10 +815,18 @@ impl Cx {
                 }
                 let a = self.expr(then);
                 let b = self.expr(els);
-                if a == b {
-                    a
-                } else {
-                    Ty::Float
+                match (a, b) {
+                    (Ty::Na, other) | (other, Ty::Na) => other,
+                    (left, right) if left == right => left,
+                    (then_ty, else_ty) => {
+                        self.err(
+                            expr.span,
+                            format!(
+                                "ternary branches must have compatible types, got {then_ty:?} and {else_ty:?}"
+                            ),
+                        );
+                        Ty::Float
+                    }
                 }
             }
             ExprKind::Un { op, expr } => {
@@ -845,6 +935,14 @@ impl Cx {
                 }
             }
         }
+        if let Some(ty) = self
+            .local_types
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
+        {
+            return ty;
+        }
         if let Some(ty) = self.out.var_types.get(name).copied() {
             if self.stmt_depth == 0 && !self.top_assigned.contains(name) {
                 self.err(
@@ -947,7 +1045,13 @@ impl Cx {
                         ));
                     }
                     for a in args {
-                        self.expr(&a.value);
+                        let ty = self.expr(&a.value);
+                        if !matches!(ty, Ty::Float | Ty::Na) {
+                            self.err(
+                                a.value.span,
+                                format!("method `{mname}` arguments must be numeric, got {ty:?}"),
+                            );
+                        }
                     }
                     return Ty::Float;
                 }
@@ -965,19 +1069,64 @@ impl Cx {
         // else reads na. The value is a heap handle (a float to the VM).
         if let Some(type_name) = callee.strip_suffix(".new") {
             if let Some(layout) = self.type_fields.get(type_name).cloned() {
-                for (i, a) in args.iter().enumerate() {
-                    if a.name.is_none() && i >= layout.len() {
-                        self.err(a.value.span, format!(
-                            "`{callee}` takes {} field value(s) in layout order",
-                            layout.len()
-                        ));
-                    }
-                    if let Some(n) = a.name.as_deref() {
-                        if !layout.iter().any(|(f, _)| f == n) {
-                            self.err(a.value.span, format!("type {type_name} has no field `{n}`"));
+                let mut positional = 0usize;
+                let mut assigned = std::collections::HashSet::new();
+                for argument in args {
+                    let field_index = if let Some(name) = argument.name.as_deref() {
+                        match layout.iter().position(|(field, _)| field == name) {
+                            Some(index) => Some(index),
+                            None => {
+                                self.err(
+                                    argument.value.span,
+                                    format!("type {type_name} has no field `{name}`"),
+                                );
+                                None
+                            }
                         }
+                    } else {
+                        let index = positional;
+                        positional += 1;
+                        if index >= layout.len() {
+                            self.err(
+                                argument.value.span,
+                                format!(
+                                    "`{callee}` takes {} field value(s) in layout order",
+                                    layout.len()
+                                ),
+                            );
+                            None
+                        } else {
+                            Some(index)
+                        }
+                    };
+                    let actual = self.expr(&argument.value);
+                    let Some(index) = field_index else {
+                        continue;
+                    };
+                    if !assigned.insert(index) {
+                        self.err(
+                            argument.value.span,
+                            format!(
+                                "`{callee}` initializes field `{}` more than once",
+                                layout[index].0
+                            ),
+                        );
+                        continue;
                     }
-                    self.expr(&a.value);
+                    let expected = match layout[index].1.as_str() {
+                        "bool" => Ty::Bool,
+                        "color" => Ty::Color,
+                        _ => Ty::Float,
+                    };
+                    if actual != expected && actual != Ty::Na {
+                        self.err(
+                            argument.value.span,
+                            format!(
+                                "`{callee}` field `{}` expects {expected:?}, got {actual:?}",
+                                layout[index].0
+                            ),
+                        );
+                    }
                 }
                 return Ty::Float;
             }
@@ -1208,7 +1357,13 @@ impl Cx {
                     );
                 }
                 for a in args {
-                    self.expr(&a.value);
+                    let ty = self.expr(&a.value);
+                    if !matches!(ty, Ty::Float | Ty::Na) {
+                        self.err(
+                            a.value.span,
+                            format!("`{callee}` arguments must be numeric, got {ty:?}"),
+                        );
+                    }
                 }
                 return Ty::Float;
             }
@@ -1228,8 +1383,41 @@ impl Cx {
         if total < min {
             self.err(span, format!("`{callee}` needs at least {min} argument(s)"));
         }
-        for a in args {
-            self.expr(&a.value);
+        let arg_types: Vec<_> = args.iter().map(|a| self.expr(&a.value)).collect();
+        for (index, (argument, ty)) in args.iter().zip(&arg_types).enumerate() {
+            let expected = match (callee, index) {
+                ("plot" | "hline" | "plotarrow", 0) => Some("numeric"),
+                ("plotshape" | "plotchar", 0) => Some("boolean or numeric"),
+                ("plotcandle" | "plotbar", 0..=3) => Some("numeric"),
+                ("bgcolor" | "barcolor", 0) => Some("color"),
+                _ => None,
+            };
+            let Some(expected) = expected else {
+                continue;
+            };
+            let compatible = match expected {
+                "numeric" => matches!(ty, Ty::Float | Ty::Na),
+                "boolean or numeric" => matches!(ty, Ty::Bool | Ty::Float | Ty::Na),
+                "color" => matches!(ty, Ty::Color | Ty::Na),
+                _ => true,
+            };
+            if !compatible {
+                self.err(
+                    argument.value.span,
+                    format!(
+                        "`{callee}` argument {} needs a {expected} series, got {ty:?}",
+                        index + 1
+                    ),
+                );
+            }
+        }
+        if let Some(kind) = callee.strip_prefix("input.") {
+            self.check_input_parameters(kind, args, &arg_types);
+        }
+        if let Some(spec) = crate::builtins::lookup(callee)
+            .filter(|spec| spec.metadata_complete)
+        {
+            self.check_builtin_parameters(callee, args, &arg_types, spec.parameters);
         }
         // Inputs are whatever their kind says; everything else numeric.
         if let Some(kind) = callee.strip_prefix("input.") {
@@ -1246,6 +1434,120 @@ impl Cx {
             Some(crate::builtins::BuiltinReturn::Color) => Ty::Color,
             Some(crate::builtins::BuiltinReturn::Number | crate::builtins::BuiltinReturn::InputKind)
             | None => Ty::Float,
+        }
+    }
+
+    fn check_builtin_parameters(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+        arg_types: &[Ty],
+        parameters: &[crate::builtins::BuiltinParameter],
+    ) {
+        let mut positional = 0usize;
+        let mut used = std::collections::HashSet::new();
+        for (argument, ty) in args.iter().zip(arg_types) {
+            let parameter_index = if let Some(name) = argument.name.as_deref() {
+                match parameters.iter().position(|parameter| parameter.name == name) {
+                    Some(index) => Some(index),
+                    None => {
+                        self.err(
+                            argument.value.span,
+                            format!("`{callee}` has no parameter named `{name}`"),
+                        );
+                        None
+                    }
+                }
+            } else {
+                let index = positional;
+                positional += 1;
+                (index < parameters.len()).then_some(index)
+            };
+            let Some(index) = parameter_index else {
+                continue;
+            };
+            if !used.insert(index) {
+                self.err(
+                    argument.value.span,
+                    format!(
+                        "`{callee}` received `{}` more than once",
+                        parameters[index].name
+                    ),
+                );
+                continue;
+            }
+            let expected = parameters[index].value_type;
+            let compatible = match expected {
+                crate::builtins::ParameterType::Number
+                | crate::builtins::ParameterType::Integer
+                | crate::builtins::ParameterType::Series => matches!(ty, Ty::Float | Ty::Na),
+                crate::builtins::ParameterType::Boolean => matches!(ty, Ty::Bool | Ty::Na),
+                crate::builtins::ParameterType::String
+                | crate::builtins::ParameterType::Timeframe
+                | crate::builtins::ParameterType::Symbol
+                | crate::builtins::ParameterType::Enum => matches!(ty, Ty::String | Ty::Na),
+                crate::builtins::ParameterType::Color => matches!(ty, Ty::Color | Ty::Na),
+                crate::builtins::ParameterType::Any => true,
+            };
+            if !compatible {
+                self.err(
+                    argument.value.span,
+                    format!(
+                        "`{callee}` parameter `{}` expects {:?}, got {ty:?}",
+                        parameters[index].name, expected
+                    ),
+                );
+            }
+        }
+    }
+
+    fn check_input_parameters(&mut self, kind: &str, args: &[Arg], arg_types: &[Ty]) {
+        let value_kind = match kind {
+            "int" | "float" | "source" | "time" | "price" => "numeric",
+            "bool" => "bool or numeric",
+            "string" | "timeframe" | "symbol" => "string",
+            "color" => "color",
+            _ => return,
+        };
+        let mut positional = 0usize;
+        for (argument, ty) in args.iter().zip(arg_types) {
+            let name = match argument.name.as_deref() {
+                Some(name) => Some(name),
+                None => {
+                    let index = positional;
+                    positional += 1;
+                    if index == 0 {
+                        Some("defval")
+                    } else {
+                        None
+                    }
+                }
+            };
+            let expected = match name {
+                Some("defval") => Some(value_kind),
+                Some("title") => Some("string"),
+                Some("minval" | "maxval" | "step") => Some("numeric"),
+                _ => None,
+            };
+            let Some(expected) = expected else {
+                continue;
+            };
+            let compatible = match expected {
+                "numeric" => matches!(ty, Ty::Float | Ty::Na),
+                "bool or numeric" => matches!(ty, Ty::Bool | Ty::Float | Ty::Na),
+                "string" => matches!(ty, Ty::String | Ty::Na),
+                "color" => matches!(ty, Ty::Color | Ty::Na),
+                _ => true,
+            };
+            if !compatible {
+                self.err(
+                    argument.value.span,
+                    format!(
+                        "`input.{kind}` `{}` expects {expected}, got {ty:?}",
+                        name.unwrap_or("value")
+                    ),
+                );
+            }
         }
     }
 
@@ -1317,12 +1619,15 @@ fn namespace_const(name: &str) -> Option<Ty> {
         }
         "syminfo.pointvalue" => Some(Ty::Float),
         "timeframe.period" => Some(Ty::String),
-        "alert.freq_all" | "alert.freq_once_per" | "alert.freq_once_per_bar"
+        "extend.none" | "extend.right" | "extend.left" | "extend.both"
+        | "position.top_right" | "position.top_left" | "position.top_center"
+        | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
+        | "position.middle_right" | "position.middle_left" | "position.middle_center"
+        | "size.auto" | "size.tiny" | "size.small" | "size.normal" | "size.large"
+        | "size.huge" | "alert.freq_all" | "alert.freq_once_per" | "alert.freq_once_per_bar"
         | "alert.freq_once_per_bar_close" => Some(Ty::String),
         "barmerge.gaps_on" | "barmerge.gaps_off" | "barmerge.lookahead_on"
         | "barmerge.lookahead_off" => Some(Ty::String),
-        "size.auto" | "size.tiny" | "size.small" | "size.normal" | "size.large"
-        | "size.huge" => Some(Ty::String),
         "strategy.direction.long" | "strategy.direction.short" | "strategy.direction.all"
         | "strategy.direction.none" => Some(Ty::String),
         "timeframe.multiplier" => Some(Ty::Float),
@@ -1416,6 +1721,210 @@ mod tests {
              x = close + true\n",
         );
         assert!(errs.iter().any(|e| e.message.contains("arithmetic needs numbers")), "{errs:?}");
+    }
+
+    #[test]
+    fn ternary_branches_must_have_compatible_types() {
+        let errs = check_src(
+            "//@pine_lite version=1\n\
+             x = close > open ? close : false\n",
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("ternary branches must have compatible types")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn ternary_na_inherits_the_other_branch_type() {
+        let errs = check_src(
+            "//@pine_lite version=1\n\
+             selected = close > open ? color.red : na\n\
+             plot(selected)\n\
+             hline(true)\n",
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("`plot` argument 1 needs a numeric series, got Color")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("`hline` argument 1 needs a numeric series, got Bool")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().all(|e| !e.message.contains("ternary branches")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn complete_builtin_metadata_enforces_argument_types_and_names() {
+        let errs = check_src(
+            "//@pine_lite version=1\n\
+             bad_source = ta.sma(true, 10)\n\
+             line.new(1, 2, 3, 4, color=1, typo=2)\n",
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("`ta.sma` parameter `source` expects Series, got Bool")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("`line.new` parameter `color` expects Color, got Float")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("`line.new` has no parameter named `typo`")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn control_flow_and_user_function_calls_enforce_value_kinds() {
+        let errs = check_src(concat!(
+            "//@pine_lite version=1\n",
+            "if close\n",
+            "    inside = 1\n",
+            "while close\n",
+            "    break\n",
+            "for i = true to 5\n",
+            "    inside_loop = i\n",
+            "f(value) =>\n",
+            "    value\n",
+            "bad_call = f(false)\n",
+        ));
+        assert!(
+            errs.iter().any(|e| e.message.contains("if condition must be bool")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("while condition must be bool")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("for-loop bounds and step must be numeric")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("`f` arguments must be numeric")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn user_type_constructors_enforce_declared_field_kinds() {
+        let errs = check_src(concat!(
+            "//@pine_lite version=1\n",
+            "type Signal\n",
+            "    bool valid\n",
+            "    color tint\n",
+            "    float level\n",
+            "good = Signal.new(valid=true, tint=color.red, level=close)\n",
+            "bad = Signal.new(1, color.red, close)\n",
+        ));
+        assert!(
+            errs.iter().any(|e| e.message.contains("field `valid` expects Bool, got Float")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn rendering_calls_enforce_their_series_value_kinds() {
+        let errs = check_src(concat!(
+            "//@pine_lite version=1\n",
+            "plotshape(\"signal\")\n",
+            "bgcolor(true)\n",
+            "plotcandle(open, high, low, color.red)\n",
+        ));
+        assert!(
+            errs.iter().any(|e| e.message.contains("`plotshape` argument 1 needs a boolean or numeric series")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("`bgcolor` argument 1 needs a color series")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e.message.contains("`plotcandle` argument 4 needs a numeric series")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn declared_and_reassigned_variables_keep_one_value_kind() {
+        let errs = check_src(concat!(
+            "//@pine_lite version=1\n",
+            "string message = \"ready\"\n",
+            "string wrong = 1\n",
+            "price = close\n",
+            "price := true\n",
+            "untyped = na\n",
+            "untyped := false\n",
+        ));
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`wrong` is declared `string`")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`price` was previously Float")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter()
+                .all(|e| !e.message.contains("`untyped` was previously")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn function_locals_do_not_overwrite_top_level_value_kinds() {
+        let errs = check_src(concat!(
+            "//@pine_lite version=1\n",
+            "message = \"ready\"\n",
+            "f() =>\n",
+            "    series = close\n",
+            "    series := true\n",
+            "    series + 1\n",
+            "result = f()\n",
+            "plot(message)\n",
+        ));
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`series` was previously Float")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`plot` argument 1 needs a numeric series")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn input_defaults_must_match_their_declared_value_kind() {
+        let errs = check_src(concat!(
+            "//@pine_lite version=1\n",
+            "legacy_bool = input.bool(defval=0)\n",
+            "bad_bool = input.bool(defval=\"yes\")\n",
+            "bad_text = input.string(defval=close)\n",
+        ));
+        assert!(
+            errs.iter().any(|e| e
+                .message
+                .contains("`input.bool` `defval` expects bool or numeric")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e
+                .message
+                .contains("`input.string` `defval` expects string")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().all(|e| !e.message.contains("`legacy_bool`")),
+            "{errs:?}"
+        );
     }
 
     #[test]

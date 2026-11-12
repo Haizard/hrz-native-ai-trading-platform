@@ -46,11 +46,11 @@ pub struct Inputs {
     /// sim then reads entry qty as stake and caps losses at the stake.
     pub contracts: bool,
     /// Every named pair of `request.security("SYM", "tf", ...)` in the
-    /// script, keyed `SYM@tf`, uppercased, fetched and expanded onto the
-    /// chart's bar indexes by the host. Repeated slots retain the source
-    /// candle's `open_time` and timeframe; the VM evaluates distinct source
-    /// bars before applying higher-timeframe merging. This is distinct from
-    /// the `sec=` one-slot carry-forward contract above. Phase 11 (docs/23).
+    /// script, keyed `SYM@tf`, uppercased, as raw timestamped source candles.
+    /// The VM aligns them to the chart window and applies timeframe merging;
+    /// hosts must retain the full source history for rolling calculations.
+    /// This is distinct from the `sec=` one-slot carry-forward contract above.
+    /// Phase 11 (docs/23).
     /// The chart's own symbol/timeframe may be named too (a script reading
     /// its primary at a coarser tf); the host serves it from the same pool.
     /// Empty when the script names none. Cap: 8 keys (see `check_with_header`).
@@ -3696,9 +3696,8 @@ impl<'a> Vm<'a> {
             // ordinary assign-then-offset rule.
             "request.security" => {
                 let key = self.security_key(args)?;
-                // Memoize per call site: the pool is aligned to the chart, but
-                // repeated slots from one source candle must not advance
-                // history or rolling functions in the sub-VM.
+                // Memoize per call site: evaluate each raw source candle once
+                // so history and rolling functions advance at source cadence.
                 // The site key folds the AST address of the third argument
                 // into the pool key, so two calls on one pool stay separate.
                 let site = format!("{key}#{:p}", &args[2].value);
@@ -3713,12 +3712,30 @@ impl<'a> Vm<'a> {
                         kind: crate::ErrorKind::Type,
                         span: crate::Span::new(1, 1),
                         message: format!(
-                            "`request.security` has no pooled series for {key}; the host must fetch and align it before the run"
+                            "`request.security` has no pooled series for {key}; the host must fetch it before the run"
                         ),
                     })?;
+                if candles.is_empty() {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!("`request.security` has an empty pooled series for {key}"),
+                    });
+                }
+                if candles
+                    .windows(2)
+                    .any(|pair| pair[0].open_time > pair[1].open_time)
+                {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!(
+                            "`request.security` pooled series for {key} must be ordered by open_time"
+                        ),
+                    });
+                }
                 let len = candles.len();
                 let mut source_candles = Vec::with_capacity(len);
-                let mut chart_to_source = Vec::with_capacity(len);
                 let mut previous_source = None;
                 for candle in candles {
                     let source_key = (candle.open_time, candle.timeframe);
@@ -3726,11 +3743,10 @@ impl<'a> Vm<'a> {
                         source_candles.push(candle.clone());
                         previous_source = Some(source_key);
                     }
-                    chart_to_source.push(source_candles.len() - 1);
                 }
-                // The host repeats each source candle at its chart-bar slots.
-                // Evaluate the expression on distinct source bars so [1],
-                // `ta.*`, and state advance on the requested timeframe.
+                // Keep one candle per source timestamp/timeframe in case a
+                // host supplied duplicate slots; rolling state advances only
+                // at the requested source cadence.
                 let expr = args[2].value.clone();
                 let sub_inputs = Inputs {
                     security: source_candles.clone(),
@@ -3745,27 +3761,8 @@ impl<'a> Vm<'a> {
                     source_values.push(sub.eval_f(&expr)?);
                 }
                 self.steps += sub.steps;
-                let values: Vec<f64> = chart_to_source
-                    .iter()
-                    .map(|&source| source_values[source])
-                    .collect();
-                // The merge knobs (Pine's defaults: gaps=barmerge.gaps_off,
-                // lookahead=barmerge.lookahead_off). The pooled candles are
-                // index-aligned to the chart and repeat each higher bar
-                // across its chart bars, so the knobs are a pure REVEAL
-                // map over the computed values:
-                //  - lookahead_on: the containing bucket's final value is
-                //    visible on every chart bar of the bucket (what this
-                //    alignment produced before the knobs existed).
-                //  - lookahead_off (Pine's default): a chart bar sees the
-                //    last HIGHER bar that had already closed at its own
-                //    close -- the previous bucket's value through the
-                //    bucket, and the bucket's own value at its closing
-                //    chart bar. When the pool IS the chart's timeframe,
-                //    every bar closes its own bucket, so nothing shifts.
-                //  - gaps_on: only the reveal bars carry a value (the
-                //    closing chart bar with lookahead_off, the opening one
-                //    with lookahead_on); the rest read na.
+                // Map from timestamps rather than chart indexes so a zoomed
+                // chart window can still use the full source history.
                 let mut gaps_on = false;
                 let mut lookahead_on = false;
                 for a in args.iter().skip(3) {
@@ -3780,79 +3777,52 @@ impl<'a> Vm<'a> {
                         _ => {}
                     }
                 }
-                let revealed = if !gaps_on && lookahead_on {
-                    values
-                } else {
-                    let htf = candles
-                        .first()
-                        .map(|cd| cd.timeframe)
-                        .unwrap_or(Timeframe::M1);
-                    let buckets: Vec<i64> = (0..len)
-                        .map(|i| {
-                            htf.bucket_of(self.candles.get(i).map(|cd| cd.open_time).unwrap_or(0))
+                let mut opened = 0usize;
+                let mut closed = 0usize;
+                let mut revealed = Vec::with_capacity(self.candles.len());
+                for chart in self.candles {
+                    while opened < source_candles.len()
+                        && source_candles[opened].open_time <= chart.open_time
+                    {
+                        opened += 1;
+                    }
+                    while closed < source_candles.len()
+                        && source_candles[closed]
+                            .open_time
+                            .saturating_add(source_candles[closed].timeframe.nanos())
+                            <= chart.open_time.saturating_add(chart.timeframe.nanos())
+                    {
+                        closed += 1;
+                    }
+                    let at_open = opened.checked_sub(1);
+                    let at_close = closed.checked_sub(1);
+                    let chart_close = chart.open_time.saturating_add(chart.timeframe.nanos());
+                    let visible_source = if lookahead_on {
+                        at_open
+                    } else {
+                        at_close
+                    };
+                    let output_source = if !gaps_on {
+                        visible_source
+                    } else if lookahead_on {
+                        at_open.filter(|&index| {
+                            let open_time = source_candles[index].open_time;
+                            open_time >= chart.open_time && open_time < chart_close
                         })
-                        .collect();
-                    let mut start = vec![0usize; len];
-                    let mut end = vec![0usize; len];
-                    let mut bucket_closed = vec![false; len];
-                    let mut cur_start = 0usize;
-                    for i in 0..len {
-                        if i > 0 && buckets[i] != buckets[i - 1] {
-                            let last = i - 1;
-                            let bucket_end = buckets[last].saturating_add(htf.nanos());
-                            let chart_close = self
-                                .candles
-                                .get(last)
-                                .map(|c| c.open_time.saturating_add(c.timeframe.nanos()))
-                                .unwrap_or(0);
-                            for j in cur_start..i {
-                                end[j] = last;
-                                bucket_closed[j] = chart_close >= bucket_end;
-                            }
-                            cur_start = i;
-                        }
-                        start[i] = cur_start;
-                    }
-                    let last = len.saturating_sub(1);
-                    let bucket_end = buckets
-                        .get(last)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(htf.nanos());
-                    let chart_close = self
-                        .candles
-                        .get(last)
-                        .map(|c| c.open_time.saturating_add(c.timeframe.nanos()))
-                        .unwrap_or(0);
-                    for j in cur_start..len {
-                        end[j] = last;
-                        bucket_closed[j] = chart_close >= bucket_end;
-                    }
-                    let mut rev = vec![NA; len];
-                    for i in 0..len {
-                        rev[i] = if lookahead_on {
-                            // gaps_on is the only case left for on.
-                            if i == start[i] {
-                                values[i]
-                            } else {
-                                NA
-                            }
-                        } else if gaps_on {
-                            if i == end[i] && bucket_closed[i] {
-                                values[i]
-                            } else {
-                                NA
-                            }
-                        } else if i == end[i] && bucket_closed[i] {
-                            values[i]
-                        } else if start[i] > 0 {
-                            values[start[i] - 1]
-                        } else {
-                            NA
-                        };
-                    }
-                    rev
-                };
+                    } else {
+                        at_close.filter(|&index| {
+                            let close_time = source_candles[index]
+                                .open_time
+                                .saturating_add(source_candles[index].timeframe.nanos());
+                            close_time > chart.open_time && close_time <= chart_close
+                        })
+                    };
+                    revealed.push(
+                        output_source
+                            .map(|index| source_values[index])
+                            .unwrap_or(NA),
+                    );
+                }
                 self.security_value_cache.insert(site, revealed.clone());
                 Ok(revealed.get(self.bar).copied().unwrap_or(NA))
             }

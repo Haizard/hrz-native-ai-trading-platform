@@ -139,17 +139,18 @@ fn higher_timeframe_history_advances_once_per_source_bar_and_hides_partial_final
         "htf_time = request.security(\"ETHUSDT\", \"5m\", time)\n",
         "htf_sma = request.security(\"ETHUSDT\", \"5m\", ta.sma(close, 2))\n",
         "htf_sma_gaps = request.security(\"ETHUSDT\", \"5m\", ta.sma(close, 2), gaps=barmerge.gaps_on)\n",
+        "htf_sma_lookahead = request.security(\"ETHUSDT\", \"5m\", ta.sma(close, 2), lookahead=barmerge.lookahead_on)\n",
         "plot(htf_time)\n",
         "plot(htf_sma)\n",
         "plot(htf_sma_gaps)\n",
+        "plot(htf_sma_lookahead)\n",
     );
     let (_, parsed) = vet(src).expect("vet");
     let candles: Vec<Candle> = (0..13)
         .map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0))
         .collect();
-    let pool: Vec<Candle> = (0..13)
-        .map(|i| {
-            let bucket = i / 5;
+    let pool: Vec<Candle> = (0..3)
+        .map(|bucket| {
             let mut source = candle("ETHUSDT", bucket, Timeframe::M5, 10.0, 10.0);
             source.open_time = bucket as i64 * Timeframe::M5.nanos();
             source
@@ -199,6 +200,103 @@ fn higher_timeframe_history_advances_once_per_source_bar_and_hides_partial_final
     assert!(
         htf_sma_gaps[10..].iter().all(|value| value.is_nan()),
         "gaps_on does not reveal the partial final bucket"
+    );
+    let htf_sma_lookahead = &output.plots[3].values;
+    assert_eq!(
+        htf_sma_lookahead[5], 15.0,
+        "lookahead_on intentionally exposes the current unfinished source bar"
+    );
+}
+
+#[test]
+fn gaps_off_carries_the_last_source_value_across_missing_bars() {
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"Missing HTF bar\"\n",
+        "htf_close = request.security(\"ETHUSDT\", \"5m\", close)\n",
+        "plot(htf_close)\n",
+    );
+    let (_, parsed) = vet(src).expect("vet");
+    let candles: Vec<Candle> = (0..15)
+        .map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0))
+        .collect();
+    let pool: Vec<Candle> = [0usize, 2]
+        .into_iter()
+        .map(|bucket| {
+            let mut source = candle(
+                "ETHUSDT",
+                bucket,
+                Timeframe::M5,
+                50.0,
+                10.0,
+            );
+            source.open_time = bucket as i64 * Timeframe::M5.nanos();
+            source
+        })
+        .collect();
+    let inputs = Inputs {
+        series_pool: [("ETHUSDT@5M".to_string(), pool)].into(),
+        ..Inputs::default()
+    };
+    let output = run(&parsed, &candles, &inputs).expect("run");
+    let values = &output.plots[0].values;
+    assert_eq!(values[4], 50.0, "the first source candle reveals at close");
+    assert_eq!(
+        values[8], 50.0,
+        "gaps_off carries the last available source value"
+    );
+    assert_eq!(
+        values[14], 70.0,
+        "the next available source value reveals when its candle closes"
+    );
+}
+
+#[test]
+fn an_out_of_order_source_pool_is_an_error() {
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"Unordered MTF\"\n",
+        "pair = request.security(\"ETHUSDT\", \"1m\", close)\n",
+        "plot(pair)\n",
+    );
+    let (_, parsed) = vet(src).expect("vet");
+    let candles: Vec<Candle> = (0..3)
+        .map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0))
+        .collect();
+    let pool = [1usize, 0]
+        .into_iter()
+        .map(|i| candle("ETHUSDT", i, Timeframe::M1, 50.0, 1.0))
+        .collect();
+    let inputs = Inputs {
+        series_pool: [("ETHUSDT@1M".to_string(), pool)].into(),
+        ..Inputs::default()
+    };
+    let err = run(&parsed, &candles, &inputs).expect_err("unordered pool");
+    assert!(
+        err.message.contains("must be ordered by open_time"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn an_empty_source_pool_is_an_error() {
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"Empty MTF\"\n",
+        "pair = request.security(\"ETHUSDT\", \"1m\", close)\n",
+        "plot(pair)\n",
+    );
+    let (_, parsed) = vet(src).expect("vet");
+    let candles: Vec<Candle> = (0..3)
+        .map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0))
+        .collect();
+    let inputs = Inputs {
+        series_pool: [("ETHUSDT@1M".to_string(), Vec::new())].into(),
+        ..Inputs::default()
+    };
+    let err = run(&parsed, &candles, &inputs).expect_err("empty pool");
+    assert!(
+        err.message.contains("empty pooled series for ETHUSDT@1M"),
+        "{}",
+        err.message
     );
 }
 

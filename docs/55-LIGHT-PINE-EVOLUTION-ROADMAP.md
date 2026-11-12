@@ -1,7 +1,7 @@
 # Light Pine Evolution — Engineering Roadmap
 
-- **Status:** Phases 0 and 1 complete; Phase 2 is in progress. The audit, host-data
-  contract, runtime baseline, isolation boundary, and evidence-based language
+- **Status:** Phases 0, 1, and 2 complete. The audit, host-data contract,
+  runtime baseline, isolation boundary, and evidence-based language
   architecture decision are recorded. No runtime or dependency change is
   approved by that decision.
 - **Scope owner:** QUANTERA platform
@@ -288,21 +288,31 @@ isolation gaps are carried into the next phases with explicit tests and limits.
 **Work**
 
 - Fix proven correctness defects before broadening syntax.
-- **Started:** correct `request.security` source timestamps, higher-timeframe
-  history/rolling cadence, and partial-final-bucket reveal semantics; add
-  runtime and host-alignment regression tests.
-- Establish typed value/series contracts for numeric, boolean, string, color,
-  candle, timeframe, market-data, plot, and drawing values as supported by
-  actual host data.
-- Improve diagnostics to identify source span, error category, actionable
-  message, and machine-readable repair context.
-- Add negative tests for invalid operations, missing data, lookahead,
-  boundary conditions, and resource exhaustion.
+- **Done:** pass raw timestamped `request.security` source candles through
+  both hosts; merge by timestamp in the VM so higher-timeframe rolling cadence
+  and viewport warm-up use full source history. Runtime tests cover empty,
+  missing, sparse, and out-of-order pools, gaps/lookahead, source-close
+  boundaries, and partial-final-bucket reveal; chart-engine tests cover
+  zoomed-window warm-up. Broader chart-preview/renderer acceptance remains a
+  separate visual integration item.
+- **Done for the implemented value model:** enforce compatible ternary
+  branches (`na` inherits the other branch), declared and reassigned variable
+  kinds, input defaults, boolean control-flow conditions, numeric loop bounds,
+  typed user-function arguments, UDT constructor fields, and supported
+  rendering series. Builtin argument names and kinds are enforced where the
+  registry marks metadata complete; incomplete entries remain explicitly
+  outside that guarantee.
+- **Done:** diagnostics expose source spans, a stable phase code, actionable
+  messages, and machine-readable repair context.
+- **Done:** negative tests cover invalid operations, missing data, lookahead,
+  boundary conditions, resource exhaustion, and the MTF failure cases above.
 
 **Exit gate**
 
-- Every declared type/semantic rule is enforced by vetting and covered by
-  conformance tests; existing valid scripts remain behavior-compatible.
+- The declared contracts for the implemented language subset are enforced by
+  vetting and conformance tests; existing valid scripts remain
+  behavior-compatible. This does not claim complete Pine or complete
+  parameter metadata for every builtin. **Exit: Phase 2 complete.**
 
 ### Phase 3 — Quantitative standard library
 

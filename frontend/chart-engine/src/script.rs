@@ -32,10 +32,10 @@ pub struct ScriptSpec {
     #[serde(default)]
     pub security: Vec<analytics_core::types::Candle>,
     /// Every `request.security("SYM", "tf", ...)` pair the script names,
-    /// keyed `SYM@TF` and time-aligned onto the chart's bars by the shell
-    /// (same carry-forward contract as `security`). The engine hands the
-    /// pool straight to the VM. Absent on older shells' requests — the
-    /// script's reads then report the missing-key error, which is the truth.
+    /// keyed `SYM@TF`, as raw timestamped source candles. The VM aligns them
+    /// by time and retains full history for rolling calculations in zoomed
+    /// windows. Absent on older shells' requests — reads report the missing
+    /// key.
     #[serde(default)]
     pub series_pool: std::collections::HashMap<String, Vec<analytics_core::types::Candle>>,
     /// `request.data("name")` series (docs/23 Phase 14): platform feeds as
@@ -380,11 +380,10 @@ pub fn inputs_from_spec(spec: &ScriptSpec, chart_symbol: &str) -> Inputs {
     inputs_from_spec_with_window(spec, chart_symbol, None)
 }
 
-/// Build script inputs aligned to the visible slice of the chart candles.
+/// Build script inputs for the visible chart slice.
 ///
-/// The request vectors are aligned to the full chart history by the shell.
-/// A zoomed scene runs over only its visible candles, so its auxiliary series
-/// must use the same window or their values silently come from different bars.
+/// Chart-aligned auxiliary series use the visible window. The MTF pool stays
+/// raw and complete so the VM can warm rolling expressions before the window.
 #[must_use]
 pub fn inputs_from_spec_for_window(
     spec: &ScriptSpec,
@@ -409,11 +408,7 @@ fn inputs_from_spec_with_window(
 ) -> Inputs {
     let mut inputs = Inputs {
         security: aligned_values(&spec.security, window),
-        series_pool: spec
-            .series_pool
-            .iter()
-            .map(|(key, values)| (key.clone(), aligned_values(values, window)))
-            .collect(),
+        series_pool: spec.series_pool.clone(),
         data_series: spec
             .data_series
             .iter()
@@ -1467,8 +1462,8 @@ mod tests {
 
     #[test]
     fn a_pooled_request_security_script_panes() {
-        // Phase 11 in the engine: the shell sends the pool it fetched and
-        // aligned; the pane draws the PAIR's series, not the chart's.
+        // The shell passes raw source candles; the VM aligns them while the
+        // pane draws the PAIR's series, not the chart's.
         let src = concat!(
             "//@pine_lite version=1 overlay=false title=\"MTF\"\n",
             "pair = request.security(\"ETHUSDT\", \"1m\", request.close())\n",
@@ -1506,6 +1501,50 @@ mod tests {
         // The pooled close at bar 20 is 60.0, not the chart's 100.0: the
         // pane's value range must span the pair, not the chart.
         assert!(pane.value_max < 70.0, "max={} (pair, not chart)", pane.value_max);
+    }
+
+    #[test]
+    fn raw_mtf_history_warms_rolling_values_before_the_visible_window() {
+        let src = concat!(
+            "//@pine_lite version=1 overlay=false title=\"MTF warmup\"\n",
+            "pair = request.security(\"ETHUSDT\", \"5m\", request.close())\n",
+            "mean = ta.sma(pair, 2)\n",
+            "plot(mean)\n",
+        );
+        let candles: Vec<Candle> = (0..20).map(|i| candle(i, 100.0)).collect();
+        let pool: Vec<Candle> = (0..4)
+            .map(|i| {
+                let close = 10.0 * (i as f64 + 1.0);
+                Candle {
+                    symbol: "ETHUSDT".into(),
+                    timeframe: Timeframe::M5,
+                    open_time: i as i64 * Timeframe::M5.nanos(),
+                    open: close,
+                    high: close,
+                    low: close,
+                    close,
+                    volume: 1.0,
+                    buy_volume: 0.5,
+                    sell_volume: 0.5,
+                }
+            })
+            .collect();
+        let spec = ScriptSpec {
+            source: src.into(),
+            inputs: Default::default(),
+            security: Vec::new(),
+            series_pool: [("ETHUSDT@5M".to_string(), pool)].into(),
+            data_series: Default::default(),
+        };
+        let visible = &candles[10..15];
+        let inputs = inputs_from_spec_for_window(&spec, "BTCUSDT", 10, visible.len());
+        assert_eq!(inputs.series_pool["ETHUSDT@5M"].len(), 4);
+        let (_, parsed) = pine_lite::vet(&spec.source).expect("vet");
+        let output = run(&parsed, visible, &inputs).expect("run with source warmup");
+        assert_eq!(
+            output.plots[0].values[4], 25.0,
+            "the last visible bar uses both source candles in the SMA"
+        );
     }
 
     #[test]

@@ -805,42 +805,6 @@ mod synthetic_tests {
     }
 }
 
-fn align_security_pooled(
-    primary: &[types::Candle],
-    pooled: &[types::Candle],
-) -> Vec<types::Candle> {
-    if pooled.is_empty() || primary.is_empty() {
-        return Vec::new();
-    }
-    let first = pooled[0].close;
-    let mut out = Vec::with_capacity(primary.len());
-    let mut cursor = 0usize;
-    for bar in primary {
-        // Advance while the next pooled candle has started by this bar's open.
-        while cursor + 1 < pooled.len() && pooled[cursor + 1].open_time <= bar.open_time {
-            cursor += 1;
-        }
-        // The chosen candle must have STARTED by the bar; otherwise the bar
-        // predates the pooled series entirely.
-        let usable = pooled[cursor].open_time <= bar.open_time;
-        let src = if usable { &pooled[cursor] } else { &pooled[0] };
-        let fill = if usable { src.close } else { first };
-        out.push(types::Candle {
-            symbol: src.symbol.clone(),
-            timeframe: src.timeframe,
-            open_time: if usable { src.open_time } else { bar.open_time },
-            open: if usable { src.open } else { fill },
-            high: if usable { src.high } else { fill },
-            low: if usable { src.low } else { fill },
-            close: fill,
-            volume: if usable { src.volume } else { 0.0 },
-            buy_volume: if usable { src.buy_volume } else { 0.0 },
-            sell_volume: if usable { src.sell_volume } else { 0.0 },
-        });
-    }
-    out
-}
-
 fn align_security(primary: &[types::Candle], sec: &[types::Candle]) -> Vec<types::Candle> {
     if sec.is_empty() || primary.is_empty() {
         return Vec::new();
@@ -971,17 +935,13 @@ pub async fn replay_script_preview(
         }
         None => Vec::new(),
     };
-    // Phase 11 (docs/23): every `request.security("SYM", "tf", ...)` pair
-    // the script names, fetched and aligned onto the chart's own bars into
-    // the keyed pool the VM reads. A pair on a COARSER timeframe is fetched
-    // at that tf and aligned by window coverage. Source timestamps survive
-    // the repeated chart slots; the VM applies the requested gaps/lookahead
-    // merge. The chart's own symbol/timeframe is served from the primary fetch.
+    // Phase 11 (docs/23): fetch each named pair at its requested timeframe
+    // and pass the raw timestamped candles to the VM. It owns alignment and
+    // gaps/lookahead merging so rolling calculations retain source cadence.
     let mut series_pool = std::collections::HashMap::new();
     for key in pine_lite::typecheck::collect_series_pool(&parsed, &header) {
-        // `#ltf` keys come from request.security_lower_tf: the host pools
-        // the RAW lower-timeframe series (no alignment -- each chart bar
-        // slices its own window out of it).
+        // `#ltf` keys come from request.security_lower_tf and keep the raw
+        // lower-timeframe series. Regular security pools are raw as well.
         let (key, want_raw) = match key.strip_suffix("#ltf") {
             Some(base) => (base.to_string(), true),
             None => (key, false),
@@ -1054,12 +1014,7 @@ pub async fn replay_script_preview(
             }
             fetched
         };
-        let pooled = if want_raw {
-            raw
-        } else {
-            align_security_pooled(&candles, &raw)
-        };
-        series_pool.insert(if want_raw { format!("{key}#ltf") } else { key }, pooled);
+        series_pool.insert(if want_raw { format!("{key}#ltf") } else { key }, raw);
     }
     // Phase 14 (docs/23): `request.data("NAME")` — platform-native feeds.
     // Today: ticker fields from the venue cache, named `SYMBOL.field`
@@ -1484,7 +1439,7 @@ mod tests {
     }
 
     #[test]
-    fn aligned_script_series_preserve_source_candle_timestamps() {
+    fn aligned_secondary_series_preserve_source_candle_timestamps() {
         let candle = |symbol: &str, timeframe: types::Timeframe, open_time: i64| {
             types::Candle {
                 symbol: symbol.into(),
@@ -1504,15 +1459,6 @@ mod tests {
             candle("BTCUSDT", types::Timeframe::M1, types::Timeframe::M1.nanos()),
             candle("BTCUSDT", types::Timeframe::M1, 2 * types::Timeframe::M1.nanos()),
         ];
-        let higher = candle("BTCUSDT", types::Timeframe::M5, 0);
-        let pooled = align_security_pooled(&chart, &[higher]);
-        assert_eq!(
-            pooled.iter().map(|c| c.open_time).collect::<Vec<_>>(),
-            vec![0, 0, 0],
-            "repeated pool slots retain the HTF source open time"
-        );
-        assert!(pooled.iter().all(|c| c.timeframe == types::Timeframe::M5));
-
         let pair = [candle("ETHUSDT", types::Timeframe::M1, 0)];
         let aligned_pair = align_security(&chart, &pair);
         assert_eq!(

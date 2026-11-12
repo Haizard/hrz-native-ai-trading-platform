@@ -88,12 +88,29 @@ functions, never by reimplementing them.
 
 ### Types
 
-`float` (the default numeric; `int` is a float subtype as in Pine — bool and
-string exist but cannot be plotted), `bool`, `string`, `color` literals
-(`color.red`, `#RRGGBB`/`#RRGGBBAA`), and series-ness is implicit: a scalar
-literal used in series context promotes to a constant series (Pine's
-"series-ness is viral" rule, simplified: everything is a series, scalars are
-just constant ones).
+The scalar value kinds are `float` (the default numeric; `int` is a float
+subtype as in Pine), `bool`, `string`, and `color` literals (`color.red`,
+`#RRGGBB`/`#RRGGBBAA`). `plot` and `hline` require numeric series; other kinds
+are not implicitly converted. Series-ness is implicit: a scalar literal used
+in series context promotes to a constant series (Pine's "series-ness is
+viral" rule, simplified: everything is a series, scalars are just constant
+ones). Ternary branches must have compatible value types; `na` takes the
+type of the other branch. A mismatched branch is a vet error, not an implicit
+conversion. Explicit `float`/`int`, `bool`, `string`, `color`, and drawing
+handle declarations check the initializer; `na` adopts the declared kind.
+After a series has a concrete kind, reassignment to another kind is refused.
+An initial untyped `na` does not constrain the later kind.
+
+`if`/`while` conditions must be boolean and `for` bounds/steps numeric.
+User-function arguments are numeric in the currently supported function
+model. UDT constructors and field assignments check declared `bool` and
+`color` fields distinctly; other implemented fields are numeric/handles.
+Input defaults are checked against their supported kind (`input.bool` retains
+the legacy numeric default form). Rendering calls check the value kind their
+series slots require. Builtin parameter type/name checks are guaranteed only
+for catalog entries whose `metadata_complete` flag is set; other entries
+still receive their registered arity checks, but are not claimed to have a
+complete static argument contract.
 
 ### Grammar (informal; the parser is the arbiter)
 
@@ -182,21 +199,24 @@ and timeframe must be quoted literals, the pool caps at 8 keys per script.
   divergence (our new swing high while the pair makes a lower high) are
   ordinary arithmetic over them.
 - **Multi-timeframe reads** go through `request.security` with a timeframe
-  literal. The host aligns each pooled source candle onto chart-bar slots but
-  preserves its source `open_time` and timeframe. The VM evaluates the
-  expression once per distinct source candle, then projects values back onto
-  chart bars; history and rolling functions therefore advance at the requested
-  timeframe. `request.security(..., time)` reports the source candle's open
-  timestamp. The default `gaps_off`/`lookahead_off` carries the prior
-  higher-timeframe value during the bucket and reveals the current value only
-  when the chart bar closes the bucket. An incomplete final bucket is not
-  revealed. `gaps_on` returns `na` between reveal bars; `lookahead_on` exposes
-  the current bucket value from its first chart bar and can therefore leak
-  future values in historical analysis.
+  literal. The host supplies the raw, timestamped source candles, ordered by
+  `open_time`; it does not expand them onto chart-bar slots. The VM evaluates
+  the expression once per distinct source candle, then merges values onto the
+  chart bars by timestamp. The full source history must be retained for
+  rolling functions when the chart is zoomed. `request.security(..., time)`
+  reports the source candle's open timestamp. Before the first source candle
+  is available the result is `na`. The default `gaps_off`/`lookahead_off`
+  carries the last revealed value during a bucket (including across missing
+  source bars) and reveals a completed source value only when a chart bar
+  closes that source candle; an incomplete final bucket is not revealed.
+  `gaps_on` returns `na` except on reveal bars. `lookahead_on` exposes the
+  current bucket value from its first chart bar and can therefore leak future
+  values in historical analysis. Empty or out-of-order pools are errors.
 
-  **Remaining limitation:** conformance coverage currently exercises regular,
-  contiguous chart windows. Sparse windows, missing source bars, and viewport
-  warm-up still need broader tests before claiming complete MTF parity.
+  **Coverage:** runtime tests cover raw source cadence, missing source bars,
+  and final-bucket reveal semantics; chart-engine coverage verifies full-source
+  warm-up for a zoomed viewport. Broader chart-preview/renderer visual
+  acceptance remains open.
   Time-anchored drawing objects require absolute timestamps; an HTF zone's
   edges are not chart bar indexes (`docs/28`).
 
@@ -386,7 +406,7 @@ limitations remain explicit even when the language construct itself is tested.
 
 | Phase | Delivered capability | Status, evidence, and remaining limitation |
 | --- | --- | --- |
-| 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", expression)`, keyed host pools, eight-key cap, and `sec=` shorthand. | **partial** — literal collection, cap, VM evaluation, host fetch/alignment, and chart-engine paths exist in `crates/pine-lite/src/typecheck.rs`, `interp.rs`, `crates/api-gateway/src/indicator_preview.rs`, and `frontend/chart-engine/src/script.rs`. Source timestamps are preserved; sub-VM history/rolling evaluation advances once per source candle; and an unfinished final bucket is not revealed. Targeted coverage is in `tests/request_security.rs`; sparse-window, missing-source, and viewport warm-up conformance remain open. |
+| 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", expression)`, keyed host pools, eight-key cap, and `sec=` shorthand. | **partial** — literal collection, cap, raw source fetching, timestamp merge, and chart-engine paths exist in `crates/pine-lite/src/typecheck.rs`, `interp.rs`, `crates/api-gateway/src/indicator_preview.rs`, and `frontend/chart-engine/src/script.rs`. Sub-VM history/rolling evaluation advances once per source candle, missing source bars carry only the last revealed value, and an unfinished final bucket is not revealed. Runtime tests cover cadence and sparse source bars; the chart engine tests raw-history warm-up for a zoomed window. Broader chart-preview/renderer visual acceptance remains open. |
 | 12 | **User-defined functions** with typed call sites, series-passing semantics, and recursion limits. | **done** — parser/checker/runtime in `parse.rs`, `typecheck.rs`, and `interp.rs`; `tests/user_functions.rs` covers execution, TA composition, arity, and recursion refusal. |
 | 13 | **Drawing objects** with bounded VM heap and chart-coordinate projection. | **done** for implemented line/label/box/Fibonacci objects — `tests/drawing_objects.rs`, `frontend/chart-engine/src/scene.rs` projection tests, and `frontend/app/app.js` painter. This does not imply every requested visualization type exists. |
 | 14 | **Provider-backed `request.data`** for ticker snapshots and timestamped funding/open-interest series. Generic HTTP is explicitly not part of this phase. | **done** for the supported provider fields — collection/runtime behavior in `typecheck.rs` and `interp.rs`, gateway loading in `indicator_preview.rs`, and `tests/request_data.rs`. Missing feeds fail visibly; generic HTTP remains unimplemented and permission-gated future work. |
@@ -394,11 +414,12 @@ limitations remain explicit even when the language construct itself is tested.
 | 16 | **Time-anchored drawings** and aligned-secondary `request.time()`. | **partial** — VM and chart time-coordinate mapping are tested in `tests/time_anchored_objects.rs` and `frontend/chart-engine/src/scene.rs`; aligned script series now retain source timestamps, including MTF pool bars. Broader chart-preview/renderer visual acceptance remains open. |
 | 17 | **Optional box borders** with backward-compatible serialization. | **done** — constructor/runtime and wire behavior are covered by `tests/drawing_objects.rs` and `frontend/chart-engine/src/scene.rs`; unset borders preserve the fill-only rendering. |
 
-The next work is correctness-first: extend MTF conformance coverage to sparse
-windows, missing source bars, and viewport warm-up before claiming complete
-higher-timeframe parity. Phase 14 is provider-backed data only; generic HTTP
-remains out of scope until permissions, response-size caps, and caching are
-designed and tested.
+Phase 2's implemented MTF and value contracts have runtime and chart-engine
+conformance coverage; broader chart-preview/renderer visual acceptance remains
+open and is not claimed as full TradingView parity. The next roadmap phase is
+the quantitative standard library. Phase 14 is provider-backed data only;
+generic HTTP remains out of scope until permissions, response-size caps, and
+caching are designed and tested.
 
 ## Implementation notes (2026-09)
 
