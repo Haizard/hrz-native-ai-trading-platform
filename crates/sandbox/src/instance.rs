@@ -159,7 +159,7 @@ impl Sandbox {
 
         allowlist::check_module(&module)?;
 
-        let ticker = EpochTicker::start(engine.clone());
+        let ticker = EpochTicker::start(engine.clone())?;
         Ok(Self {
             engine,
             module,
@@ -615,7 +615,7 @@ struct EpochTicker {
 }
 
 impl EpochTicker {
-    fn start(engine: Engine) -> Self {
+    fn start(engine: Engine) -> Result<Self, SandboxError> {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
 
@@ -628,9 +628,16 @@ impl EpochTicker {
                     engine.increment_epoch();
                 }
             })
-            .ok();
+            .map_err(|error| {
+                SandboxError::Instantiation(format!(
+                    "could not start the sandbox epoch ticker: {error}"
+                ))
+            })?;
 
-        Self { stop, handle }
+        Ok(Self {
+            stop,
+            handle: Some(handle),
+        })
     }
 }
 

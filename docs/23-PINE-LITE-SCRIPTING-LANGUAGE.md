@@ -368,41 +368,42 @@ backtest, or a bot.
 
 ## Phased plan
 
-| Phase | Delivers | Done when | Status |
+| Phase | Delivers | Acceptance criterion | Status and source/test evidence |
 | --- | --- | --- | --- |
-| 1 | Crate skeleton, lexer, error list, no deps beyond analytics-core | Round-trip tests over fixtures | **done** |
-| 2 | Parser → AST with spans | Golden parse tests incl. error cases | **done** |
-| 3 | Type checker + casting rules | Refusal tests for every casting rule | **done** |
-| 4 | Series interpreter: per-bar exec, history, na, var, inputs | Equivalence: hand-computed series fixtures | **done** |
-| 5 | `ta.*` over analytics-core (incl. new macd/stoch/bb there) | Parity tests vs analytics-core units | **done** (`ta.rsi`/`ta.atr` parity-pinned) |
-| 6 | Plot statements → `ScriptPane` output contract | Positioning tests in chart-engine | **done** (`chart_engine::script`, shell `drawScriptPanes`) |
-| 7 | Strategy calls → backtester replay intents | Golden replay vs a YAML equivalent | **done** (`backtester::script_strategy`) |
-| 8 | Static analyser + sandbox front-end + fuel budgets | Adversarial tests mirror docs/08's list | **partial** (static limits, VM fuel + recursion cap in; WASM guest front-end pending) |
-| 9 | Gateway: `/scripts/*` routes, workspace language switch, AI loop | `indicator_workspace_flow`-style gateway tests | **partial** (`POST /scripts/vet` and Pine-Lite workspace generation/edit, repair, preview, and revision storage are implemented; workspace language-switch status needs reconciliation) |
-| 10 | Chart engine + shell: rendering, inputs UI, pane management | Shell check script + visual parity vs RSI sub-pane | **partial** (rendering, `attachScript`, layer controls, and boolean/numeric input settings exist; string/color settings remain code-only, and pane/visual acceptance needs audit) |
+| 1 | Crate skeleton, lexer, error list, no deps beyond analytics-core | Round-trip tests over fixtures | **done** — lexer/header tests in `crates/pine-lite/src/lex.rs`; leaf dependency is visible in `crates/pine-lite/Cargo.toml`. |
+| 2 | Parser → AST with spans | Golden parse tests incl. error cases | **done** — parser and span/error cases in `crates/pine-lite/src/parse.rs`. |
+| 3 | Type checker + casting rules | Refusal tests for every casting rule | **done** — checker refusal and arity tests in `crates/pine-lite/src/typecheck.rs`; public vet path in `src/lib.rs`. |
+| 4 | Series interpreter: per-bar exec, history, na, var, inputs | Equivalence: hand-computed series fixtures | **done** for the implemented value model — runtime and fuel tests in `crates/pine-lite/src/interp.rs`, `tests/model_ergonomics.rs`, and `tests/strategy_execution.rs`. |
+| 5 | `ta.*` over analytics-core (incl. new macd/stoch/bb there) | Parity tests vs analytics-core units | **done** for the exposed, tested set — implementations and numeric fixtures in `crates/pine-lite/src/ta.rs`, including pinned SMA/EMA/RSI/ATR parity. This is not full Pine TA parity. |
+| 6 | Plot statements → `ScriptPane` output contract | Positioning tests in chart-engine | **done** for current plot/drawing types — projection tests in `frontend/chart-engine/src/script.rs` and `scene.rs`; frontend painter in `frontend/app/app.js`. |
+| 7 | Strategy calls → backtester replay intents | Pine execution and `ScriptStrategy` replay agree on supported intents; runtime failures are observable | **done** for the adapter's supported intents — `crates/backtester/src/script_strategy.rs` and `crates/backtester/tests/script_parity.rs`; runtime failures now abort replay with diagnostics. |
+| 8 | Static analyser + sandbox front-end + fuel budgets | Adversarial tests mirror docs/08's list | **partial** — Pine-Lite static limits and fuel/call/array/object guards are in `crates/pine-lite/src/limits.rs` and `interp.rs`, with runaway-loop tests in `tests/model_ergonomics.rs`. The gateway still invokes native `pine_lite::run`; Pine-Lite is not in the Wasmtime guest. See the isolation decision in `docs/08-SANDBOX-WASM.md`. |
+| 9 | Gateway: `/scripts/*` routes, workspace language switch, AI loop | `indicator_workspace_flow`-style gateway tests | **partial** — `/scripts/vet`, generation/edit/repair/preview, and revision storage are implemented in `crates/api-gateway/src/script_routes.rs` and `indicator_workspace_routes.rs`, covered by `indicator_workspace_flow.rs` and `indicator_preview_flow.rs`. Strategy-document and Pine-Lite code representations use distinct flows; no single in-place workspace language switch was found. |
+| 10 | Chart engine + shell: rendering, inputs UI, pane management | Shell check script + visual parity vs RSI sub-pane | **partial** — render/projection and layer tests are in `frontend/chart-engine/src/script.rs` and `scene.rs`; layer controls and boolean/numeric settings are in `frontend/app/app.js`. String/color settings and full pane/visual acceptance remain open. |
 
 Phases 1–5 are the language core and land as one reviewable unit; 6–8 make it
 visible and safe; 9–10 wire it to users.
 
-### Phases 11–14: closing the gap to full Pine (planned 2026-09)
+### Phases 11–17: implementation status (reviewed 2026-11)
 
-The studio must be able to say "yes" to any indicator idea a trader brings.
-Four gaps remain against full TradingView Pine; each is an extension of the
-builtin table, the vet rules and the output contract — not a redesign.
+These are scoped Light Pine capabilities, not a claim of full TradingView Pine
+parity. Status is based on the implementation and named tests; known host-data
+limitations remain explicit even when the language construct itself is tested.
 
-| Phase | Delivers | Done when |
+| Phase | Delivered capability | Status, evidence, and remaining limitation |
 | --- | --- | --- |
-| 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", request.close())` (string/symbol, string/timeframe, series expression), `sec=` stays as the single-pair shorthand; host fetches every named pair + timeframe, aligns each onto the chart's bars (carry-forward flat), VM keeps a keyed series pool (cap 8 pairs/script) | SMT-across-3-pairs and MTF-trend scripts vet, run in gateway preview and in the browser engine; alignment unit tests |
-| 12 | **User-defined functions**: `f(x, y) =>` block form, typed by the same checker, call frames with Pine's series-passing semantics (a parameter re-evaluates the caller's argument expression at the reading bar, so `ta.*` over a parameter sees the caller series' real history), call-depth cap refuses recursion | **done** — parse/typecheck/VM landed with the language core; series-passing + recursion-cap tests in `tests/user_functions.rs` |
-| 13 | **Drawing objects**: `line.new(bar1, price1, bar2, price2, color=, style=)`, `label.new(bar, price, text=)`, `box.new(left, top, right, bottom, color=)` into a VM heap (cap 256 objects — raised from 64 in v1.1, live object cap like arrays); engine positions them from bar/time coordinates; shell draws them under the user's own drawings | **done** — VM heap + dispatch + positioning tests (`tests/drawing_objects.rs`, chart-engine `drawing_objects_position_through_the_frame`), shell painter in `drawScriptOverlays` |
-| 14 | **External data**: first a platform-native feed (funding rates, OI from the existing market-data crate) as `request.data("funding")`, then generic HTTP behind a permission prompt and a size-capped cache | **done** — `request.data("NAME")` reads host-filled platform series (`Inputs.data_series`): ticker fields (`SYM.change_pct`, `SYM.quote_volume`, `SYM.high`, `SYM.low`, `SYM.last`), literal-name vetted, exempt from `sec=`, gateway fills from the ticker cache (`tests/request_data.rs`); generic HTTP stays a future phase behind permissions |
-| 15 | **v1.1 expressiveness** (`while` loops, user-function parameter defaults, object heap 64 → 256): `while cond` with a 4-space body, fuel-metered per iteration exactly like `for` (no static termination proof required); `f(a, b = 2) =>` trailing defaults, caller-scope series semantics (a default of `close[1]` is the caller's yesterday), min-arity checking, required-after-optional refused | **done** — interp while arm + limits/typecheck updates (`limits.rs`, `typecheck.rs`), defaults end-to-end parse→typecheck→VM, cap in `interp::MAX_OBJECTS`; pinned in `tests/model_ergonomics.rs` v1.1 section + `tests/drawing_objects.rs` cap test |
-| 16 | **Time-anchored drawing objects** (`docs/28`): `line.new_time`, `label.new_time`, `box.new_time` take unix-nanos timestamps instead of bar indexes, and `request.time()` exposes the aligned second instrument's open time — so a script reading a pooled higher timeframe (Phase 11) can draw what it found there onto this chart's time axis (the 1h FVG on the 5m chart) | **done** — VM variants + typecheck arities + engine mapping via `x_at_nanos`; pinned in `tests/time_anchored_objects.rs` (the HTF FVG idiom end-to-end) and chart-engine `time_anchored_objects_map_by_absolute_time_not_bar_index` |
-| 17 | **Box borders** (`docs/31`): `border_color=` / `border_width=` / `border_style=` on both box forms — TradingView's zone look, a visible border distinct from the fill; off when unasked (fill-only stays the pre-border shape) | **done** — named-arg parsing + wire fields (omitted when unset, old scenes deserialize unchanged) + shell stroke; pinned in `tests/drawing_objects.rs` and chart-engine `a_box_border_rides_the_wire_only_when_set` |
+| 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", expression)`, keyed host pools, eight-key cap, and `sec=` shorthand. | **partial** — literal collection, cap, VM evaluation, host fetch/alignment, and chart-engine paths exist in `crates/pine-lite/src/typecheck.rs`, `interp.rs`, `crates/api-gateway/src/indicator_preview.rs`, and `frontend/chart-engine/src/script.rs`; tests include `tests/request_security.rs` and chart-engine MTF cases. HTF rolling/history expressions advance at chart cadence, `time` uses chart-bar timestamps after host alignment, and the final bucket is treated as complete. These semantic gaps are documented above and block a complete status. |
+| 12 | **User-defined functions** with typed call sites, series-passing semantics, and recursion limits. | **done** — parser/checker/runtime in `parse.rs`, `typecheck.rs`, and `interp.rs`; `tests/user_functions.rs` covers execution, TA composition, arity, and recursion refusal. |
+| 13 | **Drawing objects** with bounded VM heap and chart-coordinate projection. | **done** for implemented line/label/box/Fibonacci objects — `tests/drawing_objects.rs`, `frontend/chart-engine/src/scene.rs` projection tests, and `frontend/app/app.js` painter. This does not imply every requested visualization type exists. |
+| 14 | **Provider-backed `request.data`** for ticker snapshots and timestamped funding/open-interest series. Generic HTTP is explicitly not part of this phase. | **done** for the supported provider fields — collection/runtime behavior in `typecheck.rs` and `interp.rs`, gateway loading in `indicator_preview.rs`, and `tests/request_data.rs`. Missing feeds fail visibly; generic HTTP remains unimplemented and permission-gated future work. |
+| 15 | **v1.1 expressiveness**: `while`, user-function parameter defaults, and 256-object cap. | **done** — implementation in `interp.rs`, `limits.rs`, and `typecheck.rs`; behavior and runaway-loop coverage in `tests/model_ergonomics.rs`, with the heap cap in `tests/drawing_objects.rs`. |
+| 16 | **Time-anchored drawings** and aligned-secondary `request.time()`. | **partial** — VM and chart time-coordinate mapping are tested in `tests/time_anchored_objects.rs` and `frontend/chart-engine/src/scene.rs`; `request.time()` is verified for `sec=`. The gateway's per-call MTF aligner rewrites pooled `open_time` to chart time, so `request.security(..., time)` cannot currently anchor a true HTF boundary. |
+| 17 | **Optional box borders** with backward-compatible serialization. | **done** — constructor/runtime and wire behavior are covered by `tests/drawing_objects.rs` and `frontend/chart-engine/src/scene.rs`; unset borders preserve the fill-only rendering. |
 
-Order is value-first: 11 unblocks the most requested real strategies (MTF
-trend + multi-pair SMT), 12 removes the inline-length ceiling, 13 gives
-zones/labels their native form, 14 is gated on permissions and ships last.
+The next work is correctness-first: close the MTF history/timestamp limitations
+in phases 11 and 16 before claiming higher-timeframe parity. Phase 14 is
+provider-backed data only; generic HTTP remains out of scope until permissions,
+response-size caps, and caching are designed and tested.
 
 ## Implementation notes (2026-09)
 

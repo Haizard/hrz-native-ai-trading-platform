@@ -262,6 +262,28 @@ fn an_infinite_loop_is_halted_by_fuel() {
 }
 
 #[test]
+fn an_epoch_deadline_stops_execution_while_fuel_remains() {
+    let wat = with_eval("(loop $spin (br $spin)) (i32.const 0)");
+    let limits = SandboxLimits::default().with_timeout(std::time::Duration::from_millis(10));
+    let sandbox = Sandbox::from_wasm(wat.as_bytes(), limits).expect("accepted");
+    let document = parse_and_validate(DOCUMENT).unwrap();
+    let mut session = sandbox.start(&document).expect("ABI is satisfied");
+
+    let error = session
+        .evaluate(&context())
+        .expect_err("the epoch deadline must stop a fuel-budgeted guest");
+
+    match error {
+        SandboxError::Timeout(timeout) => assert_eq!(timeout, limits.timeout),
+        other => panic!("expected a wall-clock timeout, got {other}"),
+    }
+    assert!(
+        session.usage().fuel_consumed < limits.fuel,
+        "epoch interruption should happen before fuel exhaustion"
+    );
+}
+
+#[test]
 fn a_tiny_fuel_budget_is_enforced_exactly() {
     // The same loop with a budget too small for even the setup. The point is
     // that the ceiling is the configured one and not some internal default.

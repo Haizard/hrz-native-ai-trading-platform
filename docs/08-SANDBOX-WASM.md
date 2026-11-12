@@ -86,6 +86,51 @@ runs through the sandbox would be a smaller change than this one was, because th
 
 ---
 
+## Pine-Lite preview boundary (decision, 2026-11)
+
+The gateway's indicator preview currently calls `pine_lite::vet` and
+`pine_lite::interp::run` in the gateway process. Static script limits and the
+interpreter fuel meter bound ordinary script work, but they do not impose a
+memory ceiling or isolate a native interpreter/runtime fault from the service.
+This path is not the Wasmtime sandbox and must not be described as isolated.
+
+**Decision:** keep the existing preview limited to producing chart-preview
+results. Do not add live execution, trading capabilities, broader background
+execution, or new server-side script APIs on this native path. Before expanding
+server-side Pine-Lite execution, run the trusted Pine-Lite interpreter as
+WebAssembly inside Wasmtime and pass source, candles, and provider-backed
+series as bounded data. The guest receives no filesystem, network, environment,
+secret, broker, or order-placement capabilities; preview data is fetched by the
+host and the guest only evaluates that snapshot.
+
+The Wasmtime guest is an in-process WebAssembly boundary: its linear memory and
+imports are constrained, but it does not contain a Wasmtime or host integration
+vulnerability from the gateway's OS process. If the deployment threat model
+requires surviving a runtime/host compromise or running arbitrary scripts for
+untrusted multi-tenant callers, execute the sandbox in a separate worker
+process with OS-enforced memory/CPU limits and no ambient credentials or
+network access.
+
+The Pine-Lite guest integration is not implemented yet. Its release gate must
+cover:
+
+- input byte, candle-count, timeframe-pool, and provider-series caps before
+  copying data into guest memory;
+- Wasmtime fuel, epoch deadline, and linear-memory limits, with guest startup
+  failures reported rather than silently dropping a limit;
+- bounded plot/drawing/error output and bounded concurrent preview jobs;
+- adversarial scripts for fuel exhaustion, memory growth, forbidden imports,
+  malformed input, and trap/error propagation, plus parity against the native
+  preview fixture.
+
+Existing evidence is deliberately kept separate: Pine-Lite's runaway-loop
+tests prove its interpreter fuel guard; `sandbox/tests/adversarial.rs` tests
+Wasmtime's import allowlist, fuel, memory, and trap handling for the
+strategy-runtime guest. Neither suite proves Pine-Lite is already sandboxed.
+The Wasmtime timeout also has a dedicated epoch-interruption test.
+
+---
+
 # Implementation notes (Phase 4)
 
 *The section above is the contract. This section records what was built against it, the

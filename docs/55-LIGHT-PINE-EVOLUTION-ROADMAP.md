@@ -1,7 +1,9 @@
 # Light Pine Evolution — Engineering Roadmap
 
-- **Status:** Phase 0 in progress; source-level reference report complete;
-  architecture and implementation decisions remain gated on Phase 0 evidence
+- **Status:** Phase 0 complete; Phase 1 in progress. The audit, host-data
+  contract, first runtime baseline, and current isolation decision are recorded.
+  The Phase 1 architecture decision still needs review before any runtime or
+  dependency change.
 - **Scope owner:** QUANTERA platform
 - **Implementation rule:** ship one reviewable, tested capability per phase
 
@@ -217,13 +219,19 @@ remain subject to Phase 0 baselines and review.
   gateway vet and preview, sandbox, backtester, chart engine, frontend, and
   AI generation.
 - Build a feature matrix with statuses `implemented`, `partial`, `missing`,
-  or `data-gated`, each backed by a source path and test.
+  or `data-gated`, each backed by a source path and test. **Done:** see the
+  source/test evidence in `docs/23` and the dependency map and capability
+  assessment in `docs/57`.
 - Resolve the two baseline Fibonacci drawing test failures and run all
   Pine-Lite integration suites. **Done:** both Fibonacci failures were
   repaired; the full crate suite now passes. The previously hidden strategy
   header conformance test also exposed and fixed positive-pyramiding acceptance.
 - Record representative AI-generated valid and invalid scripts and
-  diagnostics.
+  diagnostics. **Done with a negative acceptance:** deterministic valid and
+  runtime-failing preview fixtures are covered by
+  `crates/api-gateway/tests/indicator_preview_flow.rs`; the earlier
+  provider-backed FVG attempt and its missing-drawings result are recorded in
+  `docs/57`, not reported as a pass.
 - **Benchmark baseline done:** the dependency-free
   `cargo bench -p pine-lite --bench runtime_baseline` harness measures vetting,
   vetted execution, allocations, and replay after a last-bar update for five
@@ -234,6 +242,11 @@ remain subject to Phase 0 baselines and review.
   behavior. **Host-data contract done:** documented in `docs/23`, with a
   regression test for sparse `sec=` gaps. MTF rolling-history/time semantics
   and the partial-final-bucket behavior remain open.
+- **Isolation boundary decided:** the gateway's current native preview stays
+  preview-only; do not broaden server-side execution or add trading
+  capabilities until Pine-Lite runs as a bounded Wasmtime guest. Wasmtime's
+  strategy guest tests are evidence for that sandbox's controls, not evidence
+  that Pine-Lite is already isolated. See `docs/08` and `docs/57`.
 
 **Exit gate**
 
@@ -241,13 +254,20 @@ remain subject to Phase 0 baselines and review.
   Pine-Lite test suite or explicitly isolated, understood blockers; repeatable
   correctness and performance baselines.
 
+**Exit:** Phase 0's audit and baseline gates are met. The provider-backed FVG
+attempt failed its visual acceptance criteria and is an understood blocker,
+not a successful AI-generation result. The remaining MTF and Pine-Lite guest
+isolation gaps are carried into the next phases with explicit tests and limits.
+
 ### Phase 1 — Language contract and reference comparison
 
 **Work**
 
 - Reconcile `docs/23` with the implementation and define versioned execution
   semantics for historical bars, closed-bar updates, `na`, state, timeframe
-  alignment, and strategy calls.
+  alignment, and strategy calls. **Status review done:** `docs/23` now records
+  per-phase source/test evidence and marks MTF timestamp/history semantics as
+  partial rather than complete.
 - Compare the current parser/type checker/interpreter with Chumsky, Rhai, and
   Rune; compare sandbox constraints with Wasmtime.
 - Define a quantitative-library comparison using YATA plus selected

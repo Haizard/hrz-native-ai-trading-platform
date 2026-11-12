@@ -72,7 +72,7 @@ not the production bot path.
 | Type checking | Static name, call, arity, and assignment checks; `int`/`float` unify. | Core `Ty` is `Float`, `Bool`, `String`, `Color`, `Na`; it is not a general series-aware or nominal type system. |
 | Declarations and control flow | Variables, functions/methods, user-defined type declarations, `if`, `for`, `while`, `switch`, arrays, maps, and matrices are represented/handled in the language. | No enum declaration or import/module system was found. Type and collection behavior is not equivalent to a full Rust-like type system. |
 | Execution | Deterministic per-bar AST interpreter with history buffers, `var` state, series caches for eligible calls, and pooled security-expression caching. | There is no typed IR or compile-once bytecode/native backend; some variable-dependent expressions are recalculated. |
-| Resource limits | Static statement/plot/fill/function/loop-depth limits; runtime fuel, call-depth, array count/length, object caps; history limit from the header. | Fuel bounds interpreter work but is not process isolation. Gateway preview runs in-process. |
+| Resource limits | Static statement/plot/fill/function/loop-depth limits; runtime fuel, call-depth, array count/length, object caps; history limit from the header. The strategy Wasmtime sandbox separately enforces fuel, epoch deadlines, guest linear memory, and an import allowlist. | Gateway preview still invokes native `pine_lite::run` in-process. Pine-Lite limits are not memory/OS isolation; the strategy guest tests do not prove a Pine-Lite guest exists. The timeout ticker must start successfully or sandbox construction now fails. |
 | Builtins and indicators | Pine-Lite exposes math, TA, input, strategy, data/security, and drawing APIs; several TA formulas wrap or reuse `analytics-core`. A versioned catalog now records arity/result shape for all entries, with parameter, host-data, and runtime metadata explicitly marked complete only for selected TA, data, and drawing calls. | The catalog remains intentionally partial; the interpreter is still the execution authority, and metadata completeness does not prove numerical parity with `analytics-core`. |
 | Market data | Host supplies candles, aligned secondary candles, pooled symbol/timeframe series, ticker/data series, and instrument metadata where available. | Raw trades, full order books, and footprint data are not general script inputs merely because related Rust data structures exist elsewhere. |
 | Chart output | VM emits structured plot and object output; Rust/WASM chart engine maps it to panes, price overlays, shapes, and drawings. Strategy outputs include chart-side simulation rendering. | Do not imply support for every requested visualization (for example, full order-book heatmaps or native footprint panels) without a script API, renderer mapping, and tests. |
@@ -141,10 +141,11 @@ S1–S3 as implemented and S4 as pending; the source has VM simulation and chart
 projection paths. The old status note in docs/23 is corrected to point to
 docs/24 and to distinguish chart simulation from live-bot deployment.
 
-The language phase table still contains statuses and dates that warrant a
-separate end-to-end reconciliation. In particular, document completion only
-when the named acceptance criteria have executable tests in every relevant
-host (gateway, browser/WASM, backtester, or live execution as applicable).
+The language phase table in `docs/23` has now been reconciled against source
+and executable tests. Phases 1–7 and 12–15/17 are marked complete only for
+their scoped deliverables. Phase 8–11 and 16 remain partial for the explicitly
+listed isolation, workspace-switch, MTF-history, and timestamp gaps. Do not
+infer gateway/browser/backtester parity from a Pine-Lite unit test alone.
 
 ## Recommended staged engineering work
 
@@ -208,11 +209,21 @@ host (gateway, browser/WASM, backtester, or live execution as applicable).
    final-bucket limitations remain open. Add trades/order-book/footprint types
    only alongside real data providers and executable tests; OHLCV-only
    calculations must not be described as order-flow measurements.
-6. **Isolation decision.** Document the threat model for AI-generated scripts.
-   If arbitrary scripts are run in a server process beyond tightly bounded
-   preview, integrate a dedicated sandbox boundary or otherwise establish and
-   test the required resource and access controls. Do not label fuel metering
-   as process isolation.
+6. **Pine-Lite server-side isolation.** The boundary decision is recorded in
+   `docs/08-SANDBOX-WASM.md`: keep the existing gateway preview limited to
+   preview results and do not expand server-side execution or add trading
+   capabilities until
+   the trusted Pine-Lite interpreter runs as a bounded Wasmtime guest. Pass
+   provider data as capped input; expose no filesystem, network, secret,
+   broker, or order-placement capabilities. Wasmtime is an in-process
+   WebAssembly boundary, not an OS-process boundary; a separate restricted
+   worker is required if the deployment must contain a Wasmtime/host-runtime
+   compromise. Existing Pine-Lite fuel tests and strategy-sandbox adversarial
+   tests establish only their respective current controls, not Pine-Lite
+   sandboxing. The Wasmtime epoch ticker now fails closed if its thread cannot
+   start, and the adversarial suite tests epoch interruption while fuel
+   remains. A Pine-Lite guest still needs its own input/output, memory, fuel,
+   timeout, capability, concurrency, and native-parity tests before expansion.
 
 ## Verification performed
 
@@ -234,6 +245,12 @@ host (gateway, browser/WASM, backtester, or live execution as applicable).
   deterministic generator gate is not a substitute for this test.
 - `cargo test -p api-gateway secondary_candles_carry_flat_close_with_zero_volume_across_gaps`
   passed for the `sec=` alignment regression.
+- `cargo test -p pine-lite -p backtester -p chart-engine` passed; the targeted
+  gateway library and preview tests passed.
+- `cargo test -p sandbox --test adversarial` passed (23 tests), including
+  forbidden-import, fuel, memory, trap, and epoch-timeout cases. The
+  Pine-Lite `a_runaway_while_dies_on_the_fuel_budget_not_on_a_hang` test also
+  passed.
 - `cargo bench -p pine-lite --bench runtime_baseline` completed twice; the
   harness and measured medians are documented in
   `docs/58-LIGHT-PINE-PERFORMANCE-BASELINE.md`. Existing workspace warnings

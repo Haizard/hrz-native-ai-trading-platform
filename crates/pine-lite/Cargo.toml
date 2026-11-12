@@ -6,10 +6,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# A leaf crate, like analytics-core: nothing internal except the math crate,
-# and it must keep building for wasm32 -- the sandbox guest and the chart
-# engine both link this language. docs/23-PINE-LITE-SCRIPTING-LANGUAGE.md is
-# the spec; this manifest is the dependency rule made executable.
+# A leaf crate, like analytics-core: nothing internal except the math crate.
+# Keep it building for wasm32 for the browser chart engine. The strategy
+# sandbox guest does not link Pine-Lite; server preview still runs natively
+# until the guest-isolation work is complete. docs/23 is the language spec.
 [dependencies]
 analytics-core = { path = "../analytics-core" }
 serde = { workspace = true }
