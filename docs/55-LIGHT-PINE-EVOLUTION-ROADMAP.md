@@ -366,6 +366,15 @@ isolation gaps are carried into the next phases with explicit tests and limits.
 
 ### Phase 6 — Compile-once execution and performance
 
+**Status: Complete (2026-11-12).** A measured repeated whole-series TA
+calculation was optimized with a per-VM, call-site result cache for pure
+top-level SMA, EMA, RMA, WMA, RSI, and ATR calls. The cache is capped at
+1,000,000 result values (8,000,000 bytes of value payload) and 500 call sites;
+dynamic or state-dependent expressions retain the interpreter path. Identical
+benchmark workloads were run before and after, and output parity, prefix
+invariance, and the full Pine-Lite unit suite passed. See the [performance
+report](./58-LIGHT-PINE-PERFORMANCE-BASELINE.md).
+
 **Work**
 
 - Measure interpreter costs and allocations on representative indicators,
@@ -377,8 +386,12 @@ isolation gaps are carried into the next phases with explicit tests and limits.
 
 **Exit gate**
 
-- Reproducible before/after benchmarks on identical workloads, no correctness
-  regressions, and explicit memory/resource bounds.
+- **Exit: Phase 6 complete.** Before/after measurements show a material
+  improvement for TA-heavy and strategy workloads with no output or prefix
+  regressions, and the added cache has an explicit per-VM memory bound.
+  Incremental TA state and parallel execution remain deferred: the former
+  needs explicit append/amend semantics and the latter has no measured
+  workload evidence to justify its determinism and coordination costs.
 
 ### Phase 7 — AI Developer Kit and quality gates
 

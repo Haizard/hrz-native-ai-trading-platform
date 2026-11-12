@@ -518,6 +518,11 @@ pub enum ScriptObject {
 /// allowed to leak.
 pub const MAX_OBJECTS: usize = 256;
 
+/// Maximum number of cached TA result values per VM (8 MiB of `f64` data).
+const MAX_TA_CACHE_VALUES: usize = 1_000_000;
+/// Maximum number of cached TA call sites per VM.
+const MAX_TA_CACHE_CALL_SITES: usize = 500;
+
 /// Run a vetted script over a window, producing its output.
 ///
 /// # Errors
@@ -573,6 +578,13 @@ pub struct Vm<'a> {
     /// (`ta.sma(close, 9)`): computed once, keyed by the argument expression's
     /// address. Var-dependent series recompute -- their buffers change.
     series_cache: std::collections::HashMap<usize, Series>,
+    /// Whole-window results for eligible, pure TA call sites. Bounded by
+    /// `MAX_TA_CACHE_VALUES` and `MAX_TA_CACHE_CALL_SITES`; variable-,
+    /// function-, and loop-dependent calls keep using the reference per-bar
+    /// path.
+    ta_call_cache: std::collections::HashMap<usize, Series>,
+    ta_cache_values: usize,
+    ta_cache_enabled: bool,
     /// `request.security` results, memoized per call site (`SYM@TF#site` ->
     /// one value per chart slot). The third argument runs once over distinct
     /// source candles, then projects to chart slots. The site key is the third
@@ -803,6 +815,9 @@ impl<'a> Vm<'a> {
             heap: Vec::new(),
             collecting: false,
             series_cache: std::collections::HashMap::new(),
+            ta_call_cache: std::collections::HashMap::new(),
+            ta_cache_values: 0,
+            ta_cache_enabled: true,
             security_value_cache: std::collections::HashMap::new(),
             current_input_name: String::new(),
             input_timeframes: std::collections::HashMap::new(),
@@ -996,6 +1011,8 @@ impl<'a> Vm<'a> {
         self.var_modes.clear();
         self.scopes.clear();
         self.series_cache.clear();
+        self.ta_call_cache.clear();
+        self.ta_cache_values = 0;
         self.security_value_cache.clear();
         self.heap.clear();
         self.objects_live.clear();
@@ -2710,7 +2727,9 @@ impl<'a> Vm<'a> {
                 let r = self.eval_f(right)?;
                 self.bin(*op, l, r)
             }
-            ExprKind::Call { callee, args } => self.call_f(callee, args)?,
+            ExprKind::Call { callee, args } => {
+                self.call_f(callee, args, std::ptr::from_ref(expr).addr())?
+            }
         })
     }
 
@@ -2983,6 +3002,66 @@ impl<'a> Vm<'a> {
         }
     }
 
+    fn is_cacheable_ta_call(callee: &str, args: &[Arg]) -> bool {
+        matches!(
+            callee,
+            "ta.sma" | "ta.ema" | "ta.rma" | "ta.wma" | "ta.rsi" | "ta.atr"
+        ) && args
+            .iter()
+            .all(|arg| arg.name.is_none() && !Self::expr_depends_on_vars(&arg.value))
+    }
+
+    fn compute_cacheable_ta_series(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+    ) -> Result<Series, crate::ScriptError> {
+        Ok(match callee {
+            "ta.sma" => {
+                let source = self.series_arg(args, 0)?;
+                let length = self.eval_ta_length(args, 1)?;
+                ta::ta_sma(&source, length)
+            }
+            "ta.ema" => {
+                let source = self.series_arg(args, 0)?;
+                let length = self.eval_ta_length(args, 1)?;
+                ta::ta_ema(&source, length)
+            }
+            "ta.rma" => {
+                let source = self.series_arg(args, 0)?;
+                let length = self.eval_ta_length(args, 1)?;
+                ta::ta_rma(&source, length)
+            }
+            "ta.wma" => {
+                let source = self.series_arg(args, 0)?;
+                let length = self.eval_ta_length(args, 1)?;
+                ta::ta_wma(&source, length)
+            }
+            "ta.rsi" => {
+                let source = self.series_arg(args, 0)?;
+                let length = self.eval_ta_length(args, 1)?;
+                ta::ta_rsi(&source, length)
+            }
+            "ta.atr" => {
+                let length = self.eval_ta_length(args, 0)?;
+                ta::ta_atr(self.candles, length)
+            }
+            _ => unreachable!("only cacheable TA calls reach this helper"),
+        })
+    }
+
+    fn eval_ta_length(
+        &mut self,
+        args: &[Arg],
+        index: usize,
+    ) -> Result<f64, crate::ScriptError> {
+        let arg = args.get(index);
+        match arg {
+            Some(arg) => self.eval_f(&arg.value),
+            None => Ok(NA),
+        }
+    }
+
     fn builtin_series(&self, name: &str) -> Result<Series, crate::ScriptError> {
         Ok(match name {
             "open" => self.candles.iter().map(|c| c.open).collect(),
@@ -3250,8 +3329,33 @@ impl<'a> Vm<'a> {
         Ok(out)
     }
 
-    fn call_f(&mut self, callee: &str, args: &[Arg]) -> Result<f64, crate::ScriptError> {
+    fn call_f(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+        call_site: usize,
+    ) -> Result<f64, crate::ScriptError> {
         self.tick()?;
+        if self.ta_cache_enabled
+            && self.series_args.is_empty()
+            && self.scopes.is_empty()
+            && self.loop_scopes.is_empty()
+        {
+            if let Some(series) = self.ta_call_cache.get(&call_site) {
+                return Ok(series.get(self.bar).copied().unwrap_or(NA));
+            }
+            let remaining_values = MAX_TA_CACHE_VALUES.saturating_sub(self.ta_cache_values);
+            if self.ta_call_cache.len() < MAX_TA_CACHE_CALL_SITES
+                && self.candles.len() <= remaining_values
+                && Self::is_cacheable_ta_call(callee, args)
+            {
+                let series = self.compute_cacheable_ta_series(callee, args)?;
+                let value = series.get(self.bar).copied().unwrap_or(NA);
+                self.ta_cache_values += series.len();
+                self.ta_call_cache.insert(call_site, series);
+                return Ok(value);
+            }
+        }
         // Inputs first: they are host-supplied or defaults, never computed.
         // The bool/int/string distinction rides on the call's own kind.
         // `l = line.new(...)` -- a drawing constructor in expression
@@ -5071,6 +5175,70 @@ mod tests {
         assert!(typecheck::check(&script).is_empty(), "type errors");
         assert!(limits::check(&script).is_empty(), "limit errors");
         run(&script, candles, &Inputs::default()).expect("run")
+    }
+
+    #[test]
+    fn pure_ta_call_cache_matches_reference_and_preserves_prefixes() {
+        let candles: Vec<Candle> = (0..40)
+            .map(|i| candle(i, 100.0 + ((i % 9) as f64)))
+            .collect();
+        let src = concat!(
+            "//@pine_lite version=1 overlay=false title=\"TA cache parity\"\n",
+            "f(x) =>\n",
+            "    ta.sma(x, 4)\n",
+            "direct = ta.sma(close, 5)\n",
+            "nested = ta.ema(ta.sma(close, 3), 4)\n",
+            "smoothed = ta.rma(close, 5)\n",
+            "weighted = ta.wma(close, 5)\n",
+            "relative = ta.rsi(close, 5)\n",
+            "average_range = ta.atr(5)\n",
+            "through_function = f(close)\n",
+            "var running = 0.0\n",
+            "if close > 103\n",
+            "    running := running + close\n",
+            "variable = ta.sma(running, 3)\n",
+            "plot(direct)\n",
+            "plot(nested)\n",
+            "plot(smoothed)\n",
+            "plot(weighted)\n",
+            "plot(relative)\n",
+            "plot(average_range)\n",
+            "plot(through_function)\n",
+            "plot(variable)\n",
+        );
+        let (_header, tokens) = lex::lex(src).expect("lex");
+        let script = parse::parse(tokens).expect("parse");
+        assert!(typecheck::check(&script).is_empty(), "type errors");
+        assert!(limits::check(&script).is_empty(), "limit errors");
+
+        let inputs = Inputs::default();
+        let mut optimized_vm = Vm::new(&script, &candles, &inputs);
+        let optimized = optimized_vm.run().expect("optimized run");
+        assert!(!optimized_vm.ta_call_cache.is_empty());
+
+        let mut reference_vm = Vm::new(&script, &candles, &inputs);
+        reference_vm.ta_cache_enabled = false;
+        let reference = reference_vm.run().expect("reference run");
+        assert_eq!(optimized.plots.len(), reference.plots.len());
+        for (optimized_plot, reference_plot) in optimized.plots.iter().zip(&reference.plots) {
+            assert_eq!(optimized_plot.values.len(), reference_plot.values.len());
+            for (optimized, reference) in optimized_plot.values.iter().zip(&reference_plot.values) {
+                assert!(
+                    (optimized.is_nan() && reference.is_nan()) || optimized == reference,
+                    "optimized value {optimized} differs from reference value {reference}"
+                );
+            }
+        }
+
+        let prefix = run(&script, &candles[..25], &inputs).expect("prefix run");
+        for (full_plot, prefix_plot) in optimized.plots.iter().zip(&prefix.plots) {
+            for (full, prefix) in full_plot.values.iter().take(25).zip(&prefix_plot.values) {
+                assert!(
+                    (full.is_nan() && prefix.is_nan()) || full == prefix,
+                    "future candles changed a prefix value: {full} != {prefix}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -17,12 +17,15 @@ Make correctness and maintainability improvements in that implementation;
 do not replace it with Chumsky, Rhai, Rune, another scripting runtime, or a
 native JIT.
 
-Do not add a typed IR or compile-once execution plan yet. The existing
-performance harness is a starting point, not evidence that an IR is needed.
-Profile representative QUANTERA scripts first. If a repeatable bottleneck is
-confirmed, prototype a private typed execution plan for that measured hot path,
-retain the interpreter as the reference/fallback, and require behavioral and
-performance parity before expanding the prototype.
+Do not add a typed IR, bytecode, or native JIT. Phase 6 confirmed a repeated
+whole-series TA calculation bottleneck, so Pine-Lite now memoizes results for
+bounded, pure top-level `ta.sma`, `ta.ema`, `ta.rma`, `ta.wma`, `ta.rsi`, and
+`ta.atr` call sites. Variable-, function-, and loop-dependent expressions
+retain the original interpreter behavior. The interpreter remains the
+reference/fallback, and the measured before/after results and cache bounds are
+recorded in [`docs/58`](./58-LIGHT-PINE-PERFORMANCE-BASELINE.md). Further
+execution-plan work requires a separately measured hot path and the same
+behavioral/resource gates.
 
 Keep `analytics-core` as the canonical quantitative implementation. Use
 external projects as formula and API-design references; add no indicator or
@@ -57,13 +60,13 @@ diagnostics, resource limits, and multiple integrations at once.
   would duplicate or discard Pine-specific semantics and move existing
   integrations to a different language; it does not establish a performance
   win for QUANTERA workloads.
-- **Add a typed IR/compile-once plan now (deferred).** The source audit
-  identifies repeated whole-series TA work as a hypothesis, not a measured
-  result. First record cold vet and warm execution, latency percentiles,
-  allocations/peak memory, interpreter steps, and output equality across the
-  representative workloads in `docs/56`. A typed plan is justified only by a
-  repeatable improvement on the identified hot path without changing outputs,
-  prefix invariance, no-lookahead behavior, or native/WASM parity.
+- **Add a typed IR/compile-once plan (deferred).** The measured Phase 6 hot
+  path was addressed with a smaller bounded cache and showed substantial
+  improvement on the TA and strategy workloads. A typed plan is not justified
+  until another representative workload demonstrates a bottleneck that this
+  narrower approach cannot address. Any such prototype must retain the
+  interpreter fallback and pass output, prefix-invariance, no-lookahead,
+  resource, and native/WASM parity checks.
 - **Add a native JIT (rejected for this roadmap).** Cranelift would add another
   backend before a verified typed plan exists and complicate browser/WASM
   support. QUANTERA already uses Cranelift under Wasmtime; that is not evidence
@@ -121,9 +124,9 @@ native/WASM equivalence and adversarial tests before broader execution.
 
 Reopen this decision only when at least one of these has evidence:
 
-1. Reproducible profiling shows a material Light Pine workload bottleneck and
-   an isolated typed-plan prototype improves it while passing semantic,
-   resource, and cross-target parity gates.
+1. Reproducible profiling identifies a new material Light Pine bottleneck
+   outside the pure TA call sites already addressed, and an isolated prototype
+   improves it while passing semantic, resource, and cross-target parity gates.
 2. Parser maintenance or recovery failures are measured against representative
    malformed scripts and a bounded Chumsky prototype materially improves
    diagnostics without creating a second semantic authority.

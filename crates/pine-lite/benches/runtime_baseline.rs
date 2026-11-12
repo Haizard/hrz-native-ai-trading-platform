@@ -8,6 +8,8 @@ use pine_lite::interp::Inputs;
 
 const BAR_COUNT: usize = 1_000;
 const UPDATE_BAR_COUNT: usize = 500;
+const LONG_HISTORY_BAR_COUNT: usize = 10_000;
+const LONG_UPDATE_BAR_COUNT: usize = 5_000;
 const WARMUP_SAMPLES: usize = 3;
 const SAMPLES: usize = 15;
 const OPERATIONS_PER_SAMPLE: usize = 8;
@@ -98,7 +100,7 @@ fn workloads() -> [Workload; 5] {
             source: concat!(
                 "//@pine_lite version=1 overlay=true title=\"Baseline Drawings\" max_boxes_count=256\n",
                 "if bar_index >= 2 and bar_index % 20 == 0\n",
-                "    box.new(bar_index - 2, high, bar_index, low, title=\"Zone\")\n",
+                "    box.new(bar_index - 2, high, bar_index, low, color=color.teal, border_color=color.teal)\n",
                 "plot(close)\n",
             ),
             uses_hourly_pool: false,
@@ -236,12 +238,14 @@ fn report(
 fn main() {
     let chart_candles = candles(BAR_COUNT);
     println!(
-        "# pine-lite={} target={}-{} profile=bench bars={} update_bars={}",
+        "# pine-lite={} target={}-{} profile=bench bars={} update_bars={} long_bars={} long_update_bars={}",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::ARCH,
         std::env::consts::OS,
         BAR_COUNT,
         UPDATE_BAR_COUNT,
+        LONG_HISTORY_BAR_COUNT,
+        LONG_UPDATE_BAR_COUNT,
     );
     println!(
         "# rustc={} samples={} warmup_samples={} operations_per_sample={} update_operations_per_sample={}",
@@ -320,6 +324,45 @@ fn main() {
             },
         );
     }
+
+    let long_workload = workloads().into_iter().next().expect("simple TA workload");
+    let long_candles = candles(LONG_HISTORY_BAR_COUNT);
+    let (_, long_script) =
+        pine_lite::vet(long_workload.source).expect("long-history workload must pass vet");
+    let long_inputs = inputs_for(&long_workload, &long_candles);
+    report(
+        "simple_ta_long_history",
+        "run_vetted",
+        LONG_HISTORY_BAR_COUNT,
+        OPERATIONS_PER_SAMPLE,
+        |_| {
+            let output = pine_lite::run(
+                black_box(&long_script),
+                black_box(&long_candles),
+                black_box(&long_inputs),
+            )
+            .expect("long-history workload must execute");
+            black_box(output);
+        },
+    );
+
+    let mut long_update_candles = long_candles[..LONG_UPDATE_BAR_COUNT].to_vec();
+    let long_update_inputs = inputs_for(&long_workload, &long_update_candles);
+    report(
+        "simple_ta_long_history",
+        "replay_after_last_bar_update",
+        LONG_UPDATE_BAR_COUNT,
+        UPDATE_OPERATIONS_PER_SAMPLE,
+        |update| {
+            let last = long_update_candles
+                .last_mut()
+                .expect("non-empty long update window");
+            last.close += (update % 7) as f64 * 0.001;
+            let output = pine_lite::run(&long_script, &long_update_candles, &long_update_inputs)
+                .expect("long-history update must execute");
+            black_box(output);
+        },
+    );
 }
 
 fn rustc_version() -> String {
