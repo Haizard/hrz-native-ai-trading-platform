@@ -182,29 +182,23 @@ and timeframe must be quoted literals, the pool caps at 8 keys per script.
   divergence (our new swing high while the pair makes a lower high) are
   ordinary arithmetic over them.
 - **Multi-timeframe reads** go through `request.security` with a timeframe
-  literal. The gateway aligns the latest pooled bar whose open time is at or
-  before each chart bar; before the pooled series starts, it supplies the
-  first pooled close as flat OHLC and zero volume. The VM's default
-  `gaps_off`/`lookahead_off` reveals the previous higher-timeframe value
-  during the bucket and the current value at the bucket's last available chart
-  bar. `gaps_on` returns `na` between reveal bars; `lookahead_on` exposes the
-  current bucket value from its first chart bar and can therefore leak future
-  values in historical analysis.
+  literal. The host aligns each pooled source candle onto chart-bar slots but
+  preserves its source `open_time` and timeframe. The VM evaluates the
+  expression once per distinct source candle, then projects values back onto
+  chart bars; history and rolling functions therefore advance at the requested
+  timeframe. `request.security(..., time)` reports the source candle's open
+  timestamp. The default `gaps_off`/`lookahead_off` carries the prior
+  higher-timeframe value during the bucket and reveals the current value only
+  when the chart bar closes the bucket. An incomplete final bucket is not
+  revealed. `gaps_on` returns `na` between reveal bars; `lookahead_on` exposes
+  the current bucket value from its first chart bar and can therefore leak
+  future values in historical analysis.
 
-  **Current limitation:** pooled candles are expanded onto chart-bar indexes
-  before the expression runs. A simple expression such as `close` is
-  well-defined, but history indexing and stateful/rolling functions inside
-  `request.security` currently advance at chart-bar cadence over repeated
-  higher-timeframe candles, not once per distinct higher-timeframe candle.
-  The expanded candle's `open_time` is also the chart bar's time, so
-  `request.security(..., time)` is not currently a reliable higher-timeframe
-  boundary timestamp.
-  The merge also treats the last available chart bar as the bucket end, even
-  when the supplied window ends partway through a bucket. Do not rely on
-  higher-timeframe rolling calculations or the partial final bucket for
-  non-repainting decisions until those cases are corrected and covered by
-  executable tests. Time-anchored drawing objects still require absolute
-  timestamps; an HTF zone's edges are not chart bar indexes (`docs/28`).
+  **Remaining limitation:** conformance coverage currently exercises regular,
+  contiguous chart windows. Sparse windows, missing source bars, and viewport
+  warm-up still need broader tests before claiming complete MTF parity.
+  Time-anchored drawing objects require absolute timestamps; an HTF zone's
+  edges are not chart bar indexes (`docs/28`).
 
 ### Host-data alignment and missing values
 
@@ -392,18 +386,19 @@ limitations remain explicit even when the language construct itself is tested.
 
 | Phase | Delivered capability | Status, evidence, and remaining limitation |
 | --- | --- | --- |
-| 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", expression)`, keyed host pools, eight-key cap, and `sec=` shorthand. | **partial** — literal collection, cap, VM evaluation, host fetch/alignment, and chart-engine paths exist in `crates/pine-lite/src/typecheck.rs`, `interp.rs`, `crates/api-gateway/src/indicator_preview.rs`, and `frontend/chart-engine/src/script.rs`; tests include `tests/request_security.rs` and chart-engine MTF cases. HTF rolling/history expressions advance at chart cadence, `time` uses chart-bar timestamps after host alignment, and the final bucket is treated as complete. These semantic gaps are documented above and block a complete status. |
+| 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", expression)`, keyed host pools, eight-key cap, and `sec=` shorthand. | **partial** — literal collection, cap, VM evaluation, host fetch/alignment, and chart-engine paths exist in `crates/pine-lite/src/typecheck.rs`, `interp.rs`, `crates/api-gateway/src/indicator_preview.rs`, and `frontend/chart-engine/src/script.rs`. Source timestamps are preserved; sub-VM history/rolling evaluation advances once per source candle; and an unfinished final bucket is not revealed. Targeted coverage is in `tests/request_security.rs`; sparse-window, missing-source, and viewport warm-up conformance remain open. |
 | 12 | **User-defined functions** with typed call sites, series-passing semantics, and recursion limits. | **done** — parser/checker/runtime in `parse.rs`, `typecheck.rs`, and `interp.rs`; `tests/user_functions.rs` covers execution, TA composition, arity, and recursion refusal. |
 | 13 | **Drawing objects** with bounded VM heap and chart-coordinate projection. | **done** for implemented line/label/box/Fibonacci objects — `tests/drawing_objects.rs`, `frontend/chart-engine/src/scene.rs` projection tests, and `frontend/app/app.js` painter. This does not imply every requested visualization type exists. |
 | 14 | **Provider-backed `request.data`** for ticker snapshots and timestamped funding/open-interest series. Generic HTTP is explicitly not part of this phase. | **done** for the supported provider fields — collection/runtime behavior in `typecheck.rs` and `interp.rs`, gateway loading in `indicator_preview.rs`, and `tests/request_data.rs`. Missing feeds fail visibly; generic HTTP remains unimplemented and permission-gated future work. |
 | 15 | **v1.1 expressiveness**: `while`, user-function parameter defaults, and 256-object cap. | **done** — implementation in `interp.rs`, `limits.rs`, and `typecheck.rs`; behavior and runaway-loop coverage in `tests/model_ergonomics.rs`, with the heap cap in `tests/drawing_objects.rs`. |
-| 16 | **Time-anchored drawings** and aligned-secondary `request.time()`. | **partial** — VM and chart time-coordinate mapping are tested in `tests/time_anchored_objects.rs` and `frontend/chart-engine/src/scene.rs`; `request.time()` is verified for `sec=`. The gateway's per-call MTF aligner rewrites pooled `open_time` to chart time, so `request.security(..., time)` cannot currently anchor a true HTF boundary. |
+| 16 | **Time-anchored drawings** and aligned-secondary `request.time()`. | **partial** — VM and chart time-coordinate mapping are tested in `tests/time_anchored_objects.rs` and `frontend/chart-engine/src/scene.rs`; aligned script series now retain source timestamps, including MTF pool bars. Broader chart-preview/renderer visual acceptance remains open. |
 | 17 | **Optional box borders** with backward-compatible serialization. | **done** — constructor/runtime and wire behavior are covered by `tests/drawing_objects.rs` and `frontend/chart-engine/src/scene.rs`; unset borders preserve the fill-only rendering. |
 
-The next work is correctness-first: close the MTF history/timestamp limitations
-in phases 11 and 16 before claiming higher-timeframe parity. Phase 14 is
-provider-backed data only; generic HTTP remains out of scope until permissions,
-response-size caps, and caching are designed and tested.
+The next work is correctness-first: extend MTF conformance coverage to sparse
+windows, missing source bars, and viewport warm-up before claiming complete
+higher-timeframe parity. Phase 14 is provider-backed data only; generic HTTP
+remains out of scope until permissions, response-size caps, and caching are
+designed and tested.
 
 ## Implementation notes (2026-09)
 

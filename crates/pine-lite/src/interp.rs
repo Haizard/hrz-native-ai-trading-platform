@@ -47,9 +47,10 @@ pub struct Inputs {
     pub contracts: bool,
     /// Every named pair of `request.security("SYM", "tf", ...)` in the
     /// script, keyed `SYM@tf`, uppercased, fetched and expanded onto the
-    /// chart's bar indexes by the host. Higher-timeframe value merging is
-    /// then applied by the VM; this is distinct from the `sec=` one-slot
-    /// carry-forward contract above. Phase 11 (docs/23).
+    /// chart's bar indexes by the host. Repeated slots retain the source
+    /// candle's `open_time` and timeframe; the VM evaluates distinct source
+    /// bars before applying higher-timeframe merging. This is distinct from
+    /// the `sec=` one-slot carry-forward contract above. Phase 11 (docs/23).
     /// The chart's own symbol/timeframe may be named too (a script reading
     /// its primary at a coarser tf); the host serves it from the same pool.
     /// Empty when the script names none. Cap: 8 keys (see `check_with_header`).
@@ -573,12 +574,9 @@ pub struct Vm<'a> {
     /// address. Var-dependent series recompute -- their buffers change.
     series_cache: std::collections::HashMap<usize, Series>,
     /// `request.security` results, memoized per call site (`SYM@TF#site` ->
-    /// one value per bar). The pooled series is index-aligned to the chart and
-    /// the third argument is backward-looking series logic, so evaluating it
-    /// once over the whole pool -- instead of re-running a sub-VM on every
-    /// parent bar -- is semantically identical and turns the per-bar cost from
-    /// O(pool) to O(1). The site key is the third argument's AST address,
-    /// stable for the VM's lifetime.
+    /// one value per chart slot). The third argument runs once over distinct
+    /// source candles, then projects to chart slots. The site key is the third
+    /// argument's AST address, stable for the VM's lifetime.
     security_value_cache: std::collections::HashMap<String, Vec<f64>>,
     /// The array heap. A variable holds a *handle* (the heap index, as a
     /// plain f64 in its ring buffer), so `var a = array.new()` allocates once
@@ -838,14 +836,12 @@ impl<'a> Vm<'a> {
         }
     }
 
-    /// A one-expression VM over a pooled series: `request.security`'s third
-    /// argument, evaluated per bar as if the PAIR were the chart. Fuel is a
+    /// A one-expression VM over distinct source candles: `request.security`'s
+    /// third argument runs as if the requested pair were the chart. Fuel is a
     /// per-call slice of the parent's remaining budget (a sub-run must never
     /// outlive its parent's meter), every ring starts empty, and `ta.*` over
-    /// the pooled candles is plain composition -- smoothed pair closes need
-    /// no special case. The sub-VM's own `request.*` surface is empty: nested
-    /// security calls are refused at vet time (the pool key would need a
-    /// per-call context the flat pool cannot express).
+    /// the pooled candles composes normally. Nested security calls are refused
+    /// at vet time because the flat pool cannot express a per-call context.
     fn new_for_pool(
         expr: &Expr,
         candles: &'a [Candle],
@@ -3695,18 +3691,14 @@ impl<'a> Vm<'a> {
             // ---- request.security("SYM", "tf", expr) (Phase 11, docs/23):
             // any pair, any timeframe the host pooled, per call. The first
             // two arguments are string literals (vet-checked); the third is
-            // evaluated per bar over that pair's candles, as if it were the
-            // script's own series. History on the result works through the
-            // ordinary assign-then-offset rule, because the value lands in a
-            // variable like any other.
+            // evaluated once per distinct source candle, then projected back
+            // onto chart bars. History on the result works through the
+            // ordinary assign-then-offset rule.
             "request.security" => {
                 let key = self.security_key(args)?;
-                // Memoize per call site: the pool is index-aligned to the
-                // chart and the third argument is backward-looking series
-                // logic, so its whole per-bar value vector is computed once
-                // on first touch (a sub-VM sweep, the same thing the per-bar
-                // path did, minus the O(pool) repetition). Later bars index
-                // the cached vector -- semantically identical, O(1) per bar.
+                // Memoize per call site: the pool is aligned to the chart, but
+                // repeated slots from one source candle must not advance
+                // history or rolling functions in the sub-VM.
                 // The site key folds the AST address of the third argument
                 // into the pool key, so two calls on one pool stay separate.
                 let site = format!("{key}#{:p}", &args[2].value);
@@ -3724,30 +3716,39 @@ impl<'a> Vm<'a> {
                             "`request.security` has no pooled series for {key}; the host must fetch and align it before the run"
                         ),
                     })?;
-                // The pooled series replaces the script's own candles for the
-                // third argument's evaluation: a sub-VM over that pair sees
-                // `close` as the PAIR's close. One allocation per call per
-                // script is bounded by the fuel meter like every other step.
+                let len = candles.len();
+                let mut source_candles = Vec::with_capacity(len);
+                let mut chart_to_source = Vec::with_capacity(len);
+                let mut previous_source = None;
+                for candle in candles {
+                    let source_key = (candle.open_time, candle.timeframe);
+                    if previous_source != Some(source_key) {
+                        source_candles.push(candle.clone());
+                        previous_source = Some(source_key);
+                    }
+                    chart_to_source.push(source_candles.len() - 1);
+                }
+                // The host repeats each source candle at its chart-bar slots.
+                // Evaluate the expression on distinct source bars so [1],
+                // `ta.*`, and state advance on the requested timeframe.
                 let expr = args[2].value.clone();
-                // Bare `request.*` INSIDE the third argument reads the pair:
-                // the sub-VM's security vec IS the pooled series (the key was
-                // vetted as literals, so no recursion is expressible).
                 let sub_inputs = Inputs {
-                    security: candles.clone(),
+                    security: source_candles.clone(),
                     series_pool: std::collections::HashMap::new(),
                     ..Inputs::default()
                 };
-                // A per-call slice of the parent's remaining fuel: a nested
-                // expression cannot spend what its parent has not earned.
                 let slice = self.fuel.saturating_sub(self.steps).max(1);
-                let mut sub = Vm::new_for_pool(&expr, candles, &sub_inputs, slice);
-                let len = candles.len();
-                let mut values = Vec::with_capacity(len);
-                for bar in 0..len {
+                let mut sub = Vm::new_for_pool(&expr, &source_candles, &sub_inputs, slice);
+                let mut source_values = Vec::with_capacity(source_candles.len());
+                for bar in 0..source_candles.len() {
                     sub.bar = bar;
-                    values.push(sub.eval_f(&expr)?);
+                    source_values.push(sub.eval_f(&expr)?);
                 }
                 self.steps += sub.steps;
+                let values: Vec<f64> = chart_to_source
+                    .iter()
+                    .map(|&source| source_values[source])
+                    .collect();
                 // The merge knobs (Pine's defaults: gaps=barmerge.gaps_off,
                 // lookahead=barmerge.lookahead_off). The pooled candles are
                 // index-aligned to the chart and repeat each higher bar
@@ -3782,33 +3783,67 @@ impl<'a> Vm<'a> {
                 let revealed = if !gaps_on && lookahead_on {
                     values
                 } else {
-                    let htf = candles.first().map(|cd| cd.timeframe).unwrap_or(Timeframe::M1);
+                    let htf = candles
+                        .first()
+                        .map(|cd| cd.timeframe)
+                        .unwrap_or(Timeframe::M1);
                     let buckets: Vec<i64> = (0..len)
-                        .map(|i| htf.bucket_of(self.candles.get(i).map(|cd| cd.open_time).unwrap_or(0)))
+                        .map(|i| {
+                            htf.bucket_of(self.candles.get(i).map(|cd| cd.open_time).unwrap_or(0))
+                        })
                         .collect();
                     let mut start = vec![0usize; len];
                     let mut end = vec![0usize; len];
+                    let mut bucket_closed = vec![false; len];
                     let mut cur_start = 0usize;
                     for i in 0..len {
                         if i > 0 && buckets[i] != buckets[i - 1] {
+                            let last = i - 1;
+                            let bucket_end = buckets[last].saturating_add(htf.nanos());
+                            let chart_close = self
+                                .candles
+                                .get(last)
+                                .map(|c| c.open_time.saturating_add(c.timeframe.nanos()))
+                                .unwrap_or(0);
                             for j in cur_start..i {
-                                end[j] = i - 1;
+                                end[j] = last;
+                                bucket_closed[j] = chart_close >= bucket_end;
                             }
                             cur_start = i;
                         }
                         start[i] = cur_start;
                     }
+                    let last = len.saturating_sub(1);
+                    let bucket_end = buckets
+                        .get(last)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(htf.nanos());
+                    let chart_close = self
+                        .candles
+                        .get(last)
+                        .map(|c| c.open_time.saturating_add(c.timeframe.nanos()))
+                        .unwrap_or(0);
                     for j in cur_start..len {
-                        end[j] = len - 1;
+                        end[j] = last;
+                        bucket_closed[j] = chart_close >= bucket_end;
                     }
                     let mut rev = vec![NA; len];
                     for i in 0..len {
                         rev[i] = if lookahead_on {
                             // gaps_on is the only case left for on.
-                            if i == start[i] { values[i] } else { NA }
+                            if i == start[i] {
+                                values[i]
+                            } else {
+                                NA
+                            }
                         } else if gaps_on {
-                            if i == end[i] { values[i] } else { NA }
-                        } else if i == end[i] {
+                            if i == end[i] && bucket_closed[i] {
+                                values[i]
+                            } else {
+                                NA
+                            }
+                        } else if i == end[i] && bucket_closed[i] {
                             values[i]
                         } else if start[i] > 0 {
                             values[start[i] - 1]

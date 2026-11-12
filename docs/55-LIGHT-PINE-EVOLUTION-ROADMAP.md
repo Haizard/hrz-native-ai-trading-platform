@@ -1,9 +1,9 @@
 # Light Pine Evolution — Engineering Roadmap
 
-- **Status:** Phase 0 complete; Phase 1 in progress. The audit, host-data
-  contract, first runtime baseline, and current isolation decision are recorded.
-  The Phase 1 architecture decision still needs review before any runtime or
-  dependency change.
+- **Status:** Phases 0 and 1 complete; Phase 2 is in progress. The audit, host-data
+  contract, runtime baseline, isolation boundary, and evidence-based language
+  architecture decision are recorded. No runtime or dependency change is
+  approved by that decision.
 - **Scope owner:** QUANTERA platform
 - **Implementation rule:** ship one reviewable, tested capability per phase
 
@@ -278,14 +278,19 @@ isolation gaps are carried into the next phases with explicit tests and limits.
 
 **Exit gate**
 
-- Reviewed architecture decision record with evidence, migration risks,
-  dependency/license findings, and a clear no-change option.
+- [Architecture decision record](./59-LIGHT-PINE-ARCHITECTURE-DECISION.md)
+  reviewed against source, benchmark, and reference research; it records
+  migration risks, dependency/license findings, and the intentional no-change
+  option. **Exit: Phase 1 complete.**
 
 ### Phase 2 — Correctness, types, and diagnostics
 
 **Work**
 
 - Fix proven correctness defects before broadening syntax.
+- **Started:** correct `request.security` source timestamps, higher-timeframe
+  history/rolling cadence, and partial-final-bucket reveal semantics; add
+  runtime and host-alignment regression tests.
 - Establish typed value/series contracts for numeric, boolean, string, color,
   candle, timeframe, market-data, plot, and drawing values as supported by
   actual host data.

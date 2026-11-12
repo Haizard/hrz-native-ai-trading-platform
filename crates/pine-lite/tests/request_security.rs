@@ -133,6 +133,76 @@ fn security_composes_with_ta_over_the_pair() {
 }
 
 #[test]
+fn higher_timeframe_history_advances_once_per_source_bar_and_hides_partial_final_bar() {
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"HTF cadence\"\n",
+        "htf_time = request.security(\"ETHUSDT\", \"5m\", time)\n",
+        "htf_sma = request.security(\"ETHUSDT\", \"5m\", ta.sma(close, 2))\n",
+        "htf_sma_gaps = request.security(\"ETHUSDT\", \"5m\", ta.sma(close, 2), gaps=barmerge.gaps_on)\n",
+        "plot(htf_time)\n",
+        "plot(htf_sma)\n",
+        "plot(htf_sma_gaps)\n",
+    );
+    let (_, parsed) = vet(src).expect("vet");
+    let candles: Vec<Candle> = (0..13)
+        .map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0))
+        .collect();
+    let pool: Vec<Candle> = (0..13)
+        .map(|i| {
+            let bucket = i / 5;
+            let mut source = candle("ETHUSDT", bucket, Timeframe::M5, 10.0, 10.0);
+            source.open_time = bucket as i64 * Timeframe::M5.nanos();
+            source
+        })
+        .collect();
+    let inputs = Inputs {
+        series_pool: [("ETHUSDT@5M".to_string(), pool)].into(),
+        ..Inputs::default()
+    };
+    let output = run(&parsed, &candles, &inputs).expect("run");
+
+    let htf_time = &output.plots[0].values;
+    assert!(
+        htf_time[0].is_nan(),
+        "the first HTF candle is not closed yet"
+    );
+    assert_eq!(htf_time[4], 0.0, "time is the HTF source open timestamp");
+    assert_eq!(
+        htf_time[5], 0.0,
+        "the previous closed HTF value carries forward"
+    );
+    assert_eq!(
+        htf_time[9],
+        Timeframe::M5.nanos() as f64,
+        "the next HTF value appears at its close"
+    );
+
+    let htf_sma = &output.plots[1].values;
+    assert!(
+        htf_sma[9].is_finite() && (htf_sma[9] - 15.0).abs() < 1e-9,
+        "SMA advances over two source candles, got {}",
+        htf_sma[9]
+    );
+    assert_eq!(
+        htf_sma[10], 15.0,
+        "an unfinished final bucket must keep the previous closed value"
+    );
+    assert_eq!(
+        htf_sma[12], 15.0,
+        "the partial final bucket is not revealed"
+    );
+    let htf_sma_gaps = &output.plots[2].values;
+    assert!(
+        htf_sma_gaps[9].is_finite() && (htf_sma_gaps[9] - 15.0).abs() < 1e-9,
+        "gaps_on emits the value at the confirmed bucket close"
+    );
+    assert!(
+        htf_sma_gaps[10..].iter().all(|value| value.is_nan()),
+        "gaps_on does not reveal the partial final bucket"
+    );
+}
+
+#[test]
 fn a_missing_pooled_series_is_an_error_naming_the_key() {
     let src = concat!(
         "//@pine_lite version=1 overlay=false title=\"MTF\"\n",

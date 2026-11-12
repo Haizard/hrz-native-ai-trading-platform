@@ -389,13 +389,10 @@ function alignedSecurityCandles(sec, primarySymbol, timeframe, primary) {
   for (const bar of primary) {
     while (cursor + 1 < cached.candles.length && cached.candles[cursor + 1].open_time <= bar.open_time) cursor += 1;
     const c = cached.candles[cursor];
-    // The whole cached candle, with only the timestamp re-stamped to the
-    // primary bar's window: the engine deserializes these as full `Candle`
-    // records (symbol, timeframe, volumes included) exactly like the chart's
-    // own candles -- a reduced object used to fail deserialization, which
-    // left the script's `request.*` reads with an empty series.
+    // Keep the full source candle and timestamp so `request.time()` can detect
+    // when the other instrument actually printed a new candle.
     if (c.open_time <= bar.open_time) {
-      out.push({ ...c, open_time: bar.open_time });
+      out.push({ ...c });
     } else {
       out.push({ ...first, open_time: bar.open_time, open: first.close, high: first.close, low: first.close, close: first.close, volume: 0, buy_volume: 0, sell_volume: 0 });
     }
@@ -403,12 +400,10 @@ function alignedSecurityCandles(sec, primarySymbol, timeframe, primary) {
   return out;
 }
 
-/// The pooled series for `key` (`SYM@TF`) aligned onto `primary`'s bars:
-/// the pooled candle whose window CONTAINS the chart bar, completed only --
-/// while that candle is still forming the script sees the previous one, so
-/// a coarser-timeframe read never looks ahead. Mirrors the gateway's
-/// `align_security_pooled`; the two must agree because the same script runs
-/// in the preview and on the chart.
+/// The pooled series for `key` (`SYM@TF`) aligned onto `primary`'s bars.
+/// Repeated slots retain the source candle's timestamp and timeframe so the
+/// runtime can evaluate history at the requested cadence. Mirrors the
+/// gateway's `align_security_pooled`.
 function alignedPoolSeries(key, primary) {
   const cached = securityCache.get(key);
   if (!cached || !cached.candles || !cached.candles.length) return null;
@@ -424,7 +419,7 @@ function alignedPoolSeries(key, primary) {
     const usable = pooled[cursor].open_time <= bar.open_time;
     const src = usable ? pooled[cursor] : first;
     const fill = usable ? src.close : first.close;
-    out.push({ ...src, open_time: bar.open_time, open: usable ? src.open : fill, high: usable ? src.high : fill, low: usable ? src.low : fill, close: fill, volume: usable ? src.volume : 0, buy_volume: usable ? src.buy_volume : 0, sell_volume: usable ? src.sell_volume : 0, symbol: sym });
+    out.push({ ...src, open_time: usable ? src.open_time : bar.open_time, open: usable ? src.open : fill, high: usable ? src.high : fill, low: usable ? src.low : fill, close: fill, volume: usable ? src.volume : 0, buy_volume: usable ? src.buy_volume : 0, sell_volume: usable ? src.sell_volume : 0, symbol: sym });
   }
   return out;
 }
