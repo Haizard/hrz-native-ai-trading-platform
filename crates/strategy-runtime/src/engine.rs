@@ -106,6 +106,15 @@ pub trait Strategy {
     /// Decide, given everything visible at the close of one candle.
     fn on_candle(&mut self, ctx: &MarketContext) -> Option<Signal>;
 
+    /// Drain an execution error from the most recent `on_candle` call, if any.
+    ///
+    /// Replays check this immediately so a failed decision is not mistaken for
+    /// a valid absence of a signal. Strategies without execution errors may
+    /// keep the default implementation.
+    fn take_execution_error(&mut self) -> Option<String> {
+        None
+    }
+
     /// Registry detectors this strategy needs evaluated in its context.
     fn registry_concepts(&self) -> &[strategy_dsl::schema::RegistryConcept] {
         &[]

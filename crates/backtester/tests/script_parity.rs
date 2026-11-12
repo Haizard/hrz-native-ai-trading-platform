@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use analytics_core::types::{Candle, Timeframe};
 use backtester::replay::{replay, ReplayConfig, ReplayInput};
 use backtester::script_strategy::{script_replay_input, ScriptStrategy};
+use backtester::BacktestError;
 use pine_lite::{run as run_script, Inputs};
 use strategy_dsl::Direction;
 
@@ -131,6 +132,63 @@ fn assert_parity(source: &str) {
         vm, replayed,
         "VM sim and ScriptStrategy replay disagree on:\n{source}"
     );
+}
+
+#[test]
+fn a_script_runtime_error_aborts_replay_instead_of_looking_like_no_signal() {
+    let source = concat!(
+        "//@pine_lite version=1\n",
+        "var values = array.new()\n",
+        "array.push(values, 1.0)\n",
+        "array.set(values, 1, 2.0)\n",
+    );
+    let cs = wave();
+    let mut strategy = ScriptStrategy::new(source).expect("the script passes static vetting");
+    let input = ReplayInput {
+        timeframes: BTreeMap::from([("entry".to_string(), Timeframe::M1)]),
+        candles: script_replay_input(&cs, Timeframe::M1),
+    };
+    let config = ReplayConfig {
+        symbol: "TEST".into(),
+        from: cs[0].open_time,
+        to: cs[cs.len() - 1].open_time,
+        ..ReplayConfig::default()
+    };
+
+    let error = replay(&mut strategy, &input, &config)
+        .expect_err("an interpreter failure must fail the backtest");
+    match error {
+        BacktestError::StrategyExecution(message) => {
+            assert!(message.contains("out of bounds"), "{message}");
+            assert!(message.contains("length 1"), "{message}");
+        }
+        other => panic!("expected a strategy execution error, got {other}"),
+    }
+}
+
+#[test]
+fn shared_drawing_preview_fixture_replays_without_strategy_signals() {
+    let source = include_str!("../../../test-fixtures/light-pine/drawing_preview.pine");
+    let cs = wave();
+    let mut strategy = ScriptStrategy::new(source).expect("the shared script passes vetting");
+    let input = ReplayInput {
+        timeframes: BTreeMap::from([("entry".to_string(), Timeframe::M1)]),
+        candles: script_replay_input(&cs, Timeframe::M1),
+    };
+    let config = ReplayConfig {
+        symbol: "TEST".into(),
+        from: cs[0].open_time,
+        to: cs[cs.len() - 1].open_time + Timeframe::M1.nanos(),
+        ..ReplayConfig::default()
+    };
+
+    let output = replay(&mut strategy, &input, &config).expect("the shared script replays");
+    assert_eq!(output.candles_processed, cs.len() as u64);
+    assert!(
+        output.signals.is_empty(),
+        "an indicator must not create trades"
+    );
+    assert!(output.trades.is_empty());
 }
 
 #[test]

@@ -1,0 +1,6 @@
+//@pine_lite version=1 overlay=true title="Drawing preview parity"
+ema = ta.ema(close, 9)
+plot(ema, title="EMA9", color=color.orange)
+if bar_index == last_bar_index
+    box.new(bar_index - 2, high, bar_index, low, color=color.teal)
+    label.new(bar_index, high, "preview", color=color.teal)

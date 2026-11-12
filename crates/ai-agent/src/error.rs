@@ -26,6 +26,15 @@ pub enum AgentError {
     #[error("model produced an invalid strategy document: {0}")]
     InvalidStrategyDocument(#[from] strategy_dsl::DslError),
 
+    /// The model did not produce an indicator script that passed validation.
+    #[error("indicator generation failed after {attempts} attempts: {last_errors}")]
+    IndicatorGenerationFailed {
+        /// Number of generation attempts used.
+        attempts: usize,
+        /// Validation or submission issue from the final attempt.
+        last_errors: String,
+    },
+
     /// No skill matched the request.
     ///
     /// Deliberately an error rather than a fallback: the agent must not invent

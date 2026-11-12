@@ -29,6 +29,10 @@ pub enum BacktestError {
     #[error("strategy execution failed: {0}")]
     Execution(#[from] strategy_runtime::RuntimeError),
 
+    /// A strategy adapter failed while the replay was evaluating a decision.
+    #[error("strategy execution failed: {0}")]
+    StrategyExecution(String),
+
     /// The report could not be rendered.
     #[error("failed to render report: {0}")]
     Report(String),

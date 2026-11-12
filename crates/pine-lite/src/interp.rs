@@ -46,9 +46,10 @@ pub struct Inputs {
     /// sim then reads entry qty as stake and caps losses at the stake.
     pub contracts: bool,
     /// Every named pair of `request.security("SYM", "tf", ...)` in the
-    /// script, keyed `SYM@tf`, uppercased, already fetched and aligned onto
-    /// the chart's bars by the host -- the same contract as `security`.
-    /// Phase 11 (docs/23): multi-pair, multi-timeframe cross-market math.
+    /// script, keyed `SYM@tf`, uppercased, fetched and expanded onto the
+    /// chart's bar indexes by the host. Higher-timeframe value merging is
+    /// then applied by the VM; this is distinct from the `sec=` one-slot
+    /// carry-forward contract above. Phase 11 (docs/23).
     /// The chart's own symbol/timeframe may be named too (a script reading
     /// its primary at a coarser tf); the host serves it from the same pool.
     /// Empty when the script names none. Cap: 8 keys (see `check_with_header`).

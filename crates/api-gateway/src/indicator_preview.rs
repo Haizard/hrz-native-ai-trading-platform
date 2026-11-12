@@ -290,20 +290,16 @@ async fn fetch_security_candles(
     Vec::new()
 }
 
-/// Time-align the second instrument's candles onto the primary series' bars:
-/// candle i of the output covers exactly the primary candle i's window. A
-/// secondary bar is used while its open_time matches; between secondary bars
-/// (the pair traded less often) the last secondary close carries forward with
-/// flat OHLC, and before the pair's first bar everything is flat at that
-/// first close -- indexes never drift, which is what cross-market math needs.
+/// Time-align the second instrument's candles onto the primary series' bars.
+/// A secondary bar is used when its open time matches the primary bar;
+/// otherwise the last close is carried as flat OHLC with zero volume. Before
+/// the pair's first bar, the first close is used the same way.
 /// Align a POOLED series onto the chart's bars (docs/23 Phase 11):
-/// `request.security("SYM", tf, ...)` reads the pooled candle whose window
-/// CONTAINS the chart bar, completed only -- while that pooled candle is
-/// still forming the script sees the PREVIOUS one, which is what keeps a
-/// coarser-timeframe read free of lookahead. Window math: the host stores
-/// open times, so a pooled candle at `t` covers `[t, t + tf)`. A chart bar
-/// before the pooled series' first candle is flat at that first close, the
-/// same carry-forward the `sec=` aligner uses.
+/// `request.security("SYM", tf, ...)` receives the latest pooled candle with
+/// `open_time <= chart.open_time`. The VM applies `gaps`/`lookahead` to those
+/// chart-indexed values; this function alone does not guarantee that the
+/// pooled candle has completed. Before the pooled series starts, the slot is
+/// flat at its first close with zero volume.
 /// One venue funding-rate point (USDT-M futures endpoint, market DATA
 /// even on a spot chart).
 #[derive(Debug, serde::Deserialize)]
@@ -679,6 +675,21 @@ fn compose_synthetic(a: &[types::Candle], op: char, b: &[types::Candle]) -> Vec<
 mod data_feed_tests {
     use super::*;
 
+    fn candle(timeframe: Timeframe, open_time: i64, open: f64, high: f64, low: f64, close: f64, volume: f64) -> types::Candle {
+        types::Candle {
+            symbol: "T".to_string(),
+            timeframe,
+            open_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            buy_volume: volume * 0.6,
+            sell_volume: volume * 0.4,
+        }
+    }
+
     #[test]
     fn sparse_points_carry_forward_by_bar_open() {
         // Points at hours 0 and 4; bars are hourly.
@@ -705,6 +716,39 @@ mod data_feed_tests {
         let later = vec![(10 * Timeframe::H1.nanos(), 1.0)];
         let carried = carry_points(&later, &candles);
         assert!(carried[0].is_nan(), "no point yet is na");
+    }
+
+    #[test]
+    fn secondary_candles_carry_flat_close_with_zero_volume_across_gaps() {
+        let step = Timeframe::M1.nanos();
+        let primary: Vec<_> = (0..4)
+            .map(|i| candle(Timeframe::M1, i * step, 10.0, 11.0, 9.0, 10.0, 5.0))
+            .collect();
+        let secondary = vec![
+            candle(Timeframe::M1, step, 20.0, 22.0, 19.0, 21.0, 7.0),
+            candle(Timeframe::M1, 3 * step, 21.0, 24.0, 20.0, 23.0, 9.0),
+        ];
+
+        let aligned = align_security(&primary, &secondary);
+
+        assert_eq!(aligned.len(), primary.len());
+        assert_eq!(
+            (aligned[0].open, aligned[0].high, aligned[0].low, aligned[0].close),
+            (21.0, 21.0, 21.0, 21.0),
+            "before the first secondary bar, carry its first close flat"
+        );
+        assert_eq!(aligned[1].high, 22.0, "an exact-time bar keeps its OHLC");
+        assert_eq!(aligned[1].volume, 7.0);
+        assert_eq!(
+            (aligned[2].open, aligned[2].high, aligned[2].low, aligned[2].close),
+            (21.0, 21.0, 21.0, 21.0),
+            "a missing secondary bar carries only the previous close"
+        );
+        assert_eq!(aligned[2].volume, 0.0);
+        assert_eq!(aligned[2].buy_volume, 0.0);
+        assert_eq!(aligned[2].sell_volume, 0.0);
+        assert_eq!(aligned[3].high, 24.0, "the next exact-time bar replaces the carry");
+        assert_eq!(aligned[3].volume, 9.0);
     }
 }
 
@@ -809,7 +853,7 @@ fn align_security(primary: &[types::Candle], sec: &[types::Candle]) -> Vec<types
         while cursor + 1 < sec.len() && sec[cursor + 1].open_time <= bar.open_time {
             cursor += 1;
         }
-        let aligned = if sec[cursor].open_time <= bar.open_time {
+        let aligned = if sec[cursor].open_time == bar.open_time {
             let c = &sec[cursor];
             types::Candle {
                 symbol: c.symbol.clone(),
@@ -824,15 +868,19 @@ fn align_security(primary: &[types::Candle], sec: &[types::Candle]) -> Vec<types
                 sell_volume: c.sell_volume,
             }
         } else {
-            // Before the pair's first stored bar: flat at its first close.
+            let close = if sec[cursor].open_time < bar.open_time {
+                sec[cursor].close
+            } else {
+                first
+            };
             types::Candle {
                 symbol: sec[0].symbol.clone(),
                 timeframe: sec[0].timeframe,
                 open_time: bar.open_time,
-                open: first,
-                high: first,
-                low: first,
-                close: first,
+                open: close,
+                high: close,
+                low: close,
+                close,
                 volume: 0.0,
                 buy_volume: 0.0,
                 sell_volume: 0.0,

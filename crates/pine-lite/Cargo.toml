@@ -18,3 +18,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 # Nothing yet. Parity fixtures against analytics-core units live in-tree.
+
+[[bench]]
+name = "runtime_baseline"
+harness = false

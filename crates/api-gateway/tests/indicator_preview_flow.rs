@@ -33,14 +33,10 @@ use analytics_core::types::{Candle, Timeframe};
 use serde_json::json;
 
 /// The scripted script: an EMA line plus one final-bar box and label.
-const FIREABLE_SCRIPT: &str = concat!(
-    "//@pine_lite version=1 overlay=true title=\"EMA probe\"\n",
-    "e = ta.ema(close, 9)\n",
-    "plot(e, title=\"EMA9\", color=color.orange)\n",
-    "if bar_index == last_bar_index\n",
-    "    box.new(bar_index - 2, high, bar_index, low, color=color.teal)\n",
-    "    label.new(bar_index, high, \"preview\", color=color.teal)\n",
-);
+const FIREABLE_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../test-fixtures/light-pine/drawing_preview.pine"
+));
 
 const RUNTIME_FAILURE_SCRIPT: &str = concat!(
     "//@pine_lite version=1 overlay=false title=\"Runtime failure\"\n",

@@ -110,8 +110,9 @@ the roadmap in `docs/23`.
 The browser UI exposes layer visibility/removal and a settings popover for
 boolean and numeric inputs; string/color inputs are currently code-only. The
 chart engine vets and interprets source as it builds scenes rather than using
-a compile-once cache. A representative performance baseline has not yet been
-recorded.
+a compile-once cache. An initial representative baseline is recorded in
+`docs/58-LIGHT-PINE-PERFORMANCE-BASELINE.md`; comparable follow-up measurements
+are still needed before deciding whether caching or an IR is justified.
 
 ### Audit flags to resolve
 
@@ -221,8 +222,18 @@ remain subject to Phase 0 baselines and review.
   Pine-Lite integration suites. **Done:** both Fibonacci failures were
   repaired; the full crate suite now passes. The previously hidden strategy
   header conformance test also exposed and fixed positive-pyramiding acceptance.
-- Record representative AI-generated valid and invalid scripts, diagnostics,
-  and existing benchmark workloads.
+- Record representative AI-generated valid and invalid scripts and
+  diagnostics.
+- **Benchmark baseline done:** the dependency-free
+  `cargo bench -p pine-lite --bench runtime_baseline` harness measures vetting,
+  vetted execution, allocations, and replay after a last-bar update for five
+  representative workloads. See
+  `docs/58-LIGHT-PINE-PERFORMANCE-BASELINE.md`; this does not establish a
+  before/after speed comparison.
+- Specify host-provided series, alignment/carry-forward, and missing-data
+  behavior. **Host-data contract done:** documented in `docs/23`, with a
+  regression test for sparse `sec=` gaps. MTF rolling-history/time semantics
+  and the partial-final-bucket behavior remain open.
 
 **Exit gate**
 

@@ -8205,6 +8205,39 @@ mod tests {
     }
 
     #[test]
+    fn shared_drawing_preview_fixture_projects_its_box_and_label() {
+        let source = include_str!("../../../test-fixtures/light-pine/drawing_preview.pine");
+        let mut request = request(40);
+        request.scripts = vec![crate::script::ScriptSpec {
+            source: source.into(),
+            inputs: Default::default(),
+            security: Vec::new(),
+            series_pool: Default::default(),
+            data_series: Default::default(),
+        }];
+
+        let scene = build(&request);
+        let overlay = scene
+            .script_overlays
+            .first()
+            .expect("the shared fixture executes as a chart overlay");
+        let boxes = overlay
+            .objects
+            .iter()
+            .filter(|object| matches!(object, crate::script::ScriptDraw::Box { .. }))
+            .count();
+        let labels = overlay
+            .objects
+            .iter()
+            .filter(|object| matches!(object, crate::script::ScriptDraw::Label { .. }))
+            .count();
+
+        assert_eq!(overlay.plots.len(), 1);
+        assert_eq!(boxes, 1);
+        assert_eq!(labels, 1);
+    }
+
+    #[test]
     fn zooming_in_draws_fewer_wider_bars_that_still_fill_the_plot() {
         let wide = build(&request(500));
         let narrow = build(&windowed(500, 200, 25));

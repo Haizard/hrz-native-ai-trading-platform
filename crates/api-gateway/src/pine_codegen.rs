@@ -1073,16 +1073,10 @@ pub(crate) async fn generate_script(
             }
         }
     }
-    Err(ai_agent::AgentError::InvalidStrategyDocument(
-        strategy_dsl::DslError::Validation {
-            issues: vec![strategy_dsl::ValidationIssue::new(
-                "script",
-                format!(
-                    "the script did not pass validation after {MAX_ATTEMPTS} attempts. Last errors: {last_report}"
-                ),
-            )],
-        },
-    ))
+    Err(ai_agent::AgentError::IndicatorGenerationFailed {
+        attempts: MAX_ATTEMPTS,
+        last_errors: last_report,
+    })
 }
 
 fn script_has_chart_output(items: &[pine_lite::parse::Item]) -> bool {

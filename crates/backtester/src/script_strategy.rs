@@ -35,6 +35,8 @@ pub struct ScriptStrategy {
     window: Vec<Candle>,
     /// How much history to keep -- `max_bars_back` from the header plus slack.
     max_window: usize,
+    /// Interpreter failure awaiting collection by the replay loop.
+    execution_error: Option<String>,
 }
 
 impl ScriptStrategy {
@@ -54,6 +56,7 @@ impl ScriptStrategy {
             last_stop: None,
             window: Vec::new(),
             max_window: (header.max_bars_back + 8).max(64),
+            execution_error: None,
         })
     }
 
@@ -162,6 +165,9 @@ pub fn intents_to_signal(
 
 impl Strategy for ScriptStrategy {
     fn on_candle(&mut self, ctx: &strategy_runtime::context::MarketContext) -> Option<Signal> {
+        if self.execution_error.is_some() {
+            return None;
+        }
         // The engine hands us the whole visible context; the decision
         // timeframe's view is where the script's candles come from.
         let view = ctx.timeframes.get("entry")?;
@@ -170,7 +176,13 @@ impl Strategy for ScriptStrategy {
             self.window.remove(0);
         }
         let bar = self.window.len() - 1;
-        let output = run_script(&self.script, &self.window, &self.inputs).ok()?;
+        let output = match run_script(&self.script, &self.window, &self.inputs) {
+            Ok(output) => output,
+            Err(error) => {
+                self.execution_error = Some(error.to_string());
+                return None;
+            }
+        };
         // Position state: the replay drives us, and tells us through the
         // signal it accepted -- but the trait has no position read, so track
         // it locally from our own decisions.
@@ -194,6 +206,10 @@ impl Strategy for ScriptStrategy {
             return Some(signal);
         }
         None
+    }
+
+    fn take_execution_error(&mut self) -> Option<String> {
+        self.execution_error.take()
     }
 }
 

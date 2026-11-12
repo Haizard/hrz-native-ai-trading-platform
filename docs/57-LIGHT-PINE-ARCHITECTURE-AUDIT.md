@@ -73,10 +73,10 @@ not the production bot path.
 | Declarations and control flow | Variables, functions/methods, user-defined type declarations, `if`, `for`, `while`, `switch`, arrays, maps, and matrices are represented/handled in the language. | No enum declaration or import/module system was found. Type and collection behavior is not equivalent to a full Rust-like type system. |
 | Execution | Deterministic per-bar AST interpreter with history buffers, `var` state, series caches for eligible calls, and pooled security-expression caching. | There is no typed IR or compile-once bytecode/native backend; some variable-dependent expressions are recalculated. |
 | Resource limits | Static statement/plot/fill/function/loop-depth limits; runtime fuel, call-depth, array count/length, object caps; history limit from the header. | Fuel bounds interpreter work but is not process isolation. Gateway preview runs in-process. |
-| Builtins and indicators | Pine-Lite exposes math, TA, input, strategy, data/security, and drawing APIs; several TA formulas wrap or reuse `analytics-core`. | Type/arity metadata, interpreter dispatch, and AI-facing references are maintained in separate paths; names alone do not ensure numerical parity with `analytics-core`. |
+| Builtins and indicators | Pine-Lite exposes math, TA, input, strategy, data/security, and drawing APIs; several TA formulas wrap or reuse `analytics-core`. A versioned catalog now records arity/result shape for all entries, with parameter, host-data, and runtime metadata explicitly marked complete only for selected TA, data, and drawing calls. | The catalog remains intentionally partial; the interpreter is still the execution authority, and metadata completeness does not prove numerical parity with `analytics-core`. |
 | Market data | Host supplies candles, aligned secondary candles, pooled symbol/timeframe series, ticker/data series, and instrument metadata where available. | Raw trades, full order books, and footprint data are not general script inputs merely because related Rust data structures exist elsewhere. |
 | Chart output | VM emits structured plot and object output; Rust/WASM chart engine maps it to panes, price overlays, shapes, and drawings. Strategy outputs include chart-side simulation rendering. | Do not imply support for every requested visualization (for example, full order-book heatmaps or native footprint panels) without a script API, renderer mapping, and tests. |
-| AI integration | Gateway supplies a language reference and `submit_script` tool; static errors are fed back through a bounded retry loop; preview failures can trigger a runtime-repair pass. | The model-facing reference is not generated from the same authoritative registry as checker/runtime support. |
+| AI integration | Gateway supplies a language reference and `submit_script` tool; static errors are fed back through a bounded retry loop; preview failures can trigger a runtime-repair pass. Prompt and repair call bounds now render from the versioned builtin catalog. A provider-backed indicator generation created a validated revision, but its preview emitted no drawings. | The live attempt proves generation and persistence, not semantic correctness: the requested FVG visualization was absent. Unspecified registry entries remain explicitly incomplete. |
 | Script storage | Workspace revisions store source and validated preview; edits use the active Pine-Lite source as the next model input. | Revision history is intentionally immutable; this is not a compiler cache. |
 | Strategy/backtesting | Pine strategy calls can be simulated in the VM/chart; `ScriptStrategy` adapts Pine source to the existing replay. | The replay adapter is not constructed by a production bot path; live bot execution remains Strategy DSL/sandbox based. |
 | Diagnostics | Errors carry a kind, line/column span, and message, and the vet path returns multiple errors. | No stable machine-readable diagnostic code, severity, byte range, or related-location contract was found. |
@@ -120,10 +120,11 @@ each edit.
 - Gateway preview uses the same interpreter but executes in the gateway
   process; interpreter fuel and object/array caps are not OS-level isolation.
 - The Pine backtest adapter reruns the script over its rolling candle window.
-  Its `Strategy::on_candle` path currently converts interpreter failure to
-  `None` (`run_script(...).ok()?`), which can make a failed run look like “no
-  signal.” That behavior should be made observable before expanding strategy
-  use.
+  `Strategy::take_execution_error` now gives adapters a backward-compatible
+  error channel; Pine interpreter failures propagate from replay as
+  `BacktestError::StrategyExecution` instead of looking like “no signal.” A
+  regression test verifies a vetted script's runtime error aborts replay with
+  its interpreter diagnostic.
 - Production bots use a separate strategy DSL and Wasmtime-backed sandbox.
   A validated indicator revision is not, by itself, a live trading strategy.
 
@@ -147,16 +148,18 @@ host (gateway, browser/WASM, backtester, or live execution as applicable).
 
 ## Recommended staged engineering work
 
-1. **Authoritative Light Pine capability registry.** The first slice is now
-   implemented: versioned `pine-lite::builtins::CATALOG` centralizes accepted call arities,
-   static result kinds, and multi-output shapes; the type checker reads it, and
-   the AI generation prompt and repair cheatsheet render their call-bound
-   inventory from it. Tests verify unique metadata, selected edge cases, and
-   that both AI paths include the generated catalog. This surfaced and fixed
-   the `ta.dmi` mismatch: the checker formerly required two arguments although
-   its implementation and documented form use one. The registry still needs
-   parameter names/defaults, host-data requirements, and runtime support status
-   before it is a complete SDK specification.
+1. **Authoritative Light Pine capability registry.** A versioned
+   `pine-lite::builtins::CATALOG` centralizes accepted call arities, static
+   result kinds, and multi-output shapes; the type checker reads it, and the AI
+   generation prompt and repair cheatsheet render their call-bound inventory
+   from it. Schema v2 adds typed parameter names/defaults, host-data
+   requirements, and runtime-support status for selected TA, request, and
+   drawing entries; the prompt explicitly labels all other entries incomplete.
+   Coverage is still partial and must not be described as a complete SDK
+   specification. Tests pin the metadata completeness boundary, time-vs-bar
+   drawing parameters, and documented MTF/drawing calls. This work also
+   corrected `request.security`'s optional named-argument bounds and drawing
+   constructor arities, in addition to the earlier `ta.dmi` mismatch.
 2. **Structured diagnostics and conformance fixtures.** Implemented stable
    phase-level diagnostic codes and structured spans while preserving readable
    messages and legacy line/column fields. A bounded top-down-analysis request,
@@ -166,28 +169,45 @@ host (gateway, browser/WASM, backtester, or live execution as applicable).
    labels are verified in both the gateway conformance test and chart-engine
    projection test. This proves the generation contract and script behavior,
    not a live model's ability to infer the strategy from the full transcript;
-   that still requires a provider-backed run. The workspace response now
+   that still requires a successful provider-backed visual run. The workspace response now
    appends a server-authored receipt with the saved active revision and replay
    counts, independent of the model's prose; the gateway integration test
    checks that receipt against the stored revision and active pointer. Preview
    stats now also report structured drawing-object, box, and label counts from
    interpreter output, plus whether the drawing limit was reached; the
-   gateway integration test exercises one box and one label.
-3. **Execution-parity and error handling.** Make backtest runtime errors
-   explicit; test identical source/inputs across preview, chart/WASM, and
-   replay where the semantics are intended to match. Keep live execution
-   separate until authorization, risk, and data semantics are specified.
-4. **Compile-once representation and benchmark baseline.** Add representative
-   scripts (simple TA, loops/state, drawing-heavy, security/MTF, strategy) to a
-   reproducible benchmark. Measure vet, execution, allocations, and repeated
-   chart updates before choosing a typed IR, caching parsed/checked scripts, or
-   parallelism. Include cache invalidation/version semantics before sharing
-   compiled artifacts.
-5. **Explicit host-data capabilities.** Specify which host-provided series
-   scripts may read, their alignment/carry-forward semantics, and missing-data
-   behavior. Add trades/order-book/footprint types only alongside real data
-   providers and executable tests; OHLCV-only calculations must not be
-   described as order-flow measurements.
+   gateway integration test exercises one box and one label. A live run using
+   the supplied transcript and explicit output requirements saved revision #1,
+   but replay reported one plot and zero drawing objects, boxes, or labels.
+   Inspection of its source showed that `request.security` fetched only HTF
+   timestamps while FVG conditions used chart-timeframe OHLC; the bullish
+   condition also required `low > high[length]` and `close < high[length]`,
+   which cannot both hold. Therefore this is not a successful MTF FVG test.
+   Provider-backed generation exhaustion now has a distinct indicator error
+   instead of being mislabeled as a strategy document failure.
+3. **Execution-parity and error handling.** Pine script runtime failures abort
+   replay with their interpreter diagnostic. A shared, deterministic drawing
+   fixture now verifies preview statistics, chart-engine projection, and
+   replay's no-trade behavior for the same source. This closes only the
+   single-timeframe drawing smoke-test gap; it does not establish full MTF host
+   data or live-execution parity. Keep live execution separate until
+   authorization, risk, and data semantics are specified.
+4. **Compile-once representation and benchmark baseline.** The dependency-free
+   harness now measures representative simple TA, loops/state, drawing-heavy,
+   security/MTF, and strategy scripts: vetting, execution, allocations, and
+   replay after a last-bar update. Results and limitations are recorded in
+   `docs/58-LIGHT-PINE-PERFORMANCE-BASELINE.md`. This is a local baseline, not a
+   before/after comparison. Use comparable follow-up runs to establish whether
+   a typed IR, caching parsed/checked scripts, or parallelism is warranted;
+   include cache invalidation/version semantics before sharing compiled
+   artifacts.
+5. **Explicit host-data capabilities.** The host-data contract is documented
+   in `docs/23-PINE-LITE-SCRIPTING-LANGUAGE.md`: primary candles, `sec=`,
+   pooled MTF, lower-timeframe reads, `request.data`, and missing-feed behavior.
+   The sparse `sec=` aligner now carries flat OHLC with zero volume across gaps
+   and before its first source bar, with a regression test. MTF history/time and
+   final-bucket limitations remain open. Add trades/order-book/footprint types
+   only alongside real data providers and executable tests; OHLCV-only
+   calculations must not be described as order-flow measurements.
 6. **Isolation decision.** Document the threat model for AI-generated scripts.
    If arbitrary scripts are run in a server process beyond tightly bounded
    preview, integrate a dedicated sandbox boundary or otherwise establish and
@@ -205,8 +225,19 @@ host (gateway, browser/WASM, backtester, or live execution as applicable).
   workspace-wide format check was stopped after showing extensive formatting
   differences in unrelated files.
 - The workspace emitted existing compiler warnings; no test failures occurred.
-- No benchmark directory/harness was found during the audit, so no performance
-  comparison or speed claim is made.
+- A provider-backed indicator-agent attempt using the supplied `prompt1.text`
+  saved a revision, but its preview showed one plot and zero drawing objects,
+  boxes, or labels. This failed the requested FVG visual acceptance criteria;
+  it is not a successful live-agent test. No follow-up provider-backed run was
+  possible in the current environment because the local chat/UI and gateway
+  ports were not listening and no local `DATABASE_URL` was configured. The
+  deterministic generator gate is not a substitute for this test.
+- `cargo test -p api-gateway secondary_candles_carry_flat_close_with_zero_volume_across_gaps`
+  passed for the `sec=` alignment regression.
+- `cargo bench -p pine-lite --bench runtime_baseline` completed twice; the
+  harness and measured medians are documented in
+  `docs/58-LIGHT-PINE-PERFORMANCE-BASELINE.md`. Existing workspace warnings
+  remain. No before/after comparison or speed claim is made.
 
-This first registry slice changes vet-time metadata and AI reference text; it
-does not change the runtime backend or add dependencies.
+The host-data correction changes sparse `sec=` alignment, while the benchmark
+adds no runtime dependency and does not change interpreter execution.

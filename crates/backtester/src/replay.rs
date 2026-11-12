@@ -406,7 +406,11 @@ pub fn replay<S: Strategy>(
             .state()
             .map_or("unknown", |state| strategy_runtime::trend_name(state.trend));
 
-        if let Some(signal) = strategy.on_candle(&context) {
+        let signal = strategy.on_candle(&context);
+        if let Some(error) = strategy.take_execution_error() {
+            return Err(BacktestError::StrategyExecution(error));
+        }
+        if let Some(signal) = signal {
             signals.push(ReplaySignal {
                 time: now,
                 price: decision_candle_close,

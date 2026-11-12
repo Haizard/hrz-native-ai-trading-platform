@@ -163,12 +163,14 @@ open time — a change in it is the pair's new bar). The per-call form
 expression over any pooled symbol+timeframe, aligned the same way; the symbol
 and timeframe must be quoted literals, the pool caps at 8 keys per script.
 
-- `request.*` values are **bar-aligned to the chart's own bars** by the host
-  (`indicator_preview::align_security`): the secondary bar whose window covers
-  the chart bar is used, and where the pair printed no bar its last OHLC
-  carries forward flat — indexes never drift, which is what spread and SMT
-  math needs. The host fetches the pair's candles (store first, venue
-  backfill when thin); the script never does I/O.
+- `sec=` is fetched at the chart timeframe. The host emits exactly one
+  secondary candle slot for each primary candle, preserving indexes. At an
+  exact matching open time it uses the fetched OHLCV. Before the first
+  secondary candle it uses that candle's close as flat OHLC with zero volume.
+  At a missing secondary timestamp after data has begun, it carries the last
+  close as flat OHLC with zero total/buy/sell volume. Thus a gap is not a
+  duplicated trade-volume observation. The host fetches the pair (stored data
+  first, then supported venue backfill); the script never performs I/O.
 - Every zero-argument `request.*` call is vet-refused when the header has no
   `sec=` (`typecheck::check_with_header`), and the runtime refuses again with
   the fix in the message when the host supplies no series — the same honesty
@@ -180,16 +182,57 @@ and timeframe must be quoted literals, the pool caps at 8 keys per script.
   divergence (our new swing high while the pair makes a lower high) are
   ordinary arithmetic over them.
 - **Multi-timeframe reads** go through `request.security` with a timeframe
-  literal: `request.security("BTCUSDT", "1h", high)` reads the 1h bar covering
-  each chart bar. A change in the pooled `time` marks the higher timeframe's
-  bar boundary, and the time-anchored drawing objects (`docs/28`) draw what
-  the script finds there: an HTF zone's edges are timestamps, not bar indexes
-  on this chart.
+  literal. The gateway aligns the latest pooled bar whose open time is at or
+  before each chart bar; before the pooled series starts, it supplies the
+  first pooled close as flat OHLC and zero volume. The VM's default
+  `gaps_off`/`lookahead_off` reveals the previous higher-timeframe value
+  during the bucket and the current value at the bucket's last available chart
+  bar. `gaps_on` returns `na` between reveal bars; `lookahead_on` exposes the
+  current bucket value from its first chart bar and can therefore leak future
+  values in historical analysis.
+
+  **Current limitation:** pooled candles are expanded onto chart-bar indexes
+  before the expression runs. A simple expression such as `close` is
+  well-defined, but history indexing and stateful/rolling functions inside
+  `request.security` currently advance at chart-bar cadence over repeated
+  higher-timeframe candles, not once per distinct higher-timeframe candle.
+  The expanded candle's `open_time` is also the chart bar's time, so
+  `request.security(..., time)` is not currently a reliable higher-timeframe
+  boundary timestamp.
+  The merge also treats the last available chart bar as the bucket end, even
+  when the supplied window ends partway through a bucket. Do not rely on
+  higher-timeframe rolling calculations or the partial final bucket for
+  non-repainting decisions until those cases are corrected and covered by
+  executable tests. Time-anchored drawing objects still require absolute
+  timestamps; an HTF zone's edges are not chart bar indexes (`docs/28`).
+
+### Host-data alignment and missing values
+
+- The script's primary candles are supplied in ascending open-time order. Each
+  candle's `open_time` is UTC nanoseconds; script execution and `barstate.isconfirmed`
+  represent the host's supplied closed-bar window, not a live tick callback.
+  History length and the current window are host decisions.
+- `request.security_lower_tf` receives raw lower-timeframe candles and returns
+  the values whose open times fall in `[chart_open, chart_open + chart_tf)`.
+  It does not carry missing sub-bars forward. With a supplied empty pool the
+  result is an empty array; if the host could not populate the requested pool,
+  execution fails with a missing-series diagnostic.
+- `request.data("SYMBOL.field")` supports ticker fields (`change_pct`,
+  `quote_volume`, `high`, `low`, `last`) as one point-in-time ticker snapshot
+  repeated over the requested window. `funding` and `oi` use provider points
+  carried forward to chart bars by timestamp; bars before the first point are
+  `na`. A feed the host did not supply raises a runtime missing-data error;
+  it never silently becomes zero.
+- Pine-Lite currently exposes candle OHLCV, not `Candle.buy_volume` /
+  `sell_volume`, individual trades, order-book depth, or footprint levels.
+  The Rust candle type's buy/sell split is not by itself a script capability.
+  No new order-flow API is specified here: add one only with a real provider,
+  timestamp/coverage semantics, and executable conformance tests.
 
 ## Builtin namespaces
 
 Call arity, static result kinds, and multi-output shapes are registered in
-`pine-lite::builtins::CATALOG` (schema version 1). The generator prompt and
+`pine-lite::builtins::CATALOG` (schema version 2). The generator prompt and
 repair cheatsheet include a section rendered from that catalog, and the type
 checker reads the same metadata. Parameter names/defaults, host-data
 requirements, and runtime semantics are still documented and implemented

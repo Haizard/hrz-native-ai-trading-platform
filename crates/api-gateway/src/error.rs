@@ -223,6 +223,7 @@ impl From<AgentError> for ApiError {
             AgentError::InvalidToolArgs { .. } | AgentError::InvalidSkill(_) => {
                 StatusCode::BAD_GATEWAY
             }
+            AgentError::IndicatorGenerationFailed { .. } => StatusCode::BAD_GATEWAY,
             AgentError::InvalidStrategyDocument(_) => StatusCode::UNPROCESSABLE_ENTITY,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -235,6 +236,7 @@ impl From<AgentError> for ApiError {
             AgentError::Ungrounded(_) => "AGENT_UNGROUNDED_THESIS",
             AgentError::InvalidToolArgs { .. } => "AGENT_BAD_TOOL_ARGS",
             AgentError::InvalidSkill(_) => "AGENT_INVALID_SKILL",
+            AgentError::IndicatorGenerationFailed { .. } => "INDICATOR_GENERATION_FAILED",
             AgentError::InvalidStrategyDocument(_) => "STRATEGY_VALIDATION_FAILED",
             _ => "AGENT_FAILED",
         };
@@ -418,6 +420,25 @@ mod tests {
         let ungrounded = ApiError::from(AgentError::Ungrounded("invented a price".into()));
         assert_eq!(ungrounded.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(ungrounded.code(), "AGENT_UNGROUNDED_THESIS");
+    }
+
+    #[test]
+    fn indicator_generation_failure_has_its_own_upstream_error() {
+        let err = ApiError::from(AgentError::IndicatorGenerationFailed {
+            attempts: 5,
+            last_errors: "script has no chart-visible output".into(),
+        });
+        assert_eq!(err.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(err.code(), "INDICATOR_GENERATION_FAILED");
+        let payload = body(err);
+        assert!(payload["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("5 attempts"));
+        assert!(payload["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("chart-visible output"));
     }
 
     #[test]
