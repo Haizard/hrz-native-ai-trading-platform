@@ -25,7 +25,11 @@ fn fresh_fvg(candles: &[Candle], from: usize, bullish: bool) -> Option<(f64, f64
             c.high < a.low
         };
         if gap {
-            let (low, high) = if bullish { (a.high, c.low) } else { (c.high, a.low) };
+            let (low, high) = if bullish {
+                (a.high, c.low)
+            } else {
+                (c.high, a.low)
+            };
             // Displacement: the middle bar's body at least twice the recent average.
             let mean_body: f64 = candles[i.saturating_sub(15)..i.saturating_sub(1).max(1)]
                 .iter()
@@ -45,11 +49,19 @@ fn fresh_fvg(candles: &[Candle], from: usize, bullish: bool) -> Option<(f64, f64
 /// LATER bar closing back through it. Returns the sweep bar's index.
 fn find_sweep(candles: &[Candle], level: f64, from: usize, high_side: bool) -> Option<usize> {
     for i in from..candles.len().saturating_sub(1) {
-        let beyond = if high_side { candles[i].high > level } else { candles[i].low < level };
+        let beyond = if high_side {
+            candles[i].high > level
+        } else {
+            candles[i].low < level
+        };
         if beyond {
             // A later bar closes back through the level.
             for j in i + 1..candles.len() {
-                let back = if high_side { candles[j].close < level } else { candles[j].close > level };
+                let back = if high_side {
+                    candles[j].close < level
+                } else {
+                    candles[j].close > level
+                };
                 if back {
                     return Some(i);
                 }
@@ -68,7 +80,12 @@ pub fn detect_ict_models(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
     }
     let n = candles.len() - 1;
     let last = &candles[n];
-    let mut push = |kind: EventKind, side: Side, price: f64, low: Option<f64>, high: Option<f64>, formed: Option<i64>| {
+    let mut push = |kind: EventKind,
+                    side: Side,
+                    price: f64,
+                    low: Option<f64>,
+                    high: Option<f64>,
+                    formed: Option<i64>| {
         out.push(MarketEvent {
             kind,
             symbol: symbol.to_string(),
@@ -85,7 +102,10 @@ pub fn detect_ict_models(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
         });
     };
     let day_of = last.open_time.div_euclid(DAY_NS);
-    let today: usize = candles.iter().position(|k| k.open_time.div_euclid(DAY_NS) == day_of).unwrap_or(0);
+    let today: usize = candles
+        .iter()
+        .position(|k| k.open_time.div_euclid(DAY_NS) == day_of)
+        .unwrap_or(0);
 
     // -- The Silver Bullet: a sweep of the day's prior swing, inside one of
     // the SB windows (07:00-08:00, 14:00-15:00, 18:00-19:00 UTC -- the
@@ -166,7 +186,14 @@ pub fn detect_ict_models(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
             // Price enters the overlap on the tail, from above (the buy model).
             let prev = &candles[n - 1];
             if last.low <= u_hi && last.close >= u_lo && prev.low > u_hi {
-                push(EventKind::UnicornModel, Side::Buy, (u_lo + u_hi) / 2.0, Some(u_lo), Some(u_hi), None);
+                push(
+                    EventKind::UnicornModel,
+                    Side::Buy,
+                    (u_lo + u_hi) / 2.0,
+                    Some(u_lo),
+                    Some(u_hi),
+                    None,
+                );
             }
         }
     }
@@ -195,15 +222,22 @@ pub fn detect_ict_models(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                     let lb = 2;
                     for i in lb.max(today + 1)..sweep_idx.saturating_sub(lb) {
                         if high_side {
-                            if (i - lb..=i + lb).all(|j| j == i || candles[j].low > candles[i].low) {
+                            if (i - lb..=i + lb).all(|j| j == i || candles[j].low > candles[i].low)
+                            {
                                 swings.push((i, candles[i].low));
                             }
-                        } else if (i - lb..=i + lb).all(|j| j == i || candles[j].high < candles[i].high) {
+                        } else if (i - lb..=i + lb)
+                            .all(|j| j == i || candles[j].high < candles[i].high)
+                        {
                             swings.push((i, candles[i].high));
                         }
                     }
                     let changed = swings.iter().any(|(_, swing_level)| {
-                        if high_side { last.close < *swing_level } else { last.close > *swing_level }
+                        if high_side {
+                            last.close < *swing_level
+                        } else {
+                            last.close > *swing_level
+                        }
                     });
                     if changed {
                         push(
@@ -228,7 +262,9 @@ pub fn detect_ict_models(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
     {
         let asian: Vec<&Candle> = candles
             .iter()
-            .filter(|k| k.open_time.div_euclid(DAY_NS) == day_of && ((k.open_time % DAY_NS) / HOUR_NS) < 7)
+            .filter(|k| {
+                k.open_time.div_euclid(DAY_NS) == day_of && ((k.open_time % DAY_NS) / HOUR_NS) < 7
+            })
             .collect();
         if !asian.is_empty() {
             let asia_lo = asian.iter().map(|k| k.low).fold(f64::MAX, f64::min);
@@ -255,9 +291,23 @@ pub fn detect_ict_models(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
             // the buy model at the high pool. Fire once, at the tag.
             let prev = &candles[n - 1];
             if swept_high && last.low <= week_lo && prev.low > week_lo {
-                push(EventKind::MarketMakerModel, Side::Sell, week_lo, Some(week_lo), Some(week_hi), None);
+                push(
+                    EventKind::MarketMakerModel,
+                    Side::Sell,
+                    week_lo,
+                    Some(week_lo),
+                    Some(week_hi),
+                    None,
+                );
             } else if swept_low && last.high >= week_hi && prev.high < week_hi {
-                push(EventKind::MarketMakerModel, Side::Buy, week_hi, Some(week_lo), Some(week_hi), None);
+                push(
+                    EventKind::MarketMakerModel,
+                    Side::Buy,
+                    week_hi,
+                    Some(week_lo),
+                    Some(week_hi),
+                    None,
+                );
             }
         }
     }
@@ -292,7 +342,9 @@ mod tests {
         // newest bar at 14:00 inside the window.
         let h = 3_600_000_000_000_i64;
         let day = 24 * h;
-        let mut candles: Vec<Candle> = (0..40).map(|i| k(i * h, 100.5, 101.0, 100.0, 100.5)).collect();
+        let mut candles: Vec<Candle> = (0..40)
+            .map(|i| k(i * h, 100.5, 101.0, 100.0, 100.5))
+            .collect();
         // Day's swing high at 102 (bar 31, at hour 7 of day 1... the sweep
         // must be today: build on day 2).
         let day2 = day;
@@ -300,19 +352,28 @@ mod tests {
         candles[29] = k(day2 + 5 * h, 101.5, 101.6, 100.8, 101.0);
         // The sweep at hour 13 today (day 2 = same day as bars 24+).
         candles.push(k(day2 + 13 * h, 101.0, 102.5, 100.9, 101.6)); // the sweep
-        // The displaced bearish FVG at hour 13+1.
+                                                                    // The displaced bearish FVG at hour 13+1.
         candles.push(k(day2 + 14 * h, 101.6, 101.7, 100.2, 100.4)); // big down body
-        // Wait -- the FVG is a 3-bar pattern: bars (sweep, big, gap-bar).
+                                                                    // Wait -- the FVG is a 3-bar pattern: bars (sweep, big, gap-bar).
         candles.push(k(day2 + 15 * h, 100.4, 100.5, 99.8, 100.0)); // gap down
-        // The newest bar at hour 18 (inside the SB window).
+                                                                   // The newest bar at hour 18 (inside the SB window).
         candles.push(k(day2 + 18 * h, 100.0, 100.2, 99.6, 99.9));
         let events = detect_ict_models(&candles, "T");
         let sb = events.iter().find(|e| e.kind == EventKind::SilverBullet);
-        assert!(sb.is_some(), "the sweep inside the window with the gap fires");
-        assert_eq!(sb.expect("checked").side, Some(Side::Sell), "the high sweep reverses down");
+        assert!(
+            sb.is_some(),
+            "the sweep inside the window with the gap fires"
+        );
+        assert_eq!(
+            sb.expect("checked").side,
+            Some(Side::Sell),
+            "the high sweep reverses down"
+        );
         // Outside the window: no silver bullet.
         let outside: Vec<Candle> = candles[..candles.len() - 1].to_vec();
-        assert!(!detect_ict_models(&outside, "T").iter().any(|e| e.kind == EventKind::SilverBullet));
+        assert!(!detect_ict_models(&outside, "T")
+            .iter()
+            .any(|e| e.kind == EventKind::SilverBullet));
     }
 
     #[test]
@@ -320,12 +381,20 @@ mod tests {
         let h = 3_600_000_000_000_i64;
         // Yesterday: 24 bars ranging 100..102. The detector's floor is 40
         // bars, so today's lead-up to the sweep is padded with quiet bars.
-        let mut candles: Vec<Candle> = (0..24).map(|i| k(i * h, 101.0, 102.0, 100.0, 101.0)).collect();
+        let mut candles: Vec<Candle> = (0..24)
+            .map(|i| k(i * h, 101.0, 102.0, 100.0, 101.0))
+            .collect();
         // The padding forms real swings (identical bars have equal lows,
         // and the strict swing rule reads no structure at all).
         for i in 0..11 {
             let dip = if i % 3 == 1 { 0.4 } else { 0.0 };
-            candles.push(k(24 * h + (i as i64) * h / 2, 101.0 - dip, 101.2 - dip, 100.6 - dip, 100.9 - dip));
+            candles.push(k(
+                24 * h + (i as i64) * h / 2,
+                101.0 - dip,
+                101.2 - dip,
+                100.6 - dip,
+                100.9 - dip,
+            ));
         }
         // Today: the sweep of yesterday's high, closing back in.
         candles.push(k(24 * h + 6 * h, 101.0, 102.5, 100.8, 101.4));
@@ -338,7 +407,10 @@ mod tests {
         candles.push(k(24 * h + 12 * h, 100.3, 100.4, 99.9, 100.0)); // breaks the lows
         let events = detect_ict_models(&candles, "T");
         let m = events.iter().find(|e| e.kind == EventKind::Model2022);
-        assert!(m.is_some(), "yesterday's sweep with the character change completes the model");
+        assert!(
+            m.is_some(),
+            "yesterday's sweep with the character change completes the model"
+        );
         assert_eq!(m.expect("checked").side, Some(Side::Sell));
     }
 }

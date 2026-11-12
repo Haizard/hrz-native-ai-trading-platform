@@ -56,24 +56,27 @@ pub mod web_search;
 pub use agent::draft_strategy_spec;
 pub use agent::{
     Agent, AgentAnswer, AgentConfig, AskRequest, DrawingsContext, GeneratedStrategy,
-    IndicatorContext, IndicatorReading, MemoryContext, ReviewRequest, SnapshotsContext, StrategyRequest, DEFAULT_MAX_ATTEMPTS,
-    DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
+    IndicatorContext, IndicatorReading, MemoryContext, ReviewRequest, SnapshotsContext,
+    StrategyRequest, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
 };
 pub use agent_memory::{
     facts_from_thesis, render_recall, MemoryRow, MemorySource, MemoryWriter, NewMemory,
     MAX_CONTENT_CHARS, RECALL_LIMIT,
 };
-pub use authoring::{AuthorAnswer, AuthorDocument, AuthorImage, AuthorRequest, AuthoringContext, ChatTurn, SavedSkill, SkillWriter};
-pub use captures::{CapturesContext, ChartCaptureSource};
+pub use authoring::{
+    AuthorAnswer, AuthorDocument, AuthorImage, AuthorRequest, AuthoringContext, ChatTurn,
+    SavedSkill, SkillWriter,
+};
 pub use capability_view::{CapabilityView, SkillVerdict};
+pub use captures::{CapturesContext, ChartCaptureSource};
 pub use chart_context::{
     ChartContext, ChartScreenshot, DrawnLevel, MAX_DRAWINGS, MAX_SCREENSHOT_BYTES,
     SCREENSHOT_MEDIA_TYPES,
 };
 pub use error::AgentError;
 pub use llm_client::{
-    ContentBlock, GeneratedImage, LlmClient, LlmRequest, LlmResponse, Message, Role, StopReason, ToolCall,
-    ToolChoice, ToolResult, ToolSpec, Usage,
+    ContentBlock, GeneratedImage, LlmClient, LlmRequest, LlmResponse, Message, Role, StopReason,
+    ToolCall, ToolChoice, ToolResult, ToolSpec, Usage,
 };
 pub use multi_timeframe::{LadderView, TimeframeLadder};
 pub use progress::{NoProgress, Progress, ProgressSink};
@@ -90,8 +93,7 @@ pub use thesis::{Bias, CheckStatus, ConditionCheck, PriceRange, ToolTrace};
 
 pub use thesis::{PriceZone, TradeThesis};
 pub use tools::{
-    structure_digest, BacktestRunner, BacktestSummary, MarketDataSource, ToolContext,
-    ToolRegistry,
+    structure_digest, BacktestRunner, BacktestSummary, MarketDataSource, ToolContext, ToolRegistry,
 };
 pub use user_drawings::{
     AgentPoint, DrawingProvenance, DrawingWriter, NewAgentDrawing, StoredDrawing, UserDrawing,

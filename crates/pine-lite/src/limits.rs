@@ -18,7 +18,12 @@ pub const MAX_LOOP_DEPTH: usize = 4;
 /// Check the budgets. Statement counting is recursive: a body counts each of
 /// its statements, because fuel cost is what the cap is really about.
 pub fn check(script: &Script) -> Vec<crate::ScriptError> {
-    let mut cx = Limiter { errors: Vec::new(), statements: 0, plots: 0, fills: 0 };
+    let mut cx = Limiter {
+        errors: Vec::new(),
+        statements: 0,
+        plots: 0,
+        fills: 0,
+    };
     cx.count(&script.items);
     cx.errors
 }
@@ -75,7 +80,9 @@ impl Limiter {
                     }
                     self.expr(expr);
                 }
-                Item::Block { exprs, body, els, .. } => {
+                Item::Block {
+                    exprs, body, els, ..
+                } => {
                     for e in exprs {
                         self.expr(e);
                     }
@@ -166,7 +173,11 @@ mod tests {
                    while x < 5\n\
                        x := x + 1\n\
                    plot(x)\n";
-        assert!(limit_check(src).is_empty(), "{errs:?}", errs = limit_check(src));
+        assert!(
+            limit_check(src).is_empty(),
+            "{errs:?}",
+            errs = limit_check(src)
+        );
     }
 
     #[test]

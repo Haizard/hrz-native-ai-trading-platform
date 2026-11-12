@@ -373,7 +373,10 @@ mod tests {
         // Day 1 accumulates +600 in the Large class. Day 2 resets, then +300 Medium.
         assert!((points[0].classes[SizeClass::Large.index()] - 600.0).abs() < 1e-9);
         assert!((points[1].classes[SizeClass::Medium.index()] - 300.0).abs() < 1e-9);
-        assert!(points[1].classes[SizeClass::Large.index()].abs() < 1e-9, "session reset");
+        assert!(
+            points[1].classes[SizeClass::Large.index()].abs() < 1e-9,
+            "session reset"
+        );
     }
 
     #[test]
@@ -383,7 +386,8 @@ mod tests {
             trade(100.0, 600.0, false, 2_000),
         ];
         let config = SizeClassConfig::default();
-        let profile = calculate_volume_profile_for_class(&trades, 1.0, &config, |c| c == SizeClass::Large);
+        let profile =
+            calculate_volume_profile_for_class(&trades, 1.0, &config, |c| c == SizeClass::Large);
         let total: f64 = profile.histogram.iter().map(|n| n.volume).sum();
         assert!((total - 600.0).abs() < 1e-9);
     }

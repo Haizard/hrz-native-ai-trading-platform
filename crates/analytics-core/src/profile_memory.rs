@@ -156,7 +156,10 @@ pub fn build_profile_memory(
 
     for candle in candles {
         let session = session_of(candle.open_time);
-        if sessions.last().map_or(true, |s| s.session_open_time != session) {
+        if sessions
+            .last()
+            .map_or(true, |s| s.session_open_time != session)
+        {
             // Flush the previous session's nodes before starting a new one.
             if !nodes.is_empty() {
                 if let Some(current) = sessions.last_mut() {

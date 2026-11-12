@@ -252,7 +252,10 @@ mod tests {
                 .with_note("REST klines are direction-attributed, not a measurement"),
         );
         assert_eq!(support.best_split(), SplitQuality::Real);
-        assert_eq!(support.caveats(), vec!["REST klines are direction-attributed, not a measurement"]);
+        assert_eq!(
+            support.caveats(),
+            vec!["REST klines are direction-attributed, not a measurement"]
+        );
 
         // When live is absent the REST channel *is* the best: its caveat then
         // travels through the resolution's basis (derived) instead of the

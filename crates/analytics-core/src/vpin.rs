@@ -139,7 +139,12 @@ pub fn bucket_imbalances(trades: &[Trade], config: &VpinConfig) -> Vec<BucketImb
         }
     }
 
-    close_bucket(bucket_buy, bucket_volume, trades.last().map_or(0, |t| t.timestamp), &mut buckets);
+    close_bucket(
+        bucket_buy,
+        bucket_volume,
+        trades.last().map_or(0, |t| t.timestamp),
+        &mut buckets,
+    );
     buckets
 }
 
@@ -234,7 +239,11 @@ mod tests {
         };
         let points = calculate_vpin_series(&trades, &config);
         let last = points.last().expect("warm tape");
-        assert!(last.vpin < 0.6, "alternating tape should read low: {}", last.vpin);
+        assert!(
+            last.vpin < 0.6,
+            "alternating tape should read low: {}",
+            last.vpin
+        );
     }
 
     #[test]

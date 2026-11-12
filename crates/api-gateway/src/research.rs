@@ -272,7 +272,11 @@ fn is_plain_yaml(name: &str) -> bool {
 pub struct RegistryConceptCatalog;
 
 impl ai_agent::tools::ConceptCatalog for RegistryConceptCatalog {
-    fn search(&self, keyword: Option<&str>, library: Option<&str>) -> Vec<ai_agent::tools::ConceptInfo> {
+    fn search(
+        &self,
+        keyword: Option<&str>,
+        library: Option<&str>,
+    ) -> Vec<ai_agent::tools::ConceptInfo> {
         market_data::concepts::concept_registry()
             .iter()
             .filter(|c| {
@@ -309,7 +313,8 @@ impl GatewayCompositionRunner {
     /// malformed document is an INVALID REPORT, never a hard failure: the
     /// agent fixes and retries, and the error text is what it fixes against.
     fn parse_document(document_json: &str) -> Result<market_data::composer::Composition, String> {
-        serde_json::from_str(document_json).map_err(|e| format!("the document is not a composition: {e}"))
+        serde_json::from_str(document_json)
+            .map_err(|e| format!("the document is not a composition: {e}"))
     }
 
     fn invalid_report(reason: String) -> ai_agent::tools::CompositionReport {
@@ -351,10 +356,13 @@ impl GatewayCompositionRunner {
                 kelly_suggested: 0.0,
             });
         }
-        let tf: analytics_core::types::Timeframe = timeframe.parse().map_err(|_| ai_agent::error::AgentError::ToolFailed {
-            tool: "composition".into(),
-            reason: format!("`{timeframe}` is not a timeframe this platform serves"),
-        })?;
+        let tf: analytics_core::types::Timeframe =
+            timeframe
+                .parse()
+                .map_err(|_| ai_agent::error::AgentError::ToolFailed {
+                    tool: "composition".into(),
+                    reason: format!("`{timeframe}` is not a timeframe this platform serves"),
+                })?;
         let symbol = symbol.to_uppercase();
         let to_ns = crate::now_ns();
         let from_ns = to_ns - limit as i64 * tf.nanos();
@@ -393,18 +401,23 @@ impl GatewayCompositionRunner {
                 })?;
             extra_symbols.push((sym2, window2.candles));
         }
-        let evaluation = market_data::composer::evaluate_mtf(document, &plan, &symbol, tf, &candles, &extra_series, &extra_symbols);
+        let evaluation = market_data::composer::evaluate_mtf(
+            document,
+            &plan,
+            &symbol,
+            tf,
+            &candles,
+            &extra_series,
+            &extra_symbols,
+        );
         let signals = evaluation.signals;
 
         // The intents and the run (the route's own conversion).
         let atrs = analytics_core::indicators::atr::atr(&candles, 14);
         // The exit composer: the risk block's own conditions, evaluated per
         // bar while a position is open ("exit at the opposite pool").
-        let mut exit_composer = document
-            .risk
-            .exit
-            .as_ref()
-            .map(|cond| market_data::composer::Composer::new(market_data::composer::Composition {
+        let mut exit_composer = document.risk.exit.as_ref().map(|cond| {
+            market_data::composer::Composer::new(market_data::composer::Composition {
                 name: format!("{} (exit)", document.name),
                 version: document.version.clone(),
                 timeframe: document.timeframe.clone(),
@@ -414,7 +427,8 @@ impl GatewayCompositionRunner {
                 conditions: cond.clone(),
                 risk: document.risk.clone(),
                 parameters: document.parameters.clone(),
-            }));
+            })
+        });
         let mut open_entry_bar: Option<usize> = None;
         let mut exit_intents: Vec<(usize, pine_lite::interp::Intent)> = Vec::new();
         if exit_composer.is_some() {
@@ -454,13 +468,20 @@ impl GatewayCompositionRunner {
                     let entry_bar = (signal.bar + 1).min(candles.len() - 1);
                     atrs[entry_bar].map(|atr| {
                         let entry = candles[entry_bar].open;
-                        if signal.long { entry - multiple * atr } else { entry + multiple * atr }
+                        if signal.long {
+                            entry - multiple * atr
+                        } else {
+                            entry + multiple * atr
+                        }
                     })
                 }
             };
             // The entry mode: the next bar's open by default, or a limit at
             // the satisfying zone's proximal edge.
-            if matches!(document.risk.entry, Some(market_data::composer::EntryMode::LimitAtProximal)) {
+            if matches!(
+                document.risk.entry,
+                Some(market_data::composer::EntryMode::LimitAtProximal)
+            ) {
                 if let Some(level) = signal.stop_level {
                     intents.push((
                         signal.bar,
@@ -535,7 +556,9 @@ impl GatewayCompositionRunner {
         let percent = match &document.risk.sizing {
             market_data::composer::SizeKind::FixedFractional { percent } => *percent,
             market_data::composer::SizeKind::Fixed { .. } => 10.0,
-            market_data::composer::SizeKind::VolatilityAdjusted { risk_fraction } => risk_fraction * 100.0,
+            market_data::composer::SizeKind::VolatilityAdjusted { risk_fraction } => {
+                risk_fraction * 100.0
+            }
             market_data::composer::SizeKind::Kelly { cap } => cap * 100.0,
         };
         // The exit composer's intents merge in time order with the entry intents.
@@ -587,7 +610,10 @@ impl GatewayCompositionRunner {
 
 #[async_trait::async_trait]
 impl ai_agent::tools::CompositionRunner for GatewayCompositionRunner {
-    fn validate_composition(&self, document_json: &str) -> Result<ai_agent::tools::CompositionReport, ai_agent::error::AgentError> {
+    fn validate_composition(
+        &self,
+        document_json: &str,
+    ) -> Result<ai_agent::tools::CompositionReport, ai_agent::error::AgentError> {
         let document = match Self::parse_document(document_json) {
             Ok(d) => d,
             Err(reason) => return Ok(Self::invalid_report(reason)),
@@ -631,10 +657,15 @@ impl ai_agent::tools::CompositionRunner for GatewayCompositionRunner {
             Ok(d) => d,
             Err(reason) => return Ok(Self::invalid_report(reason)),
         };
-        self.backtest_core(&document, symbol, timeframe, limit.min(1000).max(50)).await
+        self.backtest_core(&document, symbol, timeframe, limit.min(1000).max(50))
+            .await
     }
 
-    async fn signals(&self, symbol: &str, limit: usize) -> Result<Vec<ai_agent::tools::ConceptSignal>, ai_agent::error::AgentError> {
+    async fn signals(
+        &self,
+        symbol: &str,
+        limit: usize,
+    ) -> Result<Vec<ai_agent::tools::ConceptSignal>, ai_agent::error::AgentError> {
         let symbol = symbol.to_uppercase();
         let tf = analytics_core::types::Timeframe::H1;
         let to_ns = crate::now_ns();
@@ -758,13 +789,24 @@ metadata:
         let all = catalog.search(None, None);
         assert!(all.len() > 150, "the full registry: {}", all.len());
         let rsi = catalog.search(Some("rsi"), None);
-        assert!(rsi.iter().any(|c| c.id == "indicators.rsi"), "the keyword finds the concept");
-        assert!(rsi.iter().all(|c| {
-            let k = "rsi";
-            c.id.to_lowercase().contains(k) || c.name.to_lowercase().contains(k) || c.description.to_lowercase().contains(k)
-        }), "every hit matches the keyword");
+        assert!(
+            rsi.iter().any(|c| c.id == "indicators.rsi"),
+            "the keyword finds the concept"
+        );
+        assert!(
+            rsi.iter().all(|c| {
+                let k = "rsi";
+                c.id.to_lowercase().contains(k)
+                    || c.name.to_lowercase().contains(k)
+                    || c.description.to_lowercase().contains(k)
+            }),
+            "every hit matches the keyword"
+        );
         let smc = catalog.search(None, Some("smc"));
-        assert!(smc.iter().all(|c| c.id.starts_with("smc.")), "the library filter holds");
+        assert!(
+            smc.iter().all(|c| c.id.starts_with("smc.")),
+            "the library filter holds"
+        );
         assert!(smc.len() > 10, "the smc family is deep");
     }
 
@@ -772,7 +814,9 @@ metadata:
     fn validate_composition_reports_errors_and_passes_a_good_document() {
         let runner = composition_runner_off();
         use ai_agent::tools::CompositionRunner;
-        let bad = runner.validate_composition(r#"{"name": "x"}"#).expect("answered");
+        let bad = runner
+            .validate_composition(r#"{"name": "x"}"#)
+            .expect("answered");
         assert!(!bad.valid, "a non-composition is invalid");
         let good = runner
             .validate_composition(
@@ -789,7 +833,11 @@ metadata:
             }"#,
             )
             .expect("answered");
-        assert!(good.valid, "a two-family composition validates: {:?}", good.errors);
+        assert!(
+            good.valid,
+            "a two-family composition validates: {:?}",
+            good.errors
+        );
         let unknown = runner
             .validate_composition(
                 r#"{
@@ -799,7 +847,10 @@ metadata:
             }"#,
             )
             .expect("answered");
-        assert!(!unknown.valid, "an id the catalog does not list does not exist");
+        assert!(
+            !unknown.valid,
+            "an id the catalog does not list does not exist"
+        );
     }
 
     #[test]

@@ -183,7 +183,11 @@ impl Registry {
                 availability: Availability::Unavailable,
                 basis: None,
                 missing: Vec::new(),
-                caveats: descriptor.notes.iter().map(|note| (*note).to_string()).collect(),
+                caveats: descriptor
+                    .notes
+                    .iter()
+                    .map(|note| (*note).to_string())
+                    .collect(),
                 explanation: format!(
                     "{} is not implemented on this platform{}",
                     descriptor.id,
@@ -218,10 +222,7 @@ impl Registry {
                 caveats: profile.caveats.iter().map(|c| (*c).to_string()).collect(),
                 explanation: format!(
                     "{} has no {} instruments ({} on {} is not a thing this provider serves)",
-                    scope.provider,
-                    scope.symbol_class,
-                    scope.symbol,
-                    scope.provider
+                    scope.provider, scope.symbol_class, scope.symbol, scope.provider
                 ),
             };
         };
@@ -233,11 +234,9 @@ impl Registry {
                 .needs
                 .iter()
                 .filter(|need| {
-                    class
-                        .kind(need.kind)
-                        .is_none_or(|support| {
-                            !support.is_supplied() || support.best_split() < need.min_split
-                        })
+                    class.kind(need.kind).is_none_or(|support| {
+                        !support.is_supplied() || support.best_split() < need.min_split
+                    })
                 })
                 .map(|need| need.kind)
                 .collect();
@@ -377,16 +376,18 @@ mod tests {
     /// whole model exists for (the design document's §22.2).
     fn deriv_like() -> ProviderDataProfile {
         let synthetic = ClassProfile::new()
-            .with(DataKind::Candles, KindSupport::both(
-                Channel::candles(SplitQuality::Absent),
-                Channel::candles(SplitQuality::Absent),
-            ))
+            .with(
+                DataKind::Candles,
+                KindSupport::both(
+                    Channel::candles(SplitQuality::Absent),
+                    Channel::candles(SplitQuality::Absent),
+                ),
+            )
             .with(DataKind::Ticks, KindSupport::live_only(Channel::plain()));
         // Deliberately reusing a Provider variant for the fixture: the
         // resolver keys on the enum, and the fixture is about the *profile
         // shape*, not the name.
-        ProviderDataProfile::new(Provider::Bybit)
-            .with_class(SymbolClass::SyntheticIndex, synthetic)
+        ProviderDataProfile::new(Provider::Bybit).with_class(SymbolClass::SyntheticIndex, synthetic)
     }
 
     fn registry() -> Registry {
@@ -428,10 +429,7 @@ mod tests {
             resolution.explanation
         );
         assert!(
-            resolution
-                .caveats
-                .iter()
-                .any(|c| c.contains("uniformly")),
+            resolution.caveats.iter().any(|c| c.contains("uniformly")),
             "the uniform-spread caveat must travel with the derived answer: {:?}",
             resolution.caveats
         );
@@ -441,7 +439,12 @@ mod tests {
     fn candle_only_scopes_keep_structure_analytics() {
         // The Deriv story's other half: everything price-derived still works.
         let scope = DataScope::new(Provider::Bybit, SymbolClass::SyntheticIndex, "R_100");
-        for id in ["market_structure", "liquidity", "derived_events", "forecast_cone"] {
+        for id in [
+            "market_structure",
+            "liquidity",
+            "derived_events",
+            "forecast_cone",
+        ] {
             let resolution = registry().resolve(id, &scope);
             assert_eq!(
                 resolution.availability,
@@ -509,7 +512,11 @@ mod tests {
         let scope = DataScope::new(Provider::Binance, SymbolClass::Linear, "BTCUSDT");
         let resolution = registry().resolve("candles", &scope);
         assert_eq!(resolution.availability, Availability::Unavailable);
-        assert!(resolution.explanation.contains("linear"), "{}", resolution.explanation);
+        assert!(
+            resolution.explanation.contains("linear"),
+            "{}",
+            resolution.explanation
+        );
     }
 
     #[test]

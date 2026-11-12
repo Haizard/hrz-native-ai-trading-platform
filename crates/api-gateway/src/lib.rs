@@ -399,6 +399,7 @@ pub fn router(state: AppState) -> Router {
         // docs/23: the Pine-lite vet gate. A script that never passed here
         // has no path to a chart or a bot.
         .route("/scripts/vet", post(script_routes::vet))
+        .route("/scripts/capabilities", get(script_routes::capabilities))
         .route("/strategies/reference", get(strategy_routes::reference))
         .route("/strategies/examples", get(strategy_routes::examples))
         .route("/strategies/schema", get(strategy_routes::schema))

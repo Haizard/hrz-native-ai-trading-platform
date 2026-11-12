@@ -47,7 +47,6 @@ const MAX_IMAGE_BYTES: usize = 1536 * 1024;
 /// hit is skipped and the next candidate serves.
 const IMAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 
-
 /// A SearXNG instance the agent can search through.
 pub struct SearxngSearcher {
     /// The instance's root URL, without a trailing slash.
@@ -264,7 +263,10 @@ fn trim_hits(results: Vec<RawHit>) -> Vec<WebSearchHit> {
             title: truncate(hit.title.trim(), MAX_TITLE_CHARS),
             url: hit.url.trim().to_string(),
             snippet: truncate(hit.content.trim(), MAX_SNIPPET_CHARS),
-            engine: hit.engine.map(|e| e.trim().to_string()).filter(|e| !e.is_empty()),
+            engine: hit
+                .engine
+                .map(|e| e.trim().to_string())
+                .filter(|e| !e.is_empty()),
             published: hit
                 .published_date
                 .map(|d| d.trim().to_string())
@@ -372,7 +374,10 @@ mod tests {
             sniff_media_type(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A]),
             Some("image/png")
         );
-        assert_eq!(sniff_media_type(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(
+            sniff_media_type(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some("image/jpeg")
+        );
         assert_eq!(sniff_media_type(b"GIF89a...."), Some("image/gif"));
         assert_eq!(sniff_media_type(b"RIFF....WEBPVP8 "), Some("image/webp"));
         // The live failure: an HTML error page served with an image

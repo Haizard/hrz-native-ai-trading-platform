@@ -7,7 +7,11 @@ use crate::types::Candle;
 
 /// Stochastic %K: `(close - lowest low) / (highest high - lowest low) * 100`
 /// over `k_period`; %D is the `d_period` SMA of %K. (Lane, 1950s.)
-pub fn stochastic(candles: &[Candle], k_period: usize, d_period: usize) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
+pub fn stochastic(
+    candles: &[Candle],
+    k_period: usize,
+    d_period: usize,
+) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
     let n = candles.len();
     let mut k_line = vec![None; n];
     if k_period == 0 || n < k_period {
@@ -46,7 +50,10 @@ pub fn cci(candles: &[Candle], period: usize) -> Vec<Option<f64>> {
     if period == 0 || n < period {
         return out;
     }
-    let tps: Vec<f64> = candles.iter().map(|c| (c.high + c.low + c.close) / 3.0).collect();
+    let tps: Vec<f64> = candles
+        .iter()
+        .map(|c| (c.high + c.low + c.close) / 3.0)
+        .collect();
     for i in period - 1..n {
         let window = &tps[i + 1 - period..=i];
         let mean = window.iter().sum::<f64>() / period as f64;
@@ -94,7 +101,11 @@ pub fn roc(closes: &[f64], period: usize) -> Vec<Option<f64>> {
     }
     for i in period..n {
         let base = closes[i - period];
-        out[i] = Some(if base != 0.0 { (closes[i] / base - 1.0) * 100.0 } else { 0.0 });
+        out[i] = Some(if base != 0.0 {
+            (closes[i] / base - 1.0) * 100.0
+        } else {
+            0.0
+        });
     }
     out
 }
@@ -144,7 +155,11 @@ mod tests {
     fn the_stochastic_pins_lanes_math() {
         // 3 bars: highs 12/13/14, lows 8/9/10, close at 14 -> %K(2) at bar 2:
         // window bars 1..2: hi 14, lo 9, close 14 -> (14-9)/5 = 100%.
-        let candles = vec![k(0, 12.0, 8.0, 10.0, 1.0), k(1, 13.0, 9.0, 12.0, 1.0), k(2, 14.0, 10.0, 14.0, 1.0)];
+        let candles = vec![
+            k(0, 12.0, 8.0, 10.0, 1.0),
+            k(1, 13.0, 9.0, 12.0, 1.0),
+            k(2, 14.0, 10.0, 14.0, 1.0),
+        ];
         let (k_line, d_line) = stochastic(&candles, 2, 2);
         // Bar 1's window (bars 0..1): hi 13, lo 8, close 12 -> 80.
         assert!((k_line[1].unwrap() - 80.0).abs() < 1e-9);
@@ -159,14 +174,29 @@ mod tests {
         let v = cci(&candles, 14);
         assert_eq!(v[19], Some(0.0));
         // A ramp: CCI positive and bounded sanely.
-        let ramp: Vec<Candle> = (0..20).map(|i| k(i, 10.0 + i as f64 + 1.0, 10.0 + i as f64 - 1.0, 10.0 + i as f64, 1.0)).collect();
+        let ramp: Vec<Candle> = (0..20)
+            .map(|i| {
+                k(
+                    i,
+                    10.0 + i as f64 + 1.0,
+                    10.0 + i as f64 - 1.0,
+                    10.0 + i as f64,
+                    1.0,
+                )
+            })
+            .collect();
         let v = cci(&ramp, 14);
-        assert!(v[19].unwrap() > 0.0, "a rising typical price reads positive");
+        assert!(
+            v[19].unwrap() > 0.0,
+            "a rising typical price reads positive"
+        );
     }
 
     #[test]
     fn williams_r_is_the_stochastics_mirror() {
-        let candles: Vec<Candle> = (0..15).map(|i| k(i, 11.0 + (i % 3) as f64, 9.0 - (i % 2) as f64, 10.0, 1.0)).collect();
+        let candles: Vec<Candle> = (0..15)
+            .map(|i| k(i, 11.0 + (i % 3) as f64, 9.0 - (i % 2) as f64, 10.0, 1.0))
+            .collect();
         let w = williams_r(&candles, 14);
         let (k_line, _) = stochastic(&candles, 14, 1);
         // %R = %K - 100, exactly, on the same window.

@@ -5306,9 +5306,9 @@ fn structure_profile_layers(
                 let reference_candles = &segment[..segment.len() - 1];
                 let reference_profile = if quote_only_venue {
                     let first = reference_candles.first().map_or(0, |c| c.open_time);
-                    let last = reference_candles.last().map_or(first, |c| {
-                        c.open_time.saturating_add(c.timeframe.nanos())
-                    });
+                    let last = reference_candles
+                        .last()
+                        .map_or(first, |c| c.open_time.saturating_add(c.timeframe.nanos()));
                     let prices: Vec<_> = quotes
                         .iter()
                         .filter(|q| q.time >= first && q.time < last && q.price.is_finite())
@@ -7318,18 +7318,34 @@ mod tests {
             .note
             .as_deref()
             .is_some_and(|note| note.contains("quote activity") && note.contains("POC RETEST")));
-        assert!(scene.profile_entry_signals.iter().all(|cue| {
-            cue.side == "buy" || cue.side == "sell"
-        }));
+        assert!(scene
+            .profile_entry_signals
+            .iter()
+            .all(|cue| { cue.side == "buy" || cue.side == "sell" }));
     }
 
     #[test]
     fn structure_profile_retest_cues_require_a_reclaim_in_the_regime_direction() {
-        assert_eq!(profile_retest_side("up", 101.0, 99.0, 103.0, 102.0, 100.0), Some("buy"));
-        assert_eq!(profile_retest_side("down", 99.0, 97.0, 101.0, 98.0, 100.0), Some("sell"));
-        assert_eq!(profile_retest_side("up", 99.0, 98.0, 102.0, 101.0, 100.0), None);
-        assert_eq!(profile_retest_side("down", 101.0, 98.0, 102.0, 99.0, 100.0), None);
-        assert_eq!(profile_retest_side("up", 101.0, 98.0, 102.0, f64::NAN, 100.0), None);
+        assert_eq!(
+            profile_retest_side("up", 101.0, 99.0, 103.0, 102.0, 100.0),
+            Some("buy")
+        );
+        assert_eq!(
+            profile_retest_side("down", 99.0, 97.0, 101.0, 98.0, 100.0),
+            Some("sell")
+        );
+        assert_eq!(
+            profile_retest_side("up", 99.0, 98.0, 102.0, 101.0, 100.0),
+            None
+        );
+        assert_eq!(
+            profile_retest_side("down", 101.0, 98.0, 102.0, 99.0, 100.0),
+            None
+        );
+        assert_eq!(
+            profile_retest_side("up", 101.0, 98.0, 102.0, f64::NAN, 100.0),
+            None
+        );
     }
 
     #[test]
@@ -8139,7 +8155,13 @@ mod tests {
             (scene.candles[0].open - request.candles[100].open).abs() < f64::EPSILON,
             "the plotted first candle must come from the requested right-side window"
         );
-        assert!(scene.vwap.iter().all(|point| point.y >= scene.plot.y && point.y <= scene.plot.y + scene.plot.h), "the cumulative line remains inside the fitted overlay range");
+        assert!(
+            scene
+                .vwap
+                .iter()
+                .all(|point| point.y >= scene.plot.y && point.y <= scene.plot.y + scene.plot.h),
+            "the cumulative line remains inside the fitted overlay range"
+        );
 
         // And the times reported are the window's, which is what the shell's
         // axis label is built from.
@@ -8297,7 +8319,9 @@ mod tests {
             }],
         }];
         let scene = build(&request);
-        let grid = scene.footprint.expect("tick activity still draws a footprint grid");
+        let grid = scene
+            .footprint
+            .expect("tick activity still draws a footprint grid");
         assert_eq!(grid.basis, "quote_tick_proxy");
         assert_eq!(grid.columns[0].cells[0].activity, 2.0);
         assert_eq!(grid.columns[0].cells[0].neutral, 2.0);

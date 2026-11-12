@@ -1636,10 +1636,7 @@ impl FeedBackoff {
     }
 
     fn next_delay(&mut self) -> std::time::Duration {
-        let base = 1u64
-            .checked_shl(self.attempts.min(6))
-            .unwrap_or(60)
-            .min(60);
+        let base = 1u64.checked_shl(self.attempts.min(6)).unwrap_or(60).min(60);
         self.attempts = self.attempts.saturating_add(1);
         // ±25% jitter from the nanosecond clock -- no two feeds retry together.
         let jitter_ns = (now_ns() as u64) % 500_000_000;
@@ -2030,14 +2027,21 @@ mod tests {
             delays.push(backoff.next_delay());
         }
         // Bounded: nothing exceeds 60s + jitter, and it is never aggressive.
-        assert!(delays.iter().all(|d| *d <= std::time::Duration::from_secs(75)));
-        assert!(delays.iter().all(|d| *d >= std::time::Duration::from_millis(250)));
+        assert!(delays
+            .iter()
+            .all(|d| *d <= std::time::Duration::from_secs(75)));
+        assert!(delays
+            .iter()
+            .all(|d| *d >= std::time::Duration::from_millis(250)));
         // Trending up, loosely (jitter aside, later waits are not shorter by halves).
         assert!(delays[1] > delays[0] / 2);
         // A healthy five-minute stream clears the counter.
         backoff.note_healthy(std::time::Duration::from_secs(301));
         let after = backoff.next_delay();
-        assert!(after <= std::time::Duration::from_secs(2), "reset after health: {after:?}");
+        assert!(
+            after <= std::time::Duration::from_secs(2),
+            "reset after health: {after:?}"
+        );
     }
 
     use super::*;

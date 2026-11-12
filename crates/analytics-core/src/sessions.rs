@@ -353,7 +353,10 @@ mod tests {
         // 15:00 -- after New York's close, inside nothing.
         assert_eq!(session_of(15 * 60 * NS_PER_MIN, &windows), None);
         // 06:59 -- one minute before London.
-        assert_eq!(session_of(6 * 60 * NS_PER_MIN + 59 * NS_PER_SEC, &windows), None);
+        assert_eq!(
+            session_of(6 * 60 * NS_PER_MIN + 59 * NS_PER_SEC, &windows),
+            None
+        );
     }
 
     #[test]
@@ -367,7 +370,10 @@ mod tests {
             },
         ];
         // 08:30 is inside both; the first listed wins, deterministically.
-        assert_eq!(session_of(8 * 60 * NS_PER_MIN + 30 * NS_PER_MIN, &windows), Some(SessionKind::London));
+        assert_eq!(
+            session_of(8 * 60 * NS_PER_MIN + 30 * NS_PER_MIN, &windows),
+            Some(SessionKind::London)
+        );
     }
 
     #[test]
@@ -375,12 +381,22 @@ mod tests {
         let mut engine = SessionEngine::new(SessionWindow::defaults().to_vec());
 
         // 07:05 London: +2 delta, VWAP seeded.
-        assert_eq!(engine.update(&candle(7 * 60 + 5, 2.0)), Some(SessionKind::London));
+        assert_eq!(
+            engine.update(&candle(7 * 60 + 5, 2.0)),
+            Some(SessionKind::London)
+        );
         // 07:06: -1 delta. Cumulative delta is +1.
-        assert_eq!(engine.update(&candle(7 * 60 + 6, -1.0)), Some(SessionKind::London));
+        assert_eq!(
+            engine.update(&candle(7 * 60 + 6, -1.0)),
+            Some(SessionKind::London)
+        );
         assert_eq!(engine.session(), Some(SessionKind::London));
         assert_eq!(engine.delta(), 1.0);
-        assert_eq!(engine.open(), Some(100.0), "the session open is the first candle's");
+        assert_eq!(
+            engine.open(),
+            Some(100.0),
+            "the session open is the first candle's"
+        );
         // VWAP is the volume-weighted mean of the *typical* prices
         // ((high+low+close)/3), and the two candles traded equal volume:
         // (302/3 + 299/3) / 2.
@@ -389,7 +405,10 @@ mod tests {
         assert!((vwap - expected).abs() < 1e-9, "{vwap} vs {expected}");
 
         // 12:00 sharp -- New York opens, everything restarts.
-        assert_eq!(engine.update(&candle(12 * 60, 4.0)), Some(SessionKind::NewYork));
+        assert_eq!(
+            engine.update(&candle(12 * 60, 4.0)),
+            Some(SessionKind::NewYork)
+        );
         assert_eq!(engine.delta(), 4.0, "the accumulator reset at the boundary");
         assert_eq!(engine.open(), Some(100.0));
         // One candle's VWAP is that candle's typical price.
@@ -415,7 +434,10 @@ mod tests {
         // seed London's open, or the "session open" level lies by a minute.
         let mut engine = SessionEngine::new(vec![SessionWindow::london()]);
         assert_eq!(engine.update(&candle(6 * 60 + 59, 0.0)), None);
-        assert_eq!(engine.update(&candle(7 * 60, 0.0)), Some(SessionKind::London));
+        assert_eq!(
+            engine.update(&candle(7 * 60, 0.0)),
+            Some(SessionKind::London)
+        );
         assert_eq!(engine.open(), Some(100.0));
     }
 

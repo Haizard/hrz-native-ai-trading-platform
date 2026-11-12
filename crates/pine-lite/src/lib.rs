@@ -34,7 +34,13 @@ pub mod sim;
 pub mod ta;
 pub mod typecheck;
 
-pub use interp::{run, Inputs, Output, Plot, PlotKind, PlotStyle, ScriptObject, Shape, Vm};
+/// Current Pine-Lite source-language version declared by `//@pine_lite`.
+pub const LANGUAGE_VERSION: u32 = 1;
+
+pub use interp::{
+    run, run_incremental, Inputs, Output, Plot, PlotKind, PlotStyle, ScriptObject, SeriesState,
+    Shape, Vm,
+};
 pub use lex::Token;
 pub use parse::{Expr, Item};
 
@@ -181,7 +187,7 @@ pub struct Header {
 impl Default for Header {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: LANGUAGE_VERSION,
             overlay: false,
             title: None,
             max_bars_back: 300,
@@ -200,7 +206,7 @@ impl Header {
     /// script a `request.security` sub-VM runs (`docs/23` Phase 11).
     pub const fn empty() -> Self {
         Self {
-            version: 1,
+            version: LANGUAGE_VERSION,
             overlay: false,
             title: None,
             max_bars_back: 300,
@@ -334,15 +340,22 @@ fn reads_strategy_state(script: &parse::Script) -> bool {
             parse::Item::Assign { expr, .. } => has_state_read(expr, builtins),
             parse::Item::Destructure { call, .. } => has_state_read(call, builtins),
             parse::Item::Expr { expr, .. } => has_state_read(expr, builtins),
-            parse::Item::Block { exprs, body, els, .. } => {
+            parse::Item::Block {
+                exprs, body, els, ..
+            } => {
                 exprs.iter().any(|e| has_state_read(e, builtins))
                     || body.iter().any(|i| item_has_read(i, builtins))
-                    || els.as_ref().is_some_and(|b| b.iter().any(|i| item_has_read(i, builtins)))
+                    || els
+                        .as_ref()
+                        .is_some_and(|b| b.iter().any(|i| item_has_read(i, builtins)))
             }
             parse::Item::FuncDef { body, .. } => body.iter().any(|i| item_has_read(i, builtins)),
         }
     }
-    script.items.iter().any(|i| item_has_read(i, &STATE_BUILTINS))
+    script
+        .items
+        .iter()
+        .any(|i| item_has_read(i, &STATE_BUILTINS))
 }
 
 #[cfg(test)]
@@ -407,13 +420,19 @@ mod tests {
             plot(close)
         "#;
         let errs = vet(src).expect_err("unknown knob");
-        assert!(errs.iter().any(|e| e.message.contains("host_freebie")), "{errs:?}");
+        assert!(
+            errs.iter().any(|e| e.message.contains("host_freebie")),
+            "{errs:?}"
+        );
     }
 
     #[test]
     fn a_script_without_the_annotation_is_refused() {
         let errs = vet("plot(close)").expect_err("no annotation");
-        assert!(errs.iter().any(|e| e.message.contains("@pine_lite")), "{errs:?}");
+        assert!(
+            errs.iter().any(|e| e.message.contains("@pine_lite")),
+            "{errs:?}"
+        );
     }
 
     fn candles(n: usize) -> Vec<analytics_core::types::Candle> {
@@ -469,7 +488,10 @@ mod tests {
         let upper = &output.plots[1].values;
         let lower = &output.plots[2].values;
         assert!(basis[70].is_finite());
-        assert!(upper[70] > basis[70] && lower[70] < basis[70], "bands straddle the basis");
+        assert!(
+            upper[70] > basis[70] && lower[70] < basis[70],
+            "bands straddle the basis"
+        );
     }
 
     #[test]
@@ -488,10 +510,7 @@ mod tests {
         // declaration is a compile error naming the fix.
         let errs = vet("//@pine_lite version=1\nother = request.close()\nplot(other)\n")
             .expect_err("request without sec");
-        assert!(
-            errs.iter().any(|e| e.message.contains("sec=")),
-            "{errs:?}"
-        );
+        assert!(errs.iter().any(|e| e.message.contains("sec=")), "{errs:?}");
     }
 
     #[test]
@@ -529,7 +548,10 @@ mod tests {
                 sell_volume: 0.5,
             });
         }
-        let inputs = Inputs { security, ..Inputs::default() };
+        let inputs = Inputs {
+            security,
+            ..Inputs::default()
+        };
         let output = run(&parsed, &candles, &inputs).expect("run");
         assert_eq!(output.plots.len(), 2);
         // The second plot is the pair's close, bar-aligned.
@@ -550,7 +572,10 @@ mod tests {
     fn a_wrong_name_count_is_refused() {
         let errs = vet("//@pine_lite version=1\na, b = ta.macd(close, 12, 26, 9)\nplot(a)\n")
             .expect_err("macd has three outputs");
-        assert!(errs.iter().any(|e| e.message.contains("3 value")), "{errs:?}");
+        assert!(
+            errs.iter().any(|e| e.message.contains("3 value")),
+            "{errs:?}"
+        );
     }
 
     #[test]
@@ -562,7 +587,11 @@ mod tests {
         let sma = ta::ta_sma(&src, 5.0);
         assert!(wma[29] > sma[29], "wma {} sma {}", wma[29], sma[29]);
         // The last window is 125..129 with weights 1..5: 1915/15.
-        assert!((wma[29] - 1915.0 / 15.0).abs() < 1e-9, "weighted mean: {}", wma[29]);
+        assert!(
+            (wma[29] - 1915.0 / 15.0).abs() < 1e-9,
+            "weighted mean: {}",
+            wma[29]
+        );
     }
 
     #[test]
@@ -589,7 +618,10 @@ mod tests {
         let count = output.plots[0].values[59];
         assert!(count >= 4.0, "several pivots collected: {count}");
         let last = output.plots[1].values[59];
-        assert!(last.is_finite() && last > 100.0, "the last pivot's price: {last}");
+        assert!(
+            last.is_finite() && last > 100.0,
+            "the last pivot's price: {last}"
+        );
     }
 
     #[test]
@@ -609,7 +641,11 @@ mod tests {
         let candles = candles(20);
         let output = run(&parsed, &candles, &Inputs::default()).expect("run");
         // a = [1, 2] after the pop; first=1, avg=1.5, missing=nz(na)=0 -> 2.5.
-        assert!((output.plots[0].values[19] - 2.5).abs() < 1e-9, "{}", output.plots[0].values[19]);
+        assert!(
+            (output.plots[0].values[19] - 2.5).abs() < 1e-9,
+            "{}",
+            output.plots[0].values[19]
+        );
     }
 
     #[test]
@@ -623,7 +659,10 @@ mod tests {
             c.open_time = 1_790_553_600_000_000_000i64 + (i as i64) * 3_600_000_000_000;
         }
         let output = run(&parsed, &candles, &Inputs::default()).expect("run");
-        assert_eq!(output.plots[0].values[7], 7.0, "the eighth bar is 07:00 UTC");
+        assert_eq!(
+            output.plots[0].values[7], 7.0,
+            "the eighth bar is 07:00 UTC"
+        );
         assert_eq!(output.plots[1].values[0], 2.0, "2026-09-28 is a Monday");
     }
 
@@ -631,11 +670,11 @@ mod tests {
     fn an_array_allocated_without_var_is_refused() {
         // `a = array.new()` allocates EVERY bar, blowing the heap cap -- the
         // error must say so, because this is the one way the pattern breaks.
-        let src = "//@pine_lite version=1\na = array.new()\narray.push(a, 1.0)\nplot(array.size(a))\n";
+        let src =
+            "//@pine_lite version=1\na = array.new()\narray.push(a, 1.0)\nplot(array.size(a))\n";
         let (_, parsed) = vet(src).expect("vet");
         let candles = candles(200);
         let err = run(&parsed, &candles, &Inputs::default()).expect_err("heap cap");
         assert!(err.message.contains("arrays"), "{err}");
     }
 }
-

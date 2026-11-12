@@ -179,7 +179,11 @@ fn weighted_mean(values: &[(f64, f64)]) -> f64 {
         .fold((0.0, 0.0), |(sum, weight), (value, confidence)| {
             (sum + value * confidence, weight + confidence)
         });
-    if weight > 0.0 { sum / weight } else { 0.0 }
+    if weight > 0.0 {
+        sum / weight
+    } else {
+        0.0
+    }
 }
 
 fn reading(
@@ -354,9 +358,10 @@ fn calculate_frame(candles: &[Candle], quote_activity: Option<&[f64]>) -> Vec<Fa
     let garch = latest(&quant2::garch(&closes, 30, 0.10, 0.85));
     let hmm_line = quant2::hmm_regime(&closes, 60);
     let hmm = latest(&hmm_line);
-    let volatility_ratio = atr_pct
-        .zip(atr_median)
-        .map(|(now, median)| if median > 0.0 { now / median } else { 1.0 });
+    let volatility_ratio =
+        atr_pct
+            .zip(atr_median)
+            .map(|(now, median)| if median > 0.0 { now / median } else { 1.0 });
     let volatility_state = match (volatility_ratio, bandwidth.zip(bandwidth_prev)) {
         (Some(ratio), Some((now, before))) if ratio < 0.75 && now < before => "compression",
         (Some(ratio), Some((now, before))) if ratio > 1.35 && now > before => "expanding",
@@ -956,7 +961,11 @@ fn quote_volume_proxy(id: &str, candles: &[Candle], activity: &[f64]) -> (String
         0.0
     };
     let mfi = if negative_flow <= 0.0 {
-        if positive_flow > 0.0 { 100.0 } else { 50.0 }
+        if positive_flow > 0.0 {
+            100.0
+        } else {
+            50.0
+        }
     } else {
         100.0 - 100.0 / (1.0 + positive_flow / negative_flow)
     };
@@ -1103,15 +1112,13 @@ mod tests {
         assert_eq!(heatmap.frames[0].families.len(), 5);
         assert_eq!(heatmap.frames[0].families[0].id, "volume");
         assert!(heatmap.consensus.readings > 0);
-        assert!(
-            heatmap.frames[0]
-                .families
-                .iter()
-                .find(|f| f.id == "volatility")
-                .unwrap()
-                .score
-                .is_none()
-        );
+        assert!(heatmap.frames[0]
+            .families
+            .iter()
+            .find(|f| f.id == "volatility")
+            .unwrap()
+            .score
+            .is_none());
     }
 
     #[test]
@@ -1168,12 +1175,10 @@ mod tests {
                 .find(|family| family.id == family_id)
                 .unwrap();
             assert_eq!(family.indicators.len(), count, "{family_id}");
-            assert!(
-                family
-                    .indicators
-                    .iter()
-                    .all(|indicator| indicator.id.starts_with("indicators."))
-            );
+            assert!(family
+                .indicators
+                .iter()
+                .all(|indicator| indicator.id.starts_with("indicators.")));
         }
         assert_eq!(expected.iter().map(|(_, count)| count).sum::<usize>(), 41);
     }

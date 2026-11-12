@@ -2,8 +2,8 @@
 //! parser, checker and VM machinery already landed with the language core;
 //! these tests pin the contract so the gap stays closed.
 
-use pine_lite::{run, vet, Inputs};
 use analytics_core::types::{Candle, Timeframe};
+use pine_lite::{run, vet, Inputs};
 
 fn candles(n: usize) -> Vec<Candle> {
     (0..n)
@@ -88,5 +88,9 @@ fn recursion_is_refused() {
     );
     let (_, parsed) = vet(src).expect("vet (the checker allows the shape)");
     let err = run(&parsed, &candles(10), &Inputs::default()).expect_err("recursion");
-    assert!(err.message.contains("recursion is refused"), "{}", err.message);
+    assert!(
+        err.message.contains("recursion is refused"),
+        "{}",
+        err.message
+    );
 }

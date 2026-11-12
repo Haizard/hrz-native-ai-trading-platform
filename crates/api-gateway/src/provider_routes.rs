@@ -197,7 +197,12 @@ pub async fn put(
         })?;
 
     if provider == ProviderId::Cloudflare
-        && body.base_url.as_deref().map(str::trim).filter(|url| !url.is_empty()).is_none()
+        && body
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .is_none()
     {
         return Err(ApiError::bad_request(
             "BASE_URL_REQUIRED",
@@ -378,15 +383,18 @@ pub(crate) async fn resolve_agent(
                 llm_config.base_url = base_url.clone();
             }
             llm_config.extra_headers = config.extra_headers;
-            let client: Arc<dyn ai_agent::LlmClient> = Arc::new(ai_agent::OpenAiCompatClient::new(llm_config).map_err(|e| {
-                ApiError::coded(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "PROVIDER_NOT_USABLE",
-                    e.to_string(),
-                )
-            })?);
+            let client: Arc<dyn ai_agent::LlmClient> =
+                Arc::new(ai_agent::OpenAiCompatClient::new(llm_config).map_err(|e| {
+                    ApiError::coded(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "PROVIDER_NOT_USABLE",
+                        e.to_string(),
+                    )
+                })?);
             let mut clients = vec![client];
-            clients.extend(ai_agent::providers::fallback_clients_from_env(Some(config.provider)));
+            clients.extend(ai_agent::providers::fallback_clients_from_env(Some(
+                config.provider,
+            )));
             let client: Arc<dyn ai_agent::LlmClient> =
                 Arc::new(ai_agent::providers::FallbackClient::new(clients));
             tracing::debug!(

@@ -4,7 +4,7 @@
 //! exactly, so the shell forwards the spec untouched -- a new indicator
 //! adopts the pane by adding one function here and one registry flag.
 
-use crate::rsi_divergence::{RsiDivergenceConfig, rsi_divergences, rsi_series};
+use crate::rsi_divergence::{rsi_divergences, rsi_series, RsiDivergenceConfig};
 use crate::types::Candle;
 use serde::Serialize;
 
@@ -1736,10 +1736,17 @@ mod tests {
         }
         let spec = broker_flow_convexity_series(&candles, 20, Some(0.25), "test model");
         assert_eq!(spec.lines.len(), 3);
-        assert!(spec.lines.iter().all(|line| line.values.len() == candles.len()));
+        assert!(spec
+            .lines
+            .iter()
+            .all(|line| line.values.len() == candles.len()));
         assert!((spec.lines[0].values[0].expect("aggressor line") - 1.8).abs() < 1e-12);
         assert_eq!(spec.lines[2].values.last(), Some(&Some(0.75)));
-        for value in spec.lines.iter().flat_map(|line| line.values.iter().flatten()) {
+        for value in spec
+            .lines
+            .iter()
+            .flat_map(|line| line.values.iter().flatten())
+        {
             assert!(value.is_finite() && (-3.0..=3.0).contains(value));
         }
     }
@@ -1770,8 +1777,15 @@ mod tests {
         let candles = moving_series(80);
         let spec = price_path_curvature_series(&candles, 20, "deriv test");
         assert_eq!(spec.lines.len(), 2);
-        assert!(spec.lines.iter().all(|line| line.values.len() == candles.len()));
-        for value in spec.lines.iter().flat_map(|line| line.values.iter().flatten()) {
+        assert!(spec
+            .lines
+            .iter()
+            .all(|line| line.values.len() == candles.len()));
+        for value in spec
+            .lines
+            .iter()
+            .flat_map(|line| line.values.iter().flatten())
+        {
             assert!(value.is_finite() && (-3.0..=3.0).contains(value));
         }
     }

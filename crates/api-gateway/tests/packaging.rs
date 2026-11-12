@@ -143,13 +143,25 @@ fn every_file_the_shell_loads_is_served_by_a_route_and_present() {
     for line in index.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("<script src=\"") {
-            if let Some(src) = rest.split('"').next() { scripts.push(src.to_string()); }
+            if let Some(src) = rest.split('"').next() {
+                scripts.push(src.to_string());
+            }
         } else if let Some(rest) = line.strip_prefix("<link rel=\"stylesheet\" href=\"") {
-            if let Some(href) = rest.split('"').next() { styles.push(href.to_string()); }
-        } else if let Some(rest) = line.strip_prefix("<link rel=\"preload\" as=\"font\" type=\"font/woff2\" href=\"") {
-            if let Some(href) = rest.split('"').next() { fonts.push(href.to_string()); }
-        } else if let Some(rest) = line.strip_prefix("<link rel=\"icon\" type=\"image/svg+xml\" href=\"") {
-            if let Some(href) = rest.split('"').next() { icons.push(href.to_string()); }
+            if let Some(href) = rest.split('"').next() {
+                styles.push(href.to_string());
+            }
+        } else if let Some(rest) =
+            line.strip_prefix("<link rel=\"preload\" as=\"font\" type=\"font/woff2\" href=\"")
+        {
+            if let Some(href) = rest.split('"').next() {
+                fonts.push(href.to_string());
+            }
+        } else if let Some(rest) =
+            line.strip_prefix("<link rel=\"icon\" type=\"image/svg+xml\" href=\"")
+        {
+            if let Some(href) = rest.split('"').next() {
+                icons.push(href.to_string());
+            }
         }
     }
 
@@ -160,7 +172,12 @@ fn every_file_the_shell_loads_is_served_by_a_route_and_present() {
         "the router does not expose /assets/{{*path}}"
     );
 
-    for reference in scripts.iter().chain(styles.iter()).chain(fonts.iter()).chain(icons.iter()) {
+    for reference in scripts
+        .iter()
+        .chain(styles.iter())
+        .chain(fonts.iter())
+        .chain(icons.iter())
+    {
         let relative = reference
             .strip_prefix("/assets/")
             .unwrap_or(reference.as_str());

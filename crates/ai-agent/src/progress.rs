@@ -239,7 +239,11 @@ mod tests {
         assert_eq!(value["timeframe"], "4h");
         assert_eq!(value["index"], 2);
         assert_eq!(value["total"], 5);
-        assert_eq!(value["marked"], serde_json::json!(false), "the shell reads `marked`");
+        assert_eq!(
+            value["marked"],
+            serde_json::json!(false),
+            "the shell reads `marked`"
+        );
 
         // The second pass has to be tellable apart from the first, on the wire,
         // or the shell captions a plain chart with "MARKED".
@@ -252,7 +256,11 @@ mod tests {
         })
         .expect("progress serializes");
         assert_eq!(marked["stage"], "review_frame");
-        assert_eq!(marked["marked"], serde_json::json!(true), "pass two is named");
+        assert_eq!(
+            marked["marked"],
+            serde_json::json!(true),
+            "pass two is named"
+        );
     }
 
     #[test]

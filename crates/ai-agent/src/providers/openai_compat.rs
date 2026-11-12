@@ -210,10 +210,11 @@ fn reasoning_effort_for_request(
     model: &str,
     request: &LlmRequest,
 ) -> Option<&'static str> {
-    let is_light_pine_build = request.tools.iter().any(|tool| tool.name == "submit_script");
-    (provider == super::ProviderId::Groq
-        && model == "qwen/qwen3.8-27b"
-        && is_light_pine_build)
+    let is_light_pine_build = request
+        .tools
+        .iter()
+        .any(|tool| tool.name == "submit_script");
+    (provider == super::ProviderId::Groq && model == "qwen/qwen3.8-27b" && is_light_pine_build)
         .then_some("low")
 }
 
@@ -236,12 +237,18 @@ fn compact_groq_indicator_request(mut request: LlmRequest) -> LlmRequest {
                 .to_ascii_lowercase()
         })
         .unwrap_or_default();
-    let script_build = request.tools.iter().any(|tool| tool.name == "submit_script");
+    let script_build = request
+        .tools
+        .iter()
+        .any(|tool| tool.name == "submit_script");
     let indicator_build = user_text.contains("indicator")
         && ["build", "create", "generate", "make"]
             .iter()
             .any(|verb| user_text.contains(verb))
-        && request.tools.iter().any(|tool| tool.name == "create_indicator");
+        && request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "create_indicator");
     if !indicator_build && !script_build {
         return request;
     }
@@ -251,9 +258,14 @@ fn compact_groq_indicator_request(mut request: LlmRequest) -> LlmRequest {
     // build, preserve the user's request (including image blocks) and the
     // task-relevant tool(s), replacing the broad prompt with focused guidance.
     if script_build {
-        if let Some(tool) = request.tools.iter_mut().find(|tool| tool.name == "submit_script") {
-            tool.input_schema["properties"]["report"]["description"] =
-                json!("Briefly state what the complete script detects, draws, and any approximation.");
+        if let Some(tool) = request
+            .tools
+            .iter_mut()
+            .find(|tool| tool.name == "submit_script")
+        {
+            tool.input_schema["properties"]["report"]["description"] = json!(
+                "Briefly state what the complete script detects, draws, and any approximation."
+            );
         }
         request.system = Some(
             "Write complete indicators in the platform's full Light Pine v1 language. Return \
@@ -282,9 +294,9 @@ fn compact_groq_indicator_request(mut request: LlmRequest) -> LlmRequest {
              use them only as context; do not invent candle values from the image."
                 .into(),
         );
-        request.tools.retain(|tool| {
-            matches!(tool.name.as_str(), "create_indicator" | "submit_thesis")
-        });
+        request
+            .tools
+            .retain(|tool| matches!(tool.name.as_str(), "create_indicator" | "submit_thesis"));
     }
     request
 }
@@ -524,11 +536,9 @@ impl LlmClient for OpenAiCompatClient {
         // not an output-token cap; 900 previously truncated executable code.
         request.max_tokens = max_tokens_for_provider(self.config.provider, request.max_tokens);
         let mut body = chat_body(&request, &self.config.model_id);
-        if let Some(effort) = reasoning_effort_for_request(
-            self.config.provider,
-            &self.config.model_id,
-            &request,
-        ) {
+        if let Some(effort) =
+            reasoning_effort_for_request(self.config.provider, &self.config.model_id, &request)
+        {
             body["reasoning_effort"] = json!(effort);
         }
         let payload = serde_json::to_vec(&body)?;
@@ -610,7 +620,10 @@ impl LlmClient for OpenAiCompatClient {
     }
 
     fn supports_image_generation(&self) -> bool {
-        matches!(self.config.provider, super::ProviderId::Gemini | super::ProviderId::Cloudflare)
+        matches!(
+            self.config.provider,
+            super::ProviderId::Gemini | super::ProviderId::Cloudflare
+        )
     }
 
     async fn generate_image(
@@ -654,37 +667,100 @@ impl LlmClient for OpenAiCompatClient {
                     "Authorization",
                 )
             }
-            _ => return Err(AgentError::Llm("image generation requires Gemini or Cloudflare Workers AI".into())),
+            _ => {
+                return Err(AgentError::Llm(
+                    "image generation requires Gemini or Cloudflare Workers AI".into(),
+                ))
+            }
         };
         let header_value = if key_header == "Authorization" {
             format!("Bearer {}", self.config.api_key)
         } else {
             self.config.api_key.clone()
         };
-        let response = self.http.post(url).header(key_header, header_value)
-            .header("content-type", "application/json").json(&request).send().await
-            .map_err(|error| AgentError::Llm(format!("{provider} image transport failed: {error}")))?;
+        let response = self
+            .http
+            .post(url)
+            .header(key_header, header_value)
+            .header("content-type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| {
+                AgentError::Llm(format!("{provider} image transport failed: {error}"))
+            })?;
         let status = response.status();
-        let body = response.text().await.map_err(|error| AgentError::Llm(format!("{provider} image response failed: {error}")))?;
+        let body = response.text().await.map_err(|error| {
+            AgentError::Llm(format!("{provider} image response failed: {error}"))
+        })?;
         if !status.is_success() {
-            return Err(AgentError::Llm(format!("{provider} image request returned HTTP {status}: {}", body.chars().take(300).collect::<String>())));
+            return Err(AgentError::Llm(format!(
+                "{provider} image request returned HTTP {status}: {}",
+                body.chars().take(300).collect::<String>()
+            )));
         }
-        let value: Value = serde_json::from_str(&body).map_err(|error| AgentError::Llm(format!("{provider} image response was invalid JSON: {error}")))?;
-        let data = value.pointer("/output_image/data").and_then(Value::as_str)
+        let value: Value = serde_json::from_str(&body).map_err(|error| {
+            AgentError::Llm(format!(
+                "{provider} image response was invalid JSON: {error}"
+            ))
+        })?;
+        let data = value
+            .pointer("/output_image/data")
+            .and_then(Value::as_str)
             .or_else(|| value.get("image").and_then(Value::as_str))
-            .or_else(|| value.get("steps").and_then(Value::as_array).and_then(|steps| steps.iter()
-                .flat_map(|step| step.get("content").and_then(Value::as_array).into_iter().flatten())
-                .find(|block| block.get("type").and_then(Value::as_str) == Some("image"))
-                .and_then(|block| block.get("data").and_then(Value::as_str))))
+            .or_else(|| {
+                value
+                    .get("steps")
+                    .and_then(Value::as_array)
+                    .and_then(|steps| {
+                        steps
+                            .iter()
+                            .flat_map(|step| {
+                                step.get("content")
+                                    .and_then(Value::as_array)
+                                    .into_iter()
+                                    .flatten()
+                            })
+                            .find(|block| {
+                                block.get("type").and_then(Value::as_str) == Some("image")
+                            })
+                            .and_then(|block| block.get("data").and_then(Value::as_str))
+                    })
+            })
             .ok_or_else(|| AgentError::Llm(format!("{provider} returned no generated image")))?;
-        let media_type = value.pointer("/output_image/mime_type").and_then(Value::as_str)
-            .or_else(|| value.get("steps").and_then(Value::as_array).and_then(|steps| steps.iter()
-                .flat_map(|step| step.get("content").and_then(Value::as_array).into_iter().flatten())
-                .find(|block| block.get("type").and_then(Value::as_str) == Some("image"))
-                .and_then(|block| block.get("mime_type").and_then(Value::as_str))))
-            .unwrap_or(if provider == "cloudflare" { "image/jpeg" } else { "image/png" }).to_string();
+        let media_type = value
+            .pointer("/output_image/mime_type")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                value
+                    .get("steps")
+                    .and_then(Value::as_array)
+                    .and_then(|steps| {
+                        steps
+                            .iter()
+                            .flat_map(|step| {
+                                step.get("content")
+                                    .and_then(Value::as_array)
+                                    .into_iter()
+                                    .flatten()
+                            })
+                            .find(|block| {
+                                block.get("type").and_then(Value::as_str) == Some("image")
+                            })
+                            .and_then(|block| block.get("mime_type").and_then(Value::as_str))
+                    })
+            })
+            .unwrap_or(if provider == "cloudflare" {
+                "image/jpeg"
+            } else {
+                "image/png"
+            })
+            .to_string();
         Ok(crate::llm_client::GeneratedImage {
-            provider: provider.into(), model, media_type, data_base64: data.to_string(),
+            provider: provider.into(),
+            model,
+            media_type,
+            data_base64: data.to_string(),
         })
     }
 }
@@ -695,9 +771,18 @@ mod tests {
 
     #[test]
     fn groq_script_output_budget_is_not_mistaken_for_the_request_quota() {
-        assert_eq!(max_tokens_for_provider(super::super::ProviderId::Groq, 4096), 4096);
-        assert_eq!(max_tokens_for_provider(super::super::ProviderId::Groq, 512), 512);
-        assert_eq!(max_tokens_for_provider(super::super::ProviderId::Gemini, 4096), 4096);
+        assert_eq!(
+            max_tokens_for_provider(super::super::ProviderId::Groq, 4096),
+            4096
+        );
+        assert_eq!(
+            max_tokens_for_provider(super::super::ProviderId::Groq, 512),
+            512
+        );
+        assert_eq!(
+            max_tokens_for_provider(super::super::ProviderId::Gemini, 4096),
+            4096
+        );
     }
 
     #[test]
@@ -710,11 +795,7 @@ mod tests {
             exposed_tool: None,
         }];
         assert_eq!(
-            reasoning_effort_for_request(
-                super::super::ProviderId::Groq,
-                "qwen/qwen3.8-27b",
-                &req
-            ),
+            reasoning_effort_for_request(super::super::ProviderId::Groq, "qwen/qwen3.8-27b", &req),
             Some("low")
         );
         assert_eq!(
@@ -758,9 +839,17 @@ mod tests {
         let compact = compact_groq_indicator_request(req);
         assert!(compact.system.as_deref().unwrap().len() < 1000);
         assert_eq!(compact.tools.len(), 2);
-        assert!(compact.tools.iter().any(|tool| tool.name == "create_indicator"));
-        assert!(compact.tools.iter().any(|tool| tool.name == "submit_thesis"));
-        assert!(compact.messages[0].text().contains("Build an overlay indicator"));
+        assert!(compact
+            .tools
+            .iter()
+            .any(|tool| tool.name == "create_indicator"));
+        assert!(compact
+            .tools
+            .iter()
+            .any(|tool| tool.name == "submit_thesis"));
+        assert!(compact.messages[0]
+            .text()
+            .contains("Build an overlay indicator"));
     }
 
     #[test]

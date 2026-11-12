@@ -26,20 +26,82 @@ pub struct NewsItem {
 
 /// The risk-on lexicon (USD/crypto/asset supportive).
 const RISK_ON: &[&str] = &[
-    "rally", "surge", "soar", "jump", "gain", "rises", "rise", "bull", "bullish",
-    "breakout", "record high", "growth", "beat", "beats", "strong", "upgrade",
-    "adopt", "adoption", "approve", "approval", "inflow", "inflows", "profit",
-    "expansion", "recover", "recovery", "rebound", "optimism", "boost", "outperform",
+    "rally",
+    "surge",
+    "soar",
+    "jump",
+    "gain",
+    "rises",
+    "rise",
+    "bull",
+    "bullish",
+    "breakout",
+    "record high",
+    "growth",
+    "beat",
+    "beats",
+    "strong",
+    "upgrade",
+    "adopt",
+    "adoption",
+    "approve",
+    "approval",
+    "inflow",
+    "inflows",
+    "profit",
+    "expansion",
+    "recover",
+    "recovery",
+    "rebound",
+    "optimism",
+    "boost",
+    "outperform",
 ];
 
 /// The risk-off lexicon.
 const RISK_OFF: &[&str] = &[
-    "fall", "falls", "drop", "drops", "plunge", "crash", "sink", "sinks", "bear",
-    "bearish", "selloff", "sell-off", "fear", "weak", "miss", "misses", "downgrade",
-    "outflow", "outflows", "loss", "losses", "recession", "hawkish", "warning",
-    "crisis", "collapse", "default", "ban", "hack", "hacked", "lawsuit", "fine",
-    "fined", "liquidation", "liquidations", "fraud", "probe", "investigation",
-    "inflation", "deficit", "layoffs", "bankruptcy",
+    "fall",
+    "falls",
+    "drop",
+    "drops",
+    "plunge",
+    "crash",
+    "sink",
+    "sinks",
+    "bear",
+    "bearish",
+    "selloff",
+    "sell-off",
+    "fear",
+    "weak",
+    "miss",
+    "misses",
+    "downgrade",
+    "outflow",
+    "outflows",
+    "loss",
+    "losses",
+    "recession",
+    "hawkish",
+    "warning",
+    "crisis",
+    "collapse",
+    "default",
+    "ban",
+    "hack",
+    "hacked",
+    "lawsuit",
+    "fine",
+    "fined",
+    "liquidation",
+    "liquidations",
+    "fraud",
+    "probe",
+    "investigation",
+    "inflation",
+    "deficit",
+    "layoffs",
+    "bankruptcy",
 ];
 
 /// Instrument tags and their keywords.
@@ -48,9 +110,28 @@ const TAGS: &[(&str, &[&str])] = &[
     ("eth", &["ethereum", "ether", " eth "]),
     ("gold", &["gold", "xau", "bullion"]),
     ("dollar", &["dollar", "dxy", "greenback", "usd"]),
-    ("fed", &["federal reserve", "fed", "fomc", "powell", "federal open market"]),
+    (
+        "fed",
+        &[
+            "federal reserve",
+            "fed",
+            "fomc",
+            "powell",
+            "federal open market",
+        ],
+    ),
     ("oil", &["oil", "crude", "wti", "brent"]),
-    ("stocks", &["stocks", "equities", "s&p", "nasdaq", "dow jones", "wall street"]),
+    (
+        "stocks",
+        &[
+            "stocks",
+            "equities",
+            "s&p",
+            "nasdaq",
+            "dow jones",
+            "wall street",
+        ],
+    ),
     ("sol", &["solana", " sol "]),
     ("xrp", &["xrp", "ripple"]),
 ];
@@ -60,9 +141,7 @@ const TAGS: &[(&str, &[&str])] = &[
 /// a mixed one reads its own balance). Negation is v2's problem, documented.
 pub fn score_headline(text: &str) -> f64 {
     let lower = format!(" {} ", text.to_lowercase());
-    let count = |terms: &[&str]| -> usize {
-        terms.iter().filter(|t| lower.contains(*t)).count()
-    };
+    let count = |terms: &[&str]| -> usize { terms.iter().filter(|t| lower.contains(*t)).count() };
     let on = count(RISK_ON);
     let off = count(RISK_OFF);
     let total = on + off;
@@ -75,8 +154,7 @@ pub fn score_headline(text: &str) -> f64 {
 /// Tag a headline with the instruments it mentions.
 pub fn tag_headline(text: &str) -> Vec<String> {
     let lower = format!(" {} ", text.to_lowercase());
-    TAGS
-        .iter()
+    TAGS.iter()
         .filter(|(_, keywords)| keywords.iter().any(|k| lower.contains(k)))
         .map(|(tag, _)| tag.to_string())
         .collect()
@@ -99,7 +177,10 @@ pub struct SentimentReport {
 /// Compose the report.
 pub fn sentiment_report(items: &[NewsItem], tag: Option<&str>) -> SentimentReport {
     let filtered: Vec<&NewsItem> = match tag {
-        Some(t) => items.iter().filter(|i| i.tags.iter().any(|x| x == t)).collect(),
+        Some(t) => items
+            .iter()
+            .filter(|i| i.tags.iter().any(|x| x == t))
+            .collect(),
         None => items.iter().collect(),
     };
     let count = filtered.len();
@@ -108,13 +189,18 @@ pub fn sentiment_report(items: &[NewsItem], tag: Option<&str>) -> SentimentRepor
     } else {
         0.0
     };
-    let scored: Vec<f64> = filtered.iter().map(|i| i.score).filter(|s| *s != 0.0).collect();
+    let scored: Vec<f64> = filtered
+        .iter()
+        .map(|i| i.score)
+        .filter(|s| *s != 0.0)
+        .collect();
     let risk_on_share = if scored.is_empty() {
         0.5
     } else {
         scored.iter().filter(|s| **s > 0.0).count() as f64 / scored.len() as f64
     };
-    let mut per_tag: std::collections::BTreeMap<String, Vec<f64>> = std::collections::BTreeMap::new();
+    let mut per_tag: std::collections::BTreeMap<String, Vec<f64>> =
+        std::collections::BTreeMap::new();
     for item in &filtered {
         for t in &item.tags {
             per_tag.entry(t.clone()).or_default().push(item.score);
@@ -134,8 +220,14 @@ pub fn sentiment_report(items: &[NewsItem], tag: Option<&str>) -> SentimentRepor
 /// The feed set: central banks, crypto-native, and wires. Free RSS, no
 /// keys, each named for the record.
 pub const FEEDS: &[(&str, &str)] = &[
-    ("federal_reserve", "https://www.federalreserve.gov/feeds/press_all.xml"),
-    ("coindesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+    (
+        "federal_reserve",
+        "https://www.federalreserve.gov/feeds/press_all.xml",
+    ),
+    (
+        "coindesk",
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    ),
     ("cointelegraph", "https://cointelegraph.com/rss"),
     ("binance_blog", "https://www.binance.com/en/blog/rss"),
 ];
@@ -147,7 +239,11 @@ pub fn parse_feed(xml: &str, source: &str) -> Vec<NewsItem> {
     let mut items = Vec::new();
     // Split on item/entry boundaries; extract title and link textually. A
     // feed is not XML we trust -- it is text we skim.
-    for chunk in xml.split("<item").skip(1).chain(xml.split("<entry").skip(1)) {
+    for chunk in xml
+        .split("<item")
+        .skip(1)
+        .chain(xml.split("<entry").skip(1))
+    {
         let title = extract_tag(chunk, "title");
         let link = extract_link(chunk);
         let published = extract_tag(chunk, "pubDate")
@@ -217,9 +313,15 @@ fn parse_date(raw: &str) -> i64 {
             + (h * 3600 + min * 60) * 1_000_000_000;
     }
     // RFC 822: Fri, 23 Oct 2026 12:00:00 GMT -- approximate by the parts.
-    let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    let months = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
     let lower = raw.to_lowercase();
-    let month = months.iter().position(|m| lower.contains(m)).map(|p| p as i64 + 1).unwrap_or(1);
+    let month = months
+        .iter()
+        .position(|m| lower.contains(m))
+        .map(|p| p as i64 + 1)
+        .unwrap_or(1);
     let day: i64 = lower
         .split_whitespace()
         .find_map(|w| w.parse().ok())
@@ -244,7 +346,11 @@ fn days_from_civil_pub(y: i64, m: i64, d: i64) -> i64 {
 
 /// Fetch one feed's items.
 #[cfg(feature = "net")]
-pub async fn fetch_feed(client: &reqwest::Client, name: &str, url: &str) -> Result<Vec<NewsItem>, String> {
+pub async fn fetch_feed(
+    client: &reqwest::Client,
+    name: &str,
+    url: &str,
+) -> Result<Vec<NewsItem>, String> {
     let body = client
         .get(url)
         .header(reqwest::header::USER_AGENT, "hrz-econ-engine/1.0")
@@ -309,9 +415,30 @@ mod tests {
     #[test]
     fn the_report_composes() {
         let items = vec![
-            NewsItem { source: "a".into(), title: "Bitcoin surges".into(), url: String::new(), published_ns: 0, score: 1.0, tags: vec!["btc".into()] },
-            NewsItem { source: "b".into(), title: "Stocks plunge".into(), url: String::new(), published_ns: 0, score: -1.0, tags: vec!["stocks".into()] },
-            NewsItem { source: "c".into(), title: "Committee meets".into(), url: String::new(), published_ns: 0, score: 0.0, tags: vec!["fed".into()] },
+            NewsItem {
+                source: "a".into(),
+                title: "Bitcoin surges".into(),
+                url: String::new(),
+                published_ns: 0,
+                score: 1.0,
+                tags: vec!["btc".into()],
+            },
+            NewsItem {
+                source: "b".into(),
+                title: "Stocks plunge".into(),
+                url: String::new(),
+                published_ns: 0,
+                score: -1.0,
+                tags: vec!["stocks".into()],
+            },
+            NewsItem {
+                source: "c".into(),
+                title: "Committee meets".into(),
+                url: String::new(),
+                published_ns: 0,
+                score: 0.0,
+                tags: vec!["fed".into()],
+            },
         ];
         let r = sentiment_report(&items, None);
         assert_eq!(r.count, 3);

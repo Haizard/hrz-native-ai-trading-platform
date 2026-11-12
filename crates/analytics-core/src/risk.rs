@@ -6,10 +6,20 @@ use crate::indicators::atr::atr;
 use crate::types::Candle;
 
 /// An ATR stop: `mult` ATR(period) beyond the entry, on the trade's side.
-pub fn atr_stop(candles: &[Candle], entry_idx: usize, long: bool, period: usize, mult: f64) -> Option<f64> {
+pub fn atr_stop(
+    candles: &[Candle],
+    entry_idx: usize,
+    long: bool,
+    period: usize,
+    mult: f64,
+) -> Option<f64> {
     let a = atr(candles, period)[entry_idx]?;
     let entry = candles[entry_idx].close;
-    Some(if long { entry - mult * a } else { entry + mult * a })
+    Some(if long {
+        entry - mult * a
+    } else {
+        entry + mult * a
+    })
 }
 
 /// A swing stop: beyond the newest `lookback`-swing on the trade's side
@@ -138,7 +148,9 @@ impl RiskGuards {
         {
             return false;
         }
-        if self.consecutive_loss_limit > 0 && state.consecutive_losses >= self.consecutive_loss_limit {
+        if self.consecutive_loss_limit > 0
+            && state.consecutive_losses >= self.consecutive_loss_limit
+        {
             return false;
         }
         if self.max_open_positions > 0 && state.open_positions >= self.max_open_positions {
@@ -177,14 +189,34 @@ pub fn managed_stop(
     if r <= 0.0 {
         return current_stop;
     }
-    let r_multiple = if long { (favorable - entry) / r } else { (entry - favorable) / r };
+    let r_multiple = if long {
+        (favorable - entry) / r
+    } else {
+        (entry - favorable) / r
+    };
     let mut stop = current_stop;
     if rules.break_even_r > 0.0 && r_multiple >= rules.break_even_r {
-        stop = if long { stop.max(entry) } else { stop.min(entry) };
+        stop = if long {
+            stop.max(entry)
+        } else {
+            stop.min(entry)
+        };
     }
-    if rules.trail_arm_r > 0.0 && rules.trail_atr_mult > 0.0 && r_multiple >= rules.trail_arm_r && atr_value > 0.0 {
-        let trail = if long { favorable - rules.trail_atr_mult * atr_value } else { favorable + rules.trail_atr_mult * atr_value };
-        stop = if long { stop.max(trail) } else { stop.min(trail) };
+    if rules.trail_arm_r > 0.0
+        && rules.trail_atr_mult > 0.0
+        && r_multiple >= rules.trail_arm_r
+        && atr_value > 0.0
+    {
+        let trail = if long {
+            favorable - rules.trail_atr_mult * atr_value
+        } else {
+            favorable + rules.trail_atr_mult * atr_value
+        };
+        stop = if long {
+            stop.max(trail)
+        } else {
+            stop.min(trail)
+        };
     }
     stop
 }
@@ -258,13 +290,26 @@ mod tests {
             open_positions: 1,
         };
         assert!(guards.allows(&fine));
-        let daily_tripped = RiskState { equity: 9_800.0, ..fine }; // -3% on the day
+        let daily_tripped = RiskState {
+            equity: 9_800.0,
+            ..fine
+        }; // -3% on the day
         assert!(!guards.allows(&daily_tripped));
-        let dd_tripped = RiskState { equity: 9_000.0, day_start: 9_000.0, ..fine }; // -12% from peak
+        let dd_tripped = RiskState {
+            equity: 9_000.0,
+            day_start: 9_000.0,
+            ..fine
+        }; // -12% from peak
         assert!(!guards.allows(&dd_tripped));
-        let streak_tripped = RiskState { consecutive_losses: 3, ..fine };
+        let streak_tripped = RiskState {
+            consecutive_losses: 3,
+            ..fine
+        };
         assert!(!guards.allows(&streak_tripped));
-        let full = RiskState { open_positions: 2, ..fine };
+        let full = RiskState {
+            open_positions: 2,
+            ..fine
+        };
         assert!(!guards.allows(&full));
         // An empty guard set always allows.
         assert!(RiskGuards::default().allows(&daily_tripped));

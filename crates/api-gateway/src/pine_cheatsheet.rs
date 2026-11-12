@@ -242,7 +242,10 @@ mod tests {
     fn the_sheet_object_cap_matches_the_interpreter() {
         // The heap cap is a real constant; the sheet's number must track it.
         assert!(
-            sheet().contains(&format!("cap {} per script", pine_lite::interp::MAX_OBJECTS)),
+            sheet().contains(&format!(
+                "cap {} per script",
+                pine_lite::interp::MAX_OBJECTS
+            )),
             "sheet object cap drifted from MAX_OBJECTS"
         );
     }
@@ -254,7 +257,10 @@ mod tests {
         })]);
         assert_eq!(content["valid"], json!(false));
         assert_eq!(content["errors"].as_array().map(Vec::len), Some(1));
-        assert!(content["cheatsheet"].as_str().unwrap().contains("CHEATSHEET"));
+        assert!(content["cheatsheet"]
+            .as_str()
+            .unwrap()
+            .contains("CHEATSHEET"));
         assert!(content["cheatsheet"]
             .as_str()
             .unwrap()

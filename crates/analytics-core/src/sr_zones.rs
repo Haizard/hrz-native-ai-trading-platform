@@ -128,16 +128,14 @@ pub fn detect_sr_zones(
 }
 
 /// One finished cluster: a zone when it has the touches, nothing when not.
-fn flush(
-    cluster: &[(f64, i64)],
-    last_close: f64,
-    config: SrZoneConfig,
-    zones: &mut Vec<SrZone>,
-) {
+fn flush(cluster: &[(f64, i64)], last_close: f64, config: SrZoneConfig, zones: &mut Vec<SrZone>) {
     if cluster.len() < config.min_touches {
         return;
     }
-    let top = cluster.iter().map(|m| m.0).fold(f64::NEG_INFINITY, f64::max);
+    let top = cluster
+        .iter()
+        .map(|m| m.0)
+        .fold(f64::NEG_INFINITY, f64::max);
     let bottom = cluster.iter().map(|m| m.0).fold(f64::INFINITY, f64::min);
     let mean = cluster.iter().map(|m| m.0).sum::<f64>() / cluster.len() as f64;
     let first_time = cluster.iter().map(|m| m.1).fold(i64::MAX, i64::min);
@@ -210,7 +208,10 @@ mod tests {
     fn repeated_swings_at_one_price_become_a_zone() {
         let series = zigzag();
         let structure = detect_market_structure(&series, Default::default());
-        assert!(!structure.points.is_empty(), "the zigzag must confirm swings");
+        assert!(
+            !structure.points.is_empty(),
+            "the zigzag must confirm swings"
+        );
         let zones = detect_sr_zones(
             &structure,
             series.last().unwrap().close,

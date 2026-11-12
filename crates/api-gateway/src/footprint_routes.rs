@@ -128,7 +128,9 @@ fn build_quote_tick_footprint(
         let index = candles.partition_point(|candle| {
             candle.open_time.saturating_add(candle.timeframe.nanos()) <= *time
         });
-        let Some(candle) = candles.get(index) else { continue };
+        let Some(candle) = candles.get(index) else {
+            continue;
+        };
         if *time < candle.open_time {
             continue;
         }
@@ -151,7 +153,11 @@ fn build_quote_tick_footprint(
         assigned += 1;
     }
 
-    let ratio = if ratio.is_finite() && ratio > 1.0 { ratio } else { 3.0 };
+    let ratio = if ratio.is_finite() && ratio > 1.0 {
+        ratio
+    } else {
+        3.0
+    };
     let mut result = Vec::with_capacity(candles.len());
     for (index, candle) in candles.iter().enumerate() {
         let low_index = (candle.low / bucket).floor() as i64;
@@ -159,7 +165,10 @@ fn build_quote_tick_footprint(
         let span = high_index.saturating_sub(low_index).clamp(0, 512);
         let mut raw = Vec::with_capacity(span as usize + 1);
         for price_index in low_index..=low_index.saturating_add(span) {
-            let counts = by_candle[index].get(&price_index).copied().unwrap_or_default();
+            let counts = by_candle[index]
+                .get(&price_index)
+                .copied()
+                .unwrap_or_default();
             let price = (price_index as f64 + 0.5) * bucket;
             raw.push((price, counts));
         }
@@ -379,10 +388,8 @@ pub async fn coverage(
             ApiError::bad_request("SYMBOL_INVALID", format!("unknown Deriv symbol `{symbol}`"))
         })?;
         let client = market_data::deriv::DerivClient::from_env();
-        let (socket, history, early) = client
-            .subscribe_ticks(code, 5_000)
-            .await
-            .map_err(|error| {
+        let (socket, history, early) =
+            client.subscribe_ticks(code, 5_000).await.map_err(|error| {
                 ApiError::coded(
                     axum::http::StatusCode::BAD_GATEWAY,
                     "DERIV_TICK_HISTORY_FAILED",
@@ -463,8 +470,7 @@ mod tests {
             (3, 100.25),
             (2, 100.25),
         ];
-        let (bars, observations) =
-            build_quote_tick_footprint(&[candle], &ticks, 0.5, 2.0);
+        let (bars, observations) = build_quote_tick_footprint(&[candle], &ticks, 0.5, 2.0);
         assert_eq!(observations, 5);
         assert_eq!(bars.len(), 1);
         let bar = &bars[0];
@@ -572,12 +578,8 @@ pub async fn footprint(
                 format!("no Deriv quote ticks are available for {symbol} in this window"),
             ));
         }
-        let (candles, observations_count) = build_quote_tick_footprint(
-            &candles,
-            &observations,
-            bucket_size,
-            ratio,
-        );
+        let (candles, observations_count) =
+            build_quote_tick_footprint(&candles, &observations, bucket_size, ratio);
         let observed = observations_count;
         let mut note = "Deriv footprint proxy: each tick is a price observation, not a fill. Up/down counts use the tick rule; they are not bid/ask volume, aggressor-side trades, depth, or iceberg data. Read heat as quote activity and directional pressure only.".to_owned();
         if observations_count >= 5_000 {

@@ -306,23 +306,23 @@ mod tests {
         // without a `price2` was a value the previous shape could spell and both
         // layers had to refuse; a point is one object with two required numbers,
         // so the incomplete version is simply not this type.
-        let missing_price: Result<UserDrawing, _> = serde_json::from_str(
-            r#"{"kind":"trendline","points":[{"time_ms":1767225600000}]}"#,
-        );
+        let missing_price: Result<UserDrawing, _> =
+            serde_json::from_str(r#"{"kind":"trendline","points":[{"time_ms":1767225600000}]}"#);
         assert!(missing_price.is_err());
 
         let ok: UserDrawing = serde_json::from_str(
             r#"{"kind":"hline","points":[{"time_ms":1767225600000,"price":45000}]}"#,
         )
         .expect("a whole point parses");
-        assert_eq!(ok.points, vec![AgentPoint::at(1_767_225_600_000.0, 45_000.0)]);
+        assert_eq!(
+            ok.points,
+            vec![AgentPoint::at(1_767_225_600_000.0, 45_000.0)]
+        );
     }
 
     #[test]
     fn clamping_reports_what_it_dropped() {
-        let mut many: Vec<UserDrawing> = (0..30)
-            .map(|i| drawing("hline", &[i as f64]))
-            .collect();
+        let mut many: Vec<UserDrawing> = (0..30).map(|i| drawing("hline", &[i as f64])).collect();
         assert_eq!(clamp_drawings(&mut many, 24), 30, "the original count");
         assert_eq!(many.len(), 24);
 

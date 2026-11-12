@@ -145,21 +145,25 @@ pub async fn list_patterns(
     limit: i64,
 ) -> Result<Vec<PatternRow>, DbError> {
     let rows = match symbol {
-        Some(symbol) => sqlx::query(&format!(
-            "{SELECT} WHERE user_id = $1 AND symbol = $2 ORDER BY created_at DESC LIMIT $3"
-        ))
-        .bind(user_id)
-        .bind(symbol.to_uppercase())
-        .bind(limit)
-        .fetch_all(pool)
-        .await?,
-        None => sqlx::query(&format!(
-            "{SELECT} WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2"
-        ))
-        .bind(user_id)
-        .bind(limit)
-        .fetch_all(pool)
-        .await?,
+        Some(symbol) => {
+            sqlx::query(&format!(
+                "{SELECT} WHERE user_id = $1 AND symbol = $2 ORDER BY created_at DESC LIMIT $3"
+            ))
+            .bind(user_id)
+            .bind(symbol.to_uppercase())
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        }
+        None => {
+            sqlx::query(&format!(
+                "{SELECT} WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2"
+            ))
+            .bind(user_id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        }
     };
     rows.iter().map(row_to_pattern).collect()
 }

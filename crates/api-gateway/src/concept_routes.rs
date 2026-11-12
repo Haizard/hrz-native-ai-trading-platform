@@ -11,12 +11,12 @@
 //!   the same events `/events` serves, projected through the registry so the
 //!   chart, the thesis agent, and the skills read one shape.
 
-use axum::Json;
 use axum::extract::{Query, State};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::AppState;
 use crate::error::ApiError;
+use crate::AppState;
 
 /// `/concepts` query: the optional instrument for availability.
 #[derive(Debug, Deserialize)]
@@ -527,7 +527,10 @@ pub async fn quote_profile(
     let tf: analytics_core::types::Timeframe = query.timeframe.parse().map_err(|_| {
         ApiError::bad_request(
             "TIMEFRAME_UNKNOWN",
-            format!("`{}` is not a timeframe this platform serves", query.timeframe),
+            format!(
+                "`{}` is not a timeframe this platform serves",
+                query.timeframe
+            ),
         )
     })?;
     let limit = query.limit.unwrap_or(500).clamp(50, 1000);
@@ -557,7 +560,9 @@ pub async fn quote_profile(
     let observations = market_data::deriv::DerivClient::from_env()
         .quote_history(code, from, to, 5000)
         .await
-        .map_err(|error| ApiError::unavailable(format!("Deriv quote history unavailable: {error}")))?;
+        .map_err(|error| {
+            ApiError::unavailable(format!("Deriv quote history unavailable: {error}"))
+        })?;
     let truncated = observations.len() >= 5000;
     let points = observations
         .into_iter()
@@ -736,8 +741,7 @@ pub async fn indicator_series(
                 line_observed_at_ns.insert("Price impact z-score".into(), latest);
             }
             if let Some(snapshot) = book.as_ref().filter(|_| book_imbalance.is_some()) {
-                line_observed_at_ns
-                    .insert("Live book imbalance ×3".into(), snapshot.timestamp);
+                line_observed_at_ns.insert("Live book imbalance ×3".into(), snapshot.timestamp);
             }
             let mut data_basis = vec!["Binance candle aggressor-side volume split".into()];
             if book_imbalance.is_some() {
@@ -756,10 +760,16 @@ pub async fn indicator_series(
                     crate::indicator_preview::fetch_funding_series(code, from, to_ns),
                     crate::indicator_preview::fetch_oi_series(code, from, to_ns),
                     crate::indicator_preview::fetch_long_short_ratio(
-                        code, from, to_ns, "globalLongShortAccountRatio"
+                        code,
+                        from,
+                        to_ns,
+                        "globalLongShortAccountRatio"
                     ),
                     crate::indicator_preview::fetch_long_short_ratio(
-                        code, from, to_ns, "topLongShortPositionRatio"
+                        code,
+                        from,
+                        to_ns,
+                        "topLongShortPositionRatio"
                     ),
                     crate::indicator_preview::fetch_basis_series(code, from, to_ns),
                 );
@@ -801,27 +811,26 @@ pub async fn indicator_series(
                     if oi.len() >= 2 {
                         if let Some(latest_bar) = candles.last().map(|c| c.open_time) {
                             if let Some(time) = latest_source_time(&oi, latest_bar) {
-                                line_observed_at_ns
-                                    .insert("Open-interest change (%)".into(), time);
+                                line_observed_at_ns.insert("Open-interest change (%)".into(), time);
                             }
                         }
                     }
                 }
                 if !basis.is_empty() {
                     let basis_values = carry_market_points(&basis, &candles);
-                    spec.lines.push(analytics_core::indicator_series::SeriesLine {
-                        name: "Perpetual-index basis (bps)".into(),
-                        color: 0xfacc15,
-                        values: basis_values
-                            .into_iter()
-                            .map(|v| v.map(|x| (x * 10_000.0).clamp(-3.0, 3.0)))
-                            .collect(),
-                    });
+                    spec.lines
+                        .push(analytics_core::indicator_series::SeriesLine {
+                            name: "Perpetual-index basis (bps)".into(),
+                            color: 0xfacc15,
+                            values: basis_values
+                                .into_iter()
+                                .map(|v| v.map(|x| (x * 10_000.0).clamp(-3.0, 3.0)))
+                                .collect(),
+                        });
                     data_basis.push("Binance USDⓈ-M perpetual/index basis rate".into());
                     if let Some(latest_bar) = candles.last().map(|c| c.open_time) {
                         if let Some(time) = latest_source_time(&basis, latest_bar) {
-                            line_observed_at_ns
-                                .insert("Perpetual-index basis (bps)".into(), time);
+                            line_observed_at_ns.insert("Perpetual-index basis (bps)".into(), time);
                         }
                     }
                 }
@@ -845,14 +854,16 @@ pub async fn indicator_series(
                             })
                             .collect::<Vec<_>>();
                         let values = carry_market_points(&normalized, &candles);
-                        spec.lines.push(analytics_core::indicator_series::SeriesLine {
-                            name: name.into(),
-                            color: if name.starts_with("Global") { 0xf472b6 } else { 0xa78bfa },
-                            values: values
-                                .into_iter()
-                                .map(|v| v.map(|x| x * 3.0))
-                                .collect(),
-                        });
+                        spec.lines
+                            .push(analytics_core::indicator_series::SeriesLine {
+                                name: name.into(),
+                                color: if name.starts_with("Global") {
+                                    0xf472b6
+                                } else {
+                                    0xa78bfa
+                                },
+                                values: values.into_iter().map(|v| v.map(|x| x * 3.0)).collect(),
+                            });
                         data_basis.push(basis.into());
                         if let Some(latest_bar) = candles.last().map(|c| c.open_time) {
                             if let Some(time) = latest_source_time(&normalized, latest_bar) {
@@ -1017,7 +1028,11 @@ fn is_recent_order_book(timestamp_ns: i64, now_ns: i64) -> bool {
     (0..=LIVE_ORDER_BOOK_MAX_AGE_NS).contains(&age)
 }
 
-fn broker_convexity_status(candle_count: usize, lookback: usize, has_fresh_book: bool) -> &'static str {
+fn broker_convexity_status(
+    candle_count: usize,
+    lookback: usize,
+    has_fresh_book: bool,
+) -> &'static str {
     if candle_count < lookback {
         "warming_up"
     } else if has_fresh_book {
@@ -1410,8 +1425,8 @@ pub async fn generate(
 #[cfg(test)]
 mod tests {
     use super::{
-        broker_convexity_status, broker_retracement_zones, is_recent_order_book, latest_source_time,
-        LIVE_ORDER_BOOK_MAX_AGE_NS,
+        broker_convexity_status, broker_retracement_zones, is_recent_order_book,
+        latest_source_time, LIVE_ORDER_BOOK_MAX_AGE_NS,
     };
 
     fn test_candle(

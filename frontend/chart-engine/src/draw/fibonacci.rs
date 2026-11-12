@@ -356,7 +356,13 @@ pub fn wedge(geometry: Geometry<'_>) -> Vec<DrawingPart> {
     let unit = (tip.1 - apex.1).abs();
     let mut parts = Vec::new();
     // The axis first, so the wedge reads as one shape with a spine.
-    parts.push(ray_to(geometry, apex, pixel_slope(apex, tip), tip.0, Extend::Right));
+    parts.push(ray_to(
+        geometry,
+        apex,
+        pixel_slope(apex, tip),
+        tip.0,
+        Extend::Right,
+    ));
     for (ratio, _) in ladder(geometry, LevelProfile::Classic) {
         if *ratio == 0.0 {
             continue;
@@ -458,10 +464,7 @@ fn set_or_profile(
 }
 
 /// The same, for the four named profiles.
-fn ladder(
-    geometry: Geometry<'_>,
-    default: LevelProfile,
-) -> &'static [(f64, &'static str)] {
+fn ladder(geometry: Geometry<'_>, default: LevelProfile) -> &'static [(f64, &'static str)] {
     geometry.options.level_profile.unwrap_or(default).levels()
 }
 
@@ -541,10 +544,10 @@ fn pixel(geometry: Geometry<'_>, point: Point) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::draw::Stage;
     use crate::drawing::{
         DrawingOptions, FIB_EXTENSION_LEVELS, FIB_LEVELS, FIB_OTE_LEVELS, FIB_TIME_LEVELS,
     };
-    use crate::draw::Stage;
 
     /// A rising swing over a 100..290 window on a 1000x500 plot: ten bars of price
     /// distance, so a ratio reads as a price a test can name (61.8% is 181.8).
@@ -606,11 +609,7 @@ mod tests {
             .iter()
             .filter_map(|part| match part {
                 DrawingPart::Ellipse {
-                    cx,
-                    cy,
-                    rx,
-                    half,
-                    ..
+                    cx, cy, rx, half, ..
                 } => Some((*cx, *cy, *rx, *half)),
                 _ => None,
             })
@@ -696,7 +695,9 @@ mod tests {
         // Pass 5 found the concept grid unreadable for the same reason: the ratio
         // alone tells a trader nothing about where on the chart to look.
         assert!(
-            labels.iter().all(|text| text.contains('%') && text.contains('.')),
+            labels
+                .iter()
+                .all(|text| text.contains('%') && text.contains('.')),
             "a label is missing its ratio or its price: {labels:?}"
         );
     }
@@ -721,7 +722,9 @@ mod tests {
             let at_level = strokes
                 .iter()
                 .find(|(x1, y1, x2, y2, _)| *x1 == left && *y1 == y && *y2 == y && *x2 == right)
-                .unwrap_or_else(|| panic!("{ratio} has no level at {price} spanning {left}..{right}"));
+                .unwrap_or_else(|| {
+                    panic!("{ratio} has no level at {price} spanning {left}..{right}")
+                });
             assert_eq!(
                 at_level.4,
                 ratio > 1.0,
@@ -744,7 +747,9 @@ mod tests {
         let labels = texts(&parts);
         for ratio in ["70.5", "88.6"] {
             assert!(
-                labels.iter().any(|text| text.starts_with(&format!("{ratio}%"))),
+                labels
+                    .iter()
+                    .any(|text| text.starts_with(&format!("{ratio}%"))),
                 "the OTE band lost {ratio}: {labels:?}"
             );
         }
@@ -769,9 +774,9 @@ mod tests {
         // 0% moves from the first click to the second, and the price written beside
         // it with it -- the same grid counted the other way round.
         let has_zero_at = |parts: &[DrawingPart], price: f64| {
-            texts(parts).iter().any(|text| {
-                text.starts_with("0%") && text.ends_with(&format!("{price:.2}"))
-            })
+            texts(parts)
+                .iter()
+                .any(|text| text.starts_with("0%") && text.ends_with(&format!("{price:.2}")))
         };
         assert!(
             has_zero_at(&one, 120.0),
@@ -792,10 +797,8 @@ mod tests {
         let options = DrawingOptions::default();
         let geometry = stage.geometry(&points, &options);
 
-        let zones = time_zones(stage.geometry(
-            &[(stage.ms(2), 120.0), (stage.ms(12), 220.0)],
-            &options,
-        ));
+        let zones =
+            time_zones(stage.geometry(&[(stage.ms(2), 120.0), (stage.ms(12), 220.0)], &options));
         for name in ["trend time", "time zones"] {
             let parts = if name == "trend time" {
                 trend_time(geometry)
@@ -848,7 +851,11 @@ mod tests {
         let parts = trend_extension(geometry);
         let strokes = segments(&parts);
         // +40 over four bars, pulled back at the eighth: 100% is due at the twelfth.
-        let due = |ratio: f64| stage.frame.x_at_ms(stage.ms(8) + (stage.ms(5) - stage.ms(1)) * ratio);
+        let due = |ratio: f64| {
+            stage
+                .frame
+                .x_at_ms(stage.ms(8) + (stage.ms(5) - stage.ms(1)) * ratio)
+        };
         let price = |ratio: f64| geometry.frame.y_at(140.0 + 40.0 * ratio);
 
         for ratio in [0.0, 1.0, 1.618] {
@@ -865,9 +872,7 @@ mod tests {
             "a projection was drawn as a fact"
         );
         assert!(
-            texts(&parts)
-                .iter()
-                .any(|text| text == "161.8%  204.72"),
+            texts(&parts).iter().any(|text| text == "161.8%  204.72"),
             "the targets lost their prices: {:?}",
             texts(&parts)
         );
@@ -941,7 +946,10 @@ mod tests {
                 .iter()
                 .any(|part| (y_at(stroke(part), x) - y).abs() < 1e-6)
         };
-        assert!(through(anchor.0, anchor.1), "the band does not hold its anchor");
+        assert!(
+            through(anchor.0, anchor.1),
+            "the band does not hold its anchor"
+        );
         assert!(
             through(target.0, origin.1 + base * (target.0 - origin.0)),
             "the band lost the line it was drawn from"
@@ -1021,13 +1029,12 @@ mod tests {
             "the circles never reach the swing's own distance"
         );
         assert!(
-            circle_rings.iter().all(|(cx, cy, _, _)| (*cx, *cy) == (geometry.x(0), geometry.y(0))),
+            circle_rings
+                .iter()
+                .all(|(cx, cy, _, _)| (*cx, *cy) == (geometry.x(0), geometry.y(0))),
             "a circle drifted off the pivot"
         );
-        let centres: Vec<(f64, f64)> = arc_rings
-            .iter()
-            .map(|(cx, cy, _, _)| (*cx, *cy))
-            .collect();
+        let centres: Vec<(f64, f64)> = arc_rings.iter().map(|(cx, cy, _, _)| (*cx, *cy)).collect();
         assert!(
             centres.contains(&(geometry.x(0), geometry.y(0)))
                 && centres.contains(&(geometry.x(1), geometry.y(1))),
@@ -1044,12 +1051,18 @@ mod tests {
 
         let parts = spiral(geometry);
         assert_eq!(parts.len(), 1, "a spiral is one stroke");
-        let DrawingPart::Polygon { points: trace, filled } = &parts[0] else {
+        let DrawingPart::Polygon {
+            points: trace,
+            filled,
+        } = &parts[0]
+        else {
             panic!("a spiral was not drawn as a path");
         };
         assert!(!*filled, "a spiral filled the chart");
 
-        let radius = |point: &(f64, f64)| ((point.0 - origin.0).powi(2) + (point.1 - origin.1).powi(2)).sqrt();
+        let radius = |point: &(f64, f64)| {
+            ((point.0 - origin.0).powi(2) + (point.1 - origin.1).powi(2)).sqrt()
+        };
         let start = radius(&trace[0]);
         assert!((start - (geometry.y(1) - geometry.y(0)).abs()).abs() < 1e-6);
         let quarter = radius(&trace[SPIRAL_SAMPLES as usize]);
@@ -1061,7 +1074,9 @@ mod tests {
         // Unwound for six turns, so the trace is long enough to be a spiral and not
         // an arc -- and monotonic, which is what makes it a growth series.
         assert_eq!(trace.len(), (SPIRAL_QUARTERS * SPIRAL_SAMPLES + 1) as usize);
-        assert!(trace.windows(2).all(|pair| radius(&pair[1]) > radius(&pair[0])));
+        assert!(trace
+            .windows(2)
+            .all(|pair| radius(&pair[1]) > radius(&pair[0])));
     }
 
     #[test]
@@ -1141,6 +1156,8 @@ mod tests {
         // the module says so by ignoring it rather than by half-applying it.
         let zones = segments(&time_zones(stage.geometry(&points, &options)));
         assert!(zones.iter().all(|(x1, _, x2, _, _)| x1 == x2));
-        assert!(zones.iter().all(|(_, y1, _, y2, _)| *y1 == plot.y && *y2 == plot.y + plot.h));
+        assert!(zones
+            .iter()
+            .all(|(_, y1, _, y2, _)| *y1 == plot.y && *y2 == plot.y + plot.h));
     }
 }

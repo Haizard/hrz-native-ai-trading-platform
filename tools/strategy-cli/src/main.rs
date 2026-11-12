@@ -53,9 +53,12 @@ mod verify;
 
 use analytics_core::Timeframe;
 use anyhow::{bail, Context, Result};
-use backtester::replay::{run_backtest, ReplayConfig, ReplayInput};
+use backtester::replay::{replay, run_backtest, ReplayConfig, ReplayInput};
+use backtester::script_strategy::ScriptStrategy;
+use backtester::BacktestError;
 use clap::{Parser, Subcommand};
 use db::Database;
+use pine_lite::vet;
 use strategy_runtime::{RuntimeConfig, StrategyEngine};
 
 #[derive(Parser)]
@@ -136,6 +139,33 @@ enum BacktestAction {
         #[arg(long, default_value_t = false)]
         print_trades: bool,
     },
+    /// Backtest a pine-lite script over a historical window (`docs/24` S4).
+    Script {
+        /// Path to the pine-lite script source file.
+        #[arg(long)]
+        script: String,
+        /// Symbol, e.g. BTCUSDT.
+        #[arg(long)]
+        symbol: String,
+        /// Start date (YYYY-MM-DD), inclusive.
+        #[arg(long)]
+        from: String,
+        /// End date (YYYY-MM-DD), inclusive.
+        #[arg(long)]
+        to: String,
+        /// Where to write the JSON performance report.
+        #[arg(long)]
+        report_out: Option<String>,
+        /// Resolution to load candles at (single timeframe, "entry").
+        #[arg(long, default_value = "1m")]
+        timeframe: String,
+        /// Slippage applied to market orders, in basis points.
+        #[arg(long, default_value_t = 2.0)]
+        slippage_bps: f64,
+        /// Print every trade after the summary.
+        #[arg(long, default_value_t = false)]
+        print_trades: bool,
+    },
 }
 
 #[tokio::main]
@@ -174,6 +204,28 @@ async fn main() -> Result<()> {
                     &to,
                     report_out.as_deref(),
                     &source_timeframe,
+                    slippage_bps,
+                    print_trades,
+                )
+                .await
+            }
+            BacktestAction::Script {
+                script,
+                symbol,
+                from,
+                to,
+                report_out,
+                timeframe,
+                slippage_bps,
+                print_trades,
+            } => {
+                run_script_backtest_command(
+                    &script,
+                    &symbol,
+                    &from,
+                    &to,
+                    report_out.as_deref(),
+                    &timeframe,
                     slippage_bps,
                     print_trades,
                 )
@@ -354,6 +406,156 @@ async fn run_backtest_command(
         }
         let json = serde_json::to_string_pretty(&report)?;
         std::fs::write(path, json).with_context(|| format!("could not write {path}"))?;
+        println!();
+        println!("report written to {path}");
+    }
+
+    Ok(())
+}
+
+/// Backtest a pine-lite script over a historical window.
+///
+/// Uses `ScriptStrategy` (docs/23 Phase 7) lowered into the same replay
+/// engine that DSL strategies use, so a script and a document are executed by
+/// one code path. Parity between the VM's own simulation and this replay is
+/// pinned by `backtester::tests::script_parity`.
+#[allow(clippy::too_many_arguments)]
+async fn run_script_backtest_command(
+    script_path: &str,
+    symbol: &str,
+    from: &str,
+    to: &str,
+    report_out: Option<&str>,
+    timeframe: &str,
+    slippage_bps: f64,
+    print_trades: bool,
+) -> Result<()> {
+    let source = read_document(script_path)?;
+
+    // Vet the script: every refusal is a concrete, fixable complaint.
+    let (_header, _script) = vet(&source).map_err(|errs| {
+        anyhow::anyhow!(
+            "`{script_path}` is not a valid pine-lite script: {}",
+            errs.iter()
+                .map(|e| e.message.clone())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    })?;
+
+    let from_ns = parse_date_ns(from)?;
+    let to_ns = parse_date_ns(to)? + 86_400 * 1_000_000_000;
+    if to_ns <= from_ns {
+        bail!("`--to` must not be before `--from`");
+    }
+
+    let tf: Timeframe = timeframe
+        .parse()
+        .map_err(|e| anyhow::anyhow!("unknown timeframe `{timeframe}`: {e}"))?;
+
+    let database = Database::from_env()
+        .await
+        .context("could not connect to postgres")?;
+
+    let timeframes = std::collections::BTreeMap::from([("entry".to_string(), tf)]);
+    let series = db::loading::load_timeframe_series(
+        database.pool(),
+        symbol,
+        &timeframes,
+        from_ns,
+        to_ns,
+        tf,
+    )
+    .await
+    .with_context(|| format!("could not load {symbol} {timeframe} candles"))?;
+
+    for (name, cs) in &series {
+        let span = match (cs.first(), cs.last()) {
+            (Some(first), Some(last)) => format!("{} .. {}", first.open_time, last.open_time),
+            _ => "empty".to_string(),
+        };
+        println!("loaded {name} ({:?}): {} candles, {span}", tf, cs.len());
+    }
+
+    let input = ReplayInput {
+        timeframes,
+        candles: series,
+    };
+
+    let config = ReplayConfig {
+        symbol: symbol.to_string(),
+        from: from_ns,
+        to: to_ns - 1,
+        simulator: backtester::SimulatorConfig {
+            slippage_bps,
+            ..backtester::SimulatorConfig::default()
+        },
+        ..ReplayConfig::default()
+    };
+
+    let mut strategy =
+        ScriptStrategy::new(&source).map_err(|e| BacktestError::StrategyExecution(e))?;
+
+    let output =
+        replay(&mut strategy, &input, &config).context("pine-lite script backtest failed")?;
+
+    let trades = &output.trades;
+    let total_r: f64 = trades.iter().map(|t| t.r_multiple).sum();
+    let wins = trades.iter().filter(|t| t.r_multiple > 0.0).count();
+    let win_rate = if trades.is_empty() {
+        0.0
+    } else {
+        wins as f64 / trades.len() as f64
+    };
+
+    println!();
+    println!("pine-lite script backtest");
+    println!("  script:    {script_path}");
+    println!("  symbol:    {symbol}");
+    println!("  timeframe: {timeframe}");
+    println!("  bars:      {}", output.candles_processed);
+    println!("  trades:    {}", trades.len());
+    println!("  win rate:  {:.2}%", win_rate * 100.0);
+    println!("  total R:   {total_r:+.2}");
+
+    if print_trades && !trades.is_empty() {
+        println!();
+        println!(
+            "{:>13} {:>6} {:>11} {:>11} {:>8} {:>12}",
+            "entry (unix s)", "dir", "entry", "exit", "R", "trigger"
+        );
+        for trade in trades {
+            println!(
+                "{:>13} {:>6} {:>11.2} {:>11.2} {:>+8.2} {:>12}",
+                trade.entry_time / 1_000_000_000,
+                format!("{:?}", trade.direction).to_lowercase(),
+                trade.entry_price,
+                trade.exit_price,
+                trade.r_multiple,
+                trade.exit_trigger,
+            );
+        }
+    }
+
+    if let Some(path) = report_out {
+        let report = serde_json::json!({
+            "script": script_path,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "candles_processed": output.candles_processed,
+            "total_trades": trades.len(),
+            "win_rate": win_rate,
+            "total_r": total_r,
+            "trades": trades,
+        });
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("could not create {}", parent.display()))?;
+            }
+        }
+        std::fs::write(path, serde_json::to_string_pretty(&report)?)
+            .with_context(|| format!("could not write {path}"))?;
         println!();
         println!("report written to {path}");
     }

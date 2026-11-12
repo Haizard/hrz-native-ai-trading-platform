@@ -150,6 +150,70 @@ const SERIES_LENGTH: &[BuiltinParameter] = &[
     param("length", ParameterType::Integer, false, None),
 ];
 const ATR_ARGS: &[BuiltinParameter] = &[param("length", ParameterType::Integer, false, None)];
+const ONE_SERIES_ARGS: &[BuiltinParameter] = &[param("source", ParameterType::Series, false, None)];
+const SERIES_PAIR_LENGTH: &[BuiltinParameter] = &[
+    param("source1", ParameterType::Series, false, None),
+    param("source2", ParameterType::Series, false, None),
+    param("length", ParameterType::Integer, false, None),
+];
+const PERCENTILE_ARGS: &[BuiltinParameter] = &[
+    param("source", ParameterType::Series, false, None),
+    param("length", ParameterType::Integer, false, None),
+    param("percentage", ParameterType::Number, false, None),
+];
+const MACD_ARGS: &[BuiltinParameter] = &[
+    param("source", ParameterType::Series, false, None),
+    param("fast", ParameterType::Integer, true, Some("12")),
+    param("slow", ParameterType::Integer, true, Some("26")),
+    param("signal", ParameterType::Integer, true, Some("9")),
+];
+const BB_ARGS: &[BuiltinParameter] = &[
+    param("source", ParameterType::Series, false, None),
+    param("length", ParameterType::Integer, true, Some("20")),
+    param("mult", ParameterType::Number, true, Some("2")),
+];
+const STOCH_ARGS: &[BuiltinParameter] = &[
+    param("source", ParameterType::Series, false, None),
+    param("length", ParameterType::Integer, true, Some("14")),
+];
+const ALMA_ARGS: &[BuiltinParameter] = &[
+    param("source", ParameterType::Series, false, None),
+    param("length", ParameterType::Integer, false, None),
+    param("offset", ParameterType::Number, true, Some("0.85")),
+    param("sigma", ParameterType::Number, true, Some("6")),
+];
+const REGRESSION_ARGS: &[BuiltinParameter] = &[
+    param("source", ParameterType::Series, false, None),
+    param("length", ParameterType::Integer, false, None),
+    param("offset", ParameterType::Number, true, Some("0")),
+];
+const DMI_ARGS: &[BuiltinParameter] = &[param("length", ParameterType::Integer, true, Some("14"))];
+const KC_ARGS: &[BuiltinParameter] = &[
+    param("length", ParameterType::Integer, true, Some("20")),
+    param("mult", ParameterType::Number, true, Some("2")),
+];
+const SUPERTREND_ARGS: &[BuiltinParameter] = &[
+    param("mult", ParameterType::Number, true, Some("3")),
+    param("atr_length", ParameterType::Integer, true, Some("10")),
+];
+const VALUEWHEN_ARGS: &[BuiltinParameter] = &[
+    param("condition", ParameterType::Boolean, false, None),
+    param("source", ParameterType::Series, false, None),
+    param("occurrence", ParameterType::Integer, false, None),
+];
+const PIVOT_ARGS: &[BuiltinParameter] = &[
+    param("source", ParameterType::Series, false, None),
+    param("left_bars", ParameterType::Integer, false, None),
+    param("right_bars", ParameterType::Integer, false, None),
+];
+const CROSS_ARGS: &[BuiltinParameter] = &[
+    param("source1", ParameterType::Series, false, None),
+    param("source2", ParameterType::Series, false, None),
+];
+const RISING_ARGS: &[BuiltinParameter] = &[
+    param("source", ParameterType::Series, false, None),
+    param("length", ParameterType::Integer, false, None),
+];
 const SECURITY_ARGS: &[BuiltinParameter] = &[
     param("symbol", ParameterType::Symbol, false, None),
     param("timeframe", ParameterType::Timeframe, false, None),
@@ -241,7 +305,6 @@ pub const SPECS: &[BuiltinSpec] = &[
                 "ta.stdev",
                 "ta.variance",
                 "ta.hma",
-                "ta.vwma",
                 "ta.tema",
                 "ta.deviation",
                 "ta.median",
@@ -254,6 +317,12 @@ pub const SPECS: &[BuiltinSpec] = &[
             BuiltinReturn::Number,
         ),
         SERIES_LENGTH,
+        HostData::None,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(&["ta.vwma"], 2, 2, BuiltinReturn::Number),
+        SERIES_LENGTH,
         HostData::Ohlcv,
         RuntimeSupport::Implemented,
     ),
@@ -264,9 +333,21 @@ pub const SPECS: &[BuiltinSpec] = &[
         RuntimeSupport::Implemented,
     ),
     metadata(
-        spec(&["ta.change"], 1, 1, BuiltinReturn::Number),
-        &[param("source", ParameterType::Series, false, None)],
+        spec(&["ta.cmf"], 1, 1, BuiltinReturn::Number),
+        ATR_ARGS,
         HostData::Ohlcv,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(&["ta.ao"], 0, 0, BuiltinReturn::Number),
+        &[],
+        HostData::Ohlcv,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(&["ta.change"], 1, 1, BuiltinReturn::Number),
+        ONE_SERIES_ARGS,
+        HostData::None,
         RuntimeSupport::Implemented,
     ),
     metadata(
@@ -275,60 +356,159 @@ pub const SPECS: &[BuiltinSpec] = &[
         HostData::Ohlcv,
         RuntimeSupport::Implemented,
     ),
-    multi(&["ta.stoch"], 2, 2, 2, false),
-    multi(&["ta.macd"], 3, 4, 3, true),
-    multi(&["ta.bb"], 2, 3, 3, true),
-    spec(
-        &[
-            "ta.percentile_linear_interpolation",
-            "ta.percentile_nearest_rank",
-            "ta.correlation",
-            "ta.covariance",
-            "ta.lsma",
-            "ta.linreg",
-        ],
-        3,
-        3,
-        BuiltinReturn::Number,
+    metadata(
+        multi(&["ta.stoch"], 1, 2, 2, false),
+        STOCH_ARGS,
+        HostData::Ohlcv,
+        RuntimeSupport::Implemented,
     ),
-    spec(
-        &["ta.obv", "ta.pvt", "ta.nvi", "ta.wad", "ta.ad"],
-        0,
-        0,
-        BuiltinReturn::Number,
+    metadata(
+        multi(&["ta.macd"], 1, 4, 3, true),
+        MACD_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
     ),
-    spec(&["ta.swma"], 1, 1, BuiltinReturn::Number),
-    spec(&["ta.alma"], 2, 4, BuiltinReturn::Number),
-    spec(
-        &[
-            "ta.cci",
-            "ta.mfi",
-            "ta.willr",
-            "ta.highestbars",
-            "ta.lowestbars",
-            "ta.barssince",
-            "ta.cum",
-        ],
-        1,
-        1,
-        BuiltinReturn::Number,
+    metadata(
+        multi(&["ta.bb"], 1, 3, 3, true),
+        BB_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
     ),
-    spec(
-        &["ta.valuewhen", "ta.pivothigh", "ta.pivotlow"],
-        3,
-        3,
-        BuiltinReturn::Number,
+    metadata(
+        spec(
+            &[
+                "ta.percentile_linear_interpolation",
+                "ta.percentile_nearest_rank",
+            ],
+            3,
+            3,
+            BuiltinReturn::Number,
+        ),
+        PERCENTILE_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
     ),
-    multi(&["ta.dmi"], 1, 1, 3, true),
-    multi(&["ta.kc"], 2, 2, 3, true),
-    multi(&["ta.supertrend"], 2, 2, 2, true),
-    spec(
-        &["ta.crossover", "ta.crossunder", "ta.cross"],
-        2,
-        2,
-        BuiltinReturn::Bool,
+    metadata(
+        spec(
+            &["ta.correlation", "ta.covariance"],
+            3,
+            3,
+            BuiltinReturn::Number,
+        ),
+        SERIES_PAIR_LENGTH,
+        HostData::None,
+        RuntimeSupport::Implemented,
     ),
-    spec(&["ta.rising", "ta.falling"], 2, 2, BuiltinReturn::Bool),
+    metadata(
+        spec(&["ta.linreg", "ta.lsma"], 2, 3, BuiltinReturn::Number),
+        REGRESSION_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(
+            &["ta.obv", "ta.pvt", "ta.nvi", "ta.wad", "ta.ad"],
+            0,
+            0,
+            BuiltinReturn::Number,
+        ),
+        &[],
+        HostData::Ohlcv,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(&["ta.swma"], 1, 1, BuiltinReturn::Number),
+        ONE_SERIES_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(&["ta.alma"], 2, 4, BuiltinReturn::Number),
+        ALMA_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(
+            &[
+                "ta.cci",
+                "ta.mfi",
+                "ta.willr",
+                "ta.highestbars",
+                "ta.lowestbars",
+            ],
+            1,
+            1,
+            BuiltinReturn::Number,
+        ),
+        ATR_ARGS,
+        HostData::Ohlcv,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(&["ta.barssince"], 1, 1, BuiltinReturn::Number),
+        &[param("condition", ParameterType::Boolean, false, None)],
+        HostData::None,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(&["ta.cum"], 1, 1, BuiltinReturn::Number),
+        ONE_SERIES_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(&["ta.valuewhen"], 3, 3, BuiltinReturn::Number),
+        VALUEWHEN_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(
+            &["ta.pivothigh", "ta.pivotlow"],
+            3,
+            3,
+            BuiltinReturn::Number,
+        ),
+        PIVOT_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        multi(&["ta.dmi"], 0, 1, 3, true),
+        DMI_ARGS,
+        HostData::Ohlcv,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        multi(&["ta.kc"], 0, 2, 3, true),
+        KC_ARGS,
+        HostData::Ohlcv,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        multi(&["ta.supertrend"], 0, 2, 2, true),
+        SUPERTREND_ARGS,
+        HostData::Ohlcv,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(
+            &["ta.crossover", "ta.crossunder", "ta.cross"],
+            2,
+            2,
+            BuiltinReturn::Bool,
+        ),
+        CROSS_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
+    ),
+    metadata(
+        spec(&["ta.rising", "ta.falling"], 2, 2, BuiltinReturn::Bool),
+        RISING_ARGS,
+        HostData::None,
+        RuntimeSupport::Implemented,
+    ),
     spec(&["str.tostring"], 1, 2, BuiltinReturn::String),
     spec(&["str.format"], 1, 9, BuiltinReturn::String),
     spec(
@@ -699,8 +879,65 @@ mod tests {
         assert!(lookup("ta.macd").unwrap().multi_output_only);
         assert_eq!(lookup("ta.stoch").unwrap().multi_output_count, Some(2));
         assert!(!lookup("ta.stoch").unwrap().multi_output_only);
-        assert_eq!(lookup("ta.dmi").unwrap().min_args, 1);
+        assert_eq!(lookup("ta.macd").unwrap().min_args, 1);
+        assert_eq!(lookup("ta.bb").unwrap().min_args, 1);
+        assert_eq!(lookup("ta.dmi").unwrap().min_args, 0);
         assert_eq!(lookup("ta.dmi").unwrap().max_args, 1);
+        assert_eq!(lookup("ta.kc").unwrap().min_args, 0);
+        assert_eq!(lookup("ta.supertrend").unwrap().min_args, 0);
+        assert_eq!(lookup("ta.linreg").unwrap().min_args, 2);
+    }
+
+    #[test]
+    fn every_advertised_ta_builtin_has_complete_supported_metadata() {
+        let reference = prompt_reference();
+        let ta_entries: Vec<_> = SPECS
+            .iter()
+            .filter(|entry| entry.names.iter().any(|name| name.starts_with("ta.")))
+            .collect();
+        assert!(!ta_entries.is_empty());
+        for entry in ta_entries {
+            assert!(
+                entry.metadata_complete,
+                "{:?} metadata is incomplete",
+                entry.names
+            );
+            assert_ne!(entry.host_data, HostData::Unspecified, "{:?}", entry.names);
+            assert_eq!(
+                entry.runtime_support,
+                RuntimeSupport::Implemented,
+                "{:?}",
+                entry.names
+            );
+            assert_eq!(entry.parameters.len(), entry.max_args, "{:?}", entry.names);
+            assert_eq!(
+                entry.min_args,
+                entry
+                    .parameters
+                    .iter()
+                    .filter(|parameter| !parameter.optional)
+                    .count(),
+                "{:?}",
+                entry.names
+            );
+            assert!(reference.contains(&format!("`{}`", entry.names.join(", "))));
+        }
+    }
+
+    #[test]
+    fn defaulted_multi_output_ta_signatures_vet_as_the_runtime_executes_them() {
+        let source = concat!(
+            "//@pine_lite version=1\n",
+            "macd, signal, hist = ta.macd(close)\n",
+            "basis, upper, lower = ta.bb(close)\n",
+            "k, d = ta.stoch(close)\n",
+            "plus, minus, adx = ta.dmi()\n",
+            "kc, kc_upper, kc_lower = ta.kc()\n",
+            "trend, direction = ta.supertrend()\n",
+            "line = ta.linreg(close, 5)\n",
+            "lsma = ta.lsma(close, 5)\n",
+        );
+        crate::vet(source).expect("documented runtime defaults must be accepted by vet");
     }
 
     #[test]

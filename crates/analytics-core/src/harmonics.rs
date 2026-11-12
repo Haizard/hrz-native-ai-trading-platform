@@ -1,11 +1,10 @@
 //! The platform's own harmonic detector: XABCD over our swing machinery,
 //! with the canonical Fibonacci windows.
 //!
-//! Why this exists alongside the wickra adapter: wickra's detectors are
-//! textbook-pure (a fixed 5% swing-reversal gate plus tight windows), which
-//! verified correctly on clean shapes but completed nothing on three years
-//! of real data. This detector keeps their canonical Fibonacci windows --
-//! read straight out of their source, which is the community's settled
+//! Why this exists: the reference engine's swing gate proved too strict for
+//! real data (completed nothing on three years of history). This detector
+//! keeps their canonical Fibonacci windows -- read straight out of the
+//! reference implementation's source, which is the community's settled
 //! definition of each pattern -- and swaps the swing engine for the
 //! platform's own lookback swings, so legs of a realistic scale (1-3% on a
 //! 15m chart) complete as they should.
@@ -91,10 +90,18 @@ fn pivots(candles: &[Candle], lookback: usize) -> Vec<Pivot> {
     for i in lookback..n.saturating_sub(lookback) {
         let k = &candles[i];
         if (i - lookback..=i + lookback).all(|j| j == i || candles[j].high < k.high) {
-            out.push(Pivot { price: k.high, high: true, time: k.open_time });
+            out.push(Pivot {
+                price: k.high,
+                high: true,
+                time: k.open_time,
+            });
         }
         if (i - lookback..=i + lookback).all(|j| j == i || candles[j].low > k.low) {
-            out.push(Pivot { price: k.low, high: false, time: k.open_time });
+            out.push(Pivot {
+                price: k.low,
+                high: false,
+                time: k.open_time,
+            });
         }
     }
     out
@@ -109,7 +116,11 @@ fn last_five_alternating(pivots: &[Pivot]) -> Option<[Pivot; 5]> {
         match chain.last() {
             Some(last) if last.high == p.high => {
                 // Same side as the last: keep the more extreme of the two.
-                let replace = if p.high { p.price > last.price } else { p.price < last.price };
+                let replace = if p.high {
+                    p.price > last.price
+                } else {
+                    p.price < last.price
+                };
                 if replace {
                     *chain.last_mut().expect("checked above") = *p;
                 }
@@ -130,21 +141,39 @@ fn last_five_alternating(pivots: &[Pivot]) -> Option<[Pivot; 5]> {
 /// points 1 and 4, extended. Bearish mirrors it.
 fn detect_wolfe(candles: &[Candle], symbol: &str, pivots: &[Pivot]) -> Vec<MarketEvent> {
     let mut out = Vec::new();
-    let Some(last) = candles.last() else { return out };
-    let Some(chain5) = last_five_alternating(pivots) else { return out };
+    let Some(last) = candles.last() else {
+        return out;
+    };
+    let Some(chain5) = last_five_alternating(pivots) else {
+        return out;
+    };
     let [p1, p2, p3, p4, p5] = chain5;
     let line_at = |a: &Pivot, b: &Pivot, i: usize| -> f64 {
-        let ta = candles.iter().position(|c| c.open_time == a.time).unwrap_or(0) as f64;
-        let tb = candles.iter().position(|c| c.open_time == b.time).unwrap_or(1) as f64;
+        let ta = candles
+            .iter()
+            .position(|c| c.open_time == a.time)
+            .unwrap_or(0) as f64;
+        let tb = candles
+            .iter()
+            .position(|c| c.open_time == b.time)
+            .unwrap_or(1) as f64;
         a.price + (b.price - a.price) * (i as f64 - ta) / (tb - ta).max(1.0)
     };
     let n = candles.len() - 1;
-    let bullish = !p1.high && p2.high && !p3.high && p4.high && !p5.high
+    let bullish = !p1.high
+        && p2.high
+        && !p3.high
+        && p4.high
+        && !p5.high
         && p3.price < p1.price
         && p4.price < p2.price
         && p5.price < p3.price
         && p4.price > p5.price;
-    let bearish = p1.high && !p2.high && p3.high && !p4.high && p5.high
+    let bearish = p1.high
+        && !p2.high
+        && p3.high
+        && !p4.high
+        && p5.high
         && p3.price > p1.price
         && p4.price > p2.price
         && p5.price > p3.price
@@ -215,7 +244,9 @@ pub fn detect_harmonics(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
     if candles.len() < 14 {
         return out;
     }
-    let Some(last) = candles.last() else { return out };
+    let Some(last) = candles.last() else {
+        return out;
+    };
     let raw_pivots = pivots(candles, LOOKBACK);
     let Some([x, a, b, c, d]) = last_five_alternating(&raw_pivots) else {
         return out;
@@ -246,7 +277,11 @@ pub fn detect_harmonics(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
         EventKind::HarmonicAbcd,
     ] {
         let Some(w) = windows_for(kind) else { continue };
-        if within(r_ab, w.ab_xa) && within(r_bc, w.bc_ab) && within(r_cd, w.cd_bc) && within(r_ad, w.ad_xa) {
+        if within(r_ab, w.ab_xa)
+            && within(r_bc, w.bc_ab)
+            && within(r_cd, w.cd_bc)
+            && within(r_ad, w.ad_xa)
+        {
             // The D pivot must already be the newest confirmed swing (it is,
             // by construction of the chain) -- the completion fires here.
             let prz = d.price * PRZ_FRACTION;
@@ -299,7 +334,9 @@ mod wolfe_tests {
     fn a_bullish_wolfe_completes_with_the_1_4_target() {
         // The five pivots: L 100, H 106, L 98, H 104, L 96 -- descending
         // lows and descending highs, the channel narrowing.
-        let mut candles: Vec<Candle> = (0..20).map(|i| k(i as i64 * 3_600_000_000_000, 102.0, 102.5, 101.5, 102.0)).collect();
+        let mut candles: Vec<Candle> = (0..20)
+            .map(|i| k(i as i64 * 3_600_000_000_000, 102.0, 102.5, 101.5, 102.0))
+            .collect();
         // Same-type pivots need four or more bars between them (the
         // lookback-3 rule respects three on each side): L20 H22 L26 H29 L32.
         let path = [
@@ -329,7 +366,10 @@ mod wolfe_tests {
         assert!(w.is_some(), "the five-point wave completes");
         let w = w.expect("checked");
         assert_eq!(w.side, Some(crate::types::Side::Buy));
-        assert!((w.price - 96.0).abs() < 0.01, "the entry rides wave 5's low");
+        assert!(
+            (w.price - 96.0).abs() < 0.01,
+            "the entry rides wave 5's low"
+        );
         let target = w.zone_high.expect("the 1-4 line");
         assert!(target > 96.0, "the target is above the entry");
     }
@@ -362,25 +402,40 @@ mod tests {
         let prices = [
             // Three lead bars so the X low itself confirms as a swing (the
             // lookback needs its window on both sides).
-            100.4, 100.3, 100.2, 100.0,        // lead-in to X=100
-            101.0, 102.0, 103.0,             // X to A (A=103)
-            102.0, 101.2,                    // A to B
-            101.8, 102.5,                    // B to C
-            101.8, 100.6,                    // C to D
-            101.2, 101.8, 102.2,             // the turn (D confirms)
+            100.4, 100.3, 100.2, 100.0, // lead-in to X=100
+            101.0, 102.0, 103.0, // X to A (A=103)
+            102.0, 101.2, // A to B
+            101.8, 102.5, // B to C
+            101.8, 100.6, // C to D
+            101.2, 101.8, 102.2, // the turn (D confirms)
         ];
-        prices.iter().enumerate().map(|(i, p)| k(i as i64 * h, *p)).collect()
+        prices
+            .iter()
+            .enumerate()
+            .map(|(i, p)| k(i as i64 * h, *p))
+            .collect()
     }
 
     #[test]
     fn a_realistic_scale_gartley_completes_where_the_strict_gate_could_not() {
         let events = detect_harmonics(&realistic_gartley(), "T");
         let gartley = events.iter().find(|e| e.kind == EventKind::HarmonicGartley);
-        assert!(gartley.is_some(), "1-3% legs complete: {:?}", events.iter().map(|e| e.kind.name()).collect::<Vec<_>>());
+        assert!(
+            gartley.is_some(),
+            "1-3% legs complete: {:?}",
+            events.iter().map(|e| e.kind.name()).collect::<Vec<_>>()
+        );
         let gartley = gartley.expect("checked above");
         assert_eq!(gartley.side, Some(Side::Buy));
-        assert!((gartley.price - 100.3).abs() < 0.05, "the PRZ sits at the D swing low: {}", gartley.price);
-        assert!(gartley.zone_low.is_some() && gartley.zone_high.is_some(), "the PRZ bands");
+        assert!(
+            (gartley.price - 100.3).abs() < 0.05,
+            "the PRZ sits at the D swing low: {}",
+            gartley.price
+        );
+        assert!(
+            gartley.zone_low.is_some() && gartley.zone_high.is_some(),
+            "the PRZ bands"
+        );
     }
 
     #[test]
@@ -388,16 +443,19 @@ mod tests {
         let h = 3_600_000_000_000_i64;
         // Same shape but B at 0.35 of XA: outside the Gartley window.
         let prices = [
-            100.4, 100.3, 100.2, 100.0,
-            101.0, 102.0, 103.0,
-            101.0, 101.05, // B too shallow
-            101.8, 102.3,
-            101.6, 100.8,
-            101.2, 101.7,
+            100.4, 100.3, 100.2, 100.0, 101.0, 102.0, 103.0, 101.0, 101.05, // B too shallow
+            101.8, 102.3, 101.6, 100.8, 101.2, 101.7,
         ];
-        let candles: Vec<Candle> = prices.iter().enumerate().map(|(i, p)| k(i as i64 * h, *p)).collect();
+        let candles: Vec<Candle> = prices
+            .iter()
+            .enumerate()
+            .map(|(i, p)| k(i as i64 * h, *p))
+            .collect();
         let events = detect_harmonics(&candles, "T");
-        assert!(!events.iter().any(|e| e.kind == EventKind::HarmonicGartley), "off-ratio is no Gartley");
+        assert!(
+            !events.iter().any(|e| e.kind == EventKind::HarmonicGartley),
+            "off-ratio is no Gartley"
+        );
     }
 
     #[test]
@@ -409,16 +467,23 @@ mod tests {
         // D=100.34 (0.906 of XA, 2.2 of BC) -- ratios on the swing EXTREMES
         // (the lows/highs), not the closes.
         let prices = [
-            100.4, 100.3, 100.2, 100.0,
-            101.0, 102.0, 103.0,
-            102.4, 101.9,
-            102.2, 102.6,
-            102.3, 100.34,
-            100.9, 101.4, 101.8,
+            100.4, 100.3, 100.2, 100.0, 101.0, 102.0, 103.0, 102.4, 101.9, 102.2, 102.6, 102.3,
+            100.34, 100.9, 101.4, 101.8,
         ];
-        let candles: Vec<Candle> = prices.iter().enumerate().map(|(i, p)| k(i as i64 * h, *p)).collect();
+        let candles: Vec<Candle> = prices
+            .iter()
+            .enumerate()
+            .map(|(i, p)| k(i as i64 * h, *p))
+            .collect();
         let events = detect_harmonics(&candles, "T");
-        assert!(events.iter().any(|e| e.kind == EventKind::HarmonicBat), "the deep D is a Bat: {:?}", events.iter().map(|e| e.kind.name()).collect::<Vec<_>>());
-        assert!(!events.iter().any(|e| e.kind == EventKind::HarmonicGartley), "and not a Gartley");
+        assert!(
+            events.iter().any(|e| e.kind == EventKind::HarmonicBat),
+            "the deep D is a Bat: {:?}",
+            events.iter().map(|e| e.kind.name()).collect::<Vec<_>>()
+        );
+        assert!(
+            !events.iter().any(|e| e.kind == EventKind::HarmonicGartley),
+            "and not a Gartley"
+        );
     }
 }

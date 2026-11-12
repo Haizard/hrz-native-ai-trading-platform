@@ -210,7 +210,13 @@ fn scale(geometry: Geometry<'_>) -> Option<Scale> {
 /// Measured rather than derived from the frame's two scales separately: the
 /// price axis may be logarithmic, and a slope computed as a ratio of the linear
 /// ranges would draw a straight line through a curve's two ends.
-fn screen_slope(geometry: Geometry<'_>, apex: (f64, f64), scale: Scale, price: u32, bars: u32) -> f64 {
+fn screen_slope(
+    geometry: Geometry<'_>,
+    apex: (f64, f64),
+    scale: Scale,
+    price: u32,
+    bars: u32,
+) -> f64 {
     let k = f64::from(price) / f64::from(bars);
     let one_bar_ahead = geometry
         .frame
@@ -329,7 +335,11 @@ mod tests {
             .collect();
         // Seven each way, plus the reflected angle, which is a claim the box
         // does not make yet and so is drawn dashed.
-        assert_eq!(dashed.len(), 15, "seven verticals, seven horizontals, one reflection");
+        assert_eq!(
+            dashed.len(),
+            15,
+            "seven verticals, seven horizontals, one reflection"
+        );
 
         let verticals: Vec<f64> = dashed
             .iter()
@@ -341,7 +351,10 @@ mod tests {
         assert_eq!(verticals.len(), 7);
         for (step, x) in verticals.iter().enumerate() {
             let expected = x0 + (x1 - x0) * (step + 1) as f64 / 8.0;
-            assert!(near(*x, expected), "division {step} at {x}, wanted {expected}");
+            assert!(
+                near(*x, expected),
+                "division {step} at {x}, wanted {expected}"
+            );
         }
     }
 
@@ -384,7 +397,10 @@ mod tests {
 
         // Every ray leaves the pivot and runs to the plot's edge.
         for (index, (from_x, from_y, to_x, _)) in list.iter().enumerate() {
-            assert!(near(*from_x, x0) && near(*from_y, y0), "ray {index} starts at the pivot");
+            assert!(
+                near(*from_x, x0) && near(*from_y, y0),
+                "ray {index} starts at the pivot"
+            );
             assert!(near(*to_x, right), "ray {index} ends at the edge");
         }
 
@@ -415,7 +431,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(labels, ["1x16", "1x8", "1x4", "1x2", "1x1", "2x1", "4x1", "8x1", "16x1"]);
+        assert_eq!(
+            labels,
+            ["1x16", "1x8", "1x4", "1x2", "1x1", "2x1", "4x1", "8x1", "16x1"]
+        );
     }
 
     #[test]
@@ -441,17 +460,30 @@ mod tests {
         let arcs: Vec<(f64, f64, f64, f64, bool)> = parts
             .iter()
             .filter_map(|part| match part {
-                DrawingPart::Ellipse { cx, cy, rx, ry, half, .. } => Some((*cx, *cy, *rx, *ry, *half)),
+                DrawingPart::Ellipse {
+                    cx,
+                    cy,
+                    rx,
+                    ry,
+                    half,
+                    ..
+                } => Some((*cx, *cy, *rx, *ry, *half)),
                 _ => None,
             })
             .collect();
         assert_eq!(arcs.len(), DIVISIONS as usize);
         for (step, (cx, cy, rx, ry, half)) in arcs.iter().enumerate() {
-            assert!(near(*cx, x0) && near(*cy, y0), "every arc is centred on the anchor");
+            assert!(
+                near(*cx, x0) && near(*cy, y0),
+                "every arc is centred on the anchor"
+            );
             assert!(near(*rx, *ry), "a circle, not a stretched one");
             assert!(*half, "an arc is the upper half of its circle");
             let expected = side * (step + 1) as f64 / DIVISIONS as f64;
-            assert!(near(*rx, expected), "radius {step} at {rx}, wanted {expected}");
+            assert!(
+                near(*rx, expected),
+                "radius {step} at {rx}, wanted {expected}"
+            );
         }
     }
 
@@ -481,7 +513,11 @@ mod tests {
             })
             .collect();
         edges.sort_by(|a, b| a.partial_cmp(b).expect("no NaN edges"));
-        assert_eq!(edges.len(), FIXED_LEVELS as usize, "level 0 has no square yet");
+        assert_eq!(
+            edges.len(),
+            FIXED_LEVELS as usize,
+            "level 0 has no square yet"
+        );
         for (step, edge) in edges.iter().enumerate() {
             let expected = x0 + dx * (step + 1) as f64;
             assert!(
@@ -523,7 +559,10 @@ mod tests {
         assert_eq!(far.len(), FIXED_LEVELS as usize);
         for (step, edge) in far.iter().enumerate() {
             let expected = x0 - dx * (step + 1) as f64;
-            assert!(near(*edge, expected), "level {step} at {edge}, wanted {expected}");
+            assert!(
+                near(*edge, expected),
+                "level {step} at {edge}, wanted {expected}"
+            );
         }
     }
 }

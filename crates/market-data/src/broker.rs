@@ -141,30 +141,30 @@ pub trait BrokerPlugin: Send + Sync + std::fmt::Debug {
 pub struct BinancePlugin;
 
 const BINANCE_PRODUCTS: &[Product] = &[
-            Product {
-                id: "spot",
-                // Crypto trades macro through USD, yields, and risk appetite.
-                channels: DataChannels::CANDLES
-                    .or(DataChannels::TRADES)
-                    .or(DataChannels::TRADES_AGGRESSOR)
-                    .or(DataChannels::DEPTH)
-                    .or(DataChannels::MACRO),
-                execution: ExecutionModel::SpotOrders,
-                attribution: AttributionModel::None,
-            },
-            Product {
-                id: "usdt-m",
-                channels: DataChannels::CANDLES
-                    .or(DataChannels::TRADES)
-                    .or(DataChannels::TRADES_AGGRESSOR)
-                    .or(DataChannels::DEPTH)
-                    .or(DataChannels::FUNDING)
-                    .or(DataChannels::OPEN_INTEREST)
-                    .or(DataChannels::LIQUIDATIONS)
-                    .or(DataChannels::MACRO),
-                execution: ExecutionModel::FuturesOrders,
-                attribution: AttributionModel::None,
-            },
+    Product {
+        id: "spot",
+        // Crypto trades macro through USD, yields, and risk appetite.
+        channels: DataChannels::CANDLES
+            .or(DataChannels::TRADES)
+            .or(DataChannels::TRADES_AGGRESSOR)
+            .or(DataChannels::DEPTH)
+            .or(DataChannels::MACRO),
+        execution: ExecutionModel::SpotOrders,
+        attribution: AttributionModel::None,
+    },
+    Product {
+        id: "usdt-m",
+        channels: DataChannels::CANDLES
+            .or(DataChannels::TRADES)
+            .or(DataChannels::TRADES_AGGRESSOR)
+            .or(DataChannels::DEPTH)
+            .or(DataChannels::FUNDING)
+            .or(DataChannels::OPEN_INTEREST)
+            .or(DataChannels::LIQUIDATIONS)
+            .or(DataChannels::MACRO),
+        execution: ExecutionModel::FuturesOrders,
+        attribution: AttributionModel::None,
+    },
 ];
 
 impl BrokerPlugin for BinancePlugin {
@@ -184,24 +184,26 @@ impl BrokerPlugin for BinancePlugin {
 pub struct DerivPlugin;
 
 const DERIV_PRODUCTS: &[Product] = &[
-            Product {
-                id: "synthetic",
-                // Synthetic indices are price quotes from a random engine:
-                // candles derivable from ticks, but no real trades, no
-                // aggressor side, no book, and NO MACRO -- a random engine
-                // does not read the BLS, and pretending otherwise is the
-                // category error the taxonomy exists to prevent.
-                channels: DataChannels::CANDLES.or(DataChannels::TICK_QUOTES),
-                execution: ExecutionModel::Contracts,
-                attribution: AttributionModel::ReferralAndAppTag,
-            },
-            Product {
-                id: "forex-cfd",
-                // Forex CFDs trade the dollar's own world: macro applies.
-                channels: DataChannels::CANDLES.or(DataChannels::TICK_QUOTES).or(DataChannels::MACRO),
-                execution: ExecutionModel::Contracts,
-                attribution: AttributionModel::ReferralAndAppTag,
-            },
+    Product {
+        id: "synthetic",
+        // Synthetic indices are price quotes from a random engine:
+        // candles derivable from ticks, but no real trades, no
+        // aggressor side, no book, and NO MACRO -- a random engine
+        // does not read the BLS, and pretending otherwise is the
+        // category error the taxonomy exists to prevent.
+        channels: DataChannels::CANDLES.or(DataChannels::TICK_QUOTES),
+        execution: ExecutionModel::Contracts,
+        attribution: AttributionModel::ReferralAndAppTag,
+    },
+    Product {
+        id: "forex-cfd",
+        // Forex CFDs trade the dollar's own world: macro applies.
+        channels: DataChannels::CANDLES
+            .or(DataChannels::TICK_QUOTES)
+            .or(DataChannels::MACRO),
+        execution: ExecutionModel::Contracts,
+        attribution: AttributionModel::ReferralAndAppTag,
+    },
 ];
 
 impl BrokerPlugin for DerivPlugin {
@@ -417,9 +419,16 @@ mod tests {
         assert_eq!(syn.product, "synthetic");
         assert!(!syn.supports(DataChannels::TRADES_AGGRESSOR));
         let avail = availability_for(&syn);
-        let of = avail.iter().find(|a| a.feature == "order_flow").expect("row");
+        let of = avail
+            .iter()
+            .find(|a| a.feature == "order_flow")
+            .expect("row");
         assert!(!of.available);
-        assert!(of.reason.as_deref().unwrap_or_default().contains("quotes only"));
+        assert!(of
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("quotes only"));
 
         let btc = VenueSymbol::parse("BINANCE:BTCUSDT");
         assert!(btc.supports(DataChannels::TRADES_AGGRESSOR));
@@ -427,10 +436,24 @@ mod tests {
         // Spot has order flow and the depth map; the futures features are
         // correctly unavailable (funding/OI/liquidations).
         for f in ["order_flow", "depth_map"] {
-            assert!(avail.iter().find(|a| a.feature == f).expect("row").available, "{f}");
+            assert!(
+                avail
+                    .iter()
+                    .find(|a| a.feature == f)
+                    .expect("row")
+                    .available,
+                "{f}"
+            );
         }
         for f in ["funding_dashboard", "open_interest", "liquidation_feed"] {
-            assert!(!avail.iter().find(|a| a.feature == f).expect("row").available, "{f}");
+            assert!(
+                !avail
+                    .iter()
+                    .find(|a| a.feature == f)
+                    .expect("row")
+                    .available,
+                "{f}"
+            );
         }
     }
 

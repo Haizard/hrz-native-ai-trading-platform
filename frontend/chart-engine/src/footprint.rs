@@ -561,7 +561,10 @@ pub fn layout(
                     total_bid += cell.bid;
                     total_ask += cell.ask;
                     let neutral = cell.neutral.unwrap_or(0.0).max(0.0);
-                    let activity = cell.activity.unwrap_or(cell.bid + cell.ask + neutral).max(0.0);
+                    let activity = cell
+                        .activity
+                        .unwrap_or(cell.bid + cell.ask + neutral)
+                        .max(0.0);
                     total_neutral += neutral;
                     total_activity += activity;
 
@@ -613,11 +616,16 @@ pub fn layout(
                     // The summary must describe the ladder's data basis. For
                     // Deriv that is counted quote observations; for Binance it
                     // is the executed volume represented by these cells.
-                    volume_text: compact(column.cells.iter().map(|cell| {
-                        cell.activity.unwrap_or(
-                            cell.bid + cell.ask + cell.neutral.unwrap_or(0.0),
-                        )
-                    }).sum()),
+                    volume_text: compact(
+                        column
+                            .cells
+                            .iter()
+                            .map(|cell| {
+                                cell.activity
+                                    .unwrap_or(cell.bid + cell.ask + cell.neutral.unwrap_or(0.0))
+                            })
+                            .sum(),
+                    ),
                     delta_text: signed(column.delta),
                     delta_positive: column.delta >= 0.0,
                     close_text: compact(column.close),
@@ -853,11 +861,13 @@ mod tests {
                 cell(110.0, 1.0, 1.0),
             ],
         )];
-        let grid = layout(&columns, plot(), None, 20.0, 5, Some((102.0, 112.0)))
-            .expect("a grid");
-        assert_eq!(grid.rows.len(), 2, "100 is below the axis, 105 and 110 remain");
-        assert!(!grid
-            .columns[0]
+        let grid = layout(&columns, plot(), None, 20.0, 5, Some((102.0, 112.0))).expect("a grid");
+        assert_eq!(
+            grid.rows.len(),
+            2,
+            "100 is below the axis, 105 and 110 remain"
+        );
+        assert!(!grid.columns[0]
             .cells
             .iter()
             .any(|c| (c.price - 100.0).abs() < 1e-9));

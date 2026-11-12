@@ -189,9 +189,8 @@ fn divergence_of(
     })?;
     // Warm-up bars read `None`; they arrive as `NaN` and the swing scan skips
     // non-finite values, so the RSI series' shape never invents a swing.
-    let (rsi_first, rsi_last) = swings(rsi_values, kind, config.strength, |v| {
-        v.unwrap_or(f64::NAN)
-    })?;
+    let (rsi_first, rsi_last) =
+        swings(rsi_values, kind, config.strength, |v| v.unwrap_or(f64::NAN))?;
 
     // A divergence is *two* points: the earlier swing and the later one, in
     // both series. If either series only managed one swing in the window there
@@ -206,7 +205,10 @@ fn divergence_of(
     }
 
     // The two swings have to be far enough apart to be a real leg.
-    let bars_apart = price_extreme_last.index.0.saturating_sub(price_extreme_first.index.0);
+    let bars_apart = price_extreme_last
+        .index
+        .0
+        .saturating_sub(price_extreme_first.index.0);
     if bars_apart < config.min_bars_apart {
         return None;
     }
@@ -304,12 +306,17 @@ fn swings<T, F: Fn(&T) -> f64>(
         let left = index.saturating_sub(strength);
         let right = (index + strength + 1).min(items.len());
 
-        let confirmed = items[left..index].iter().all(|other| is_extreme(value, measure(other)))
+        let confirmed = items[left..index]
+            .iter()
+            .all(|other| is_extreme(value, measure(other)))
             && items[index + 1..right]
                 .iter()
                 .all(|other| is_extreme(value, measure(other)));
         if confirmed {
-            found.push(Extreme { index: (index, found.len()), value });
+            found.push(Extreme {
+                index: (index, found.len()),
+                value,
+            });
         }
     }
 
@@ -372,7 +379,9 @@ mod tests {
         shape
             .into_iter()
             .enumerate()
-            .map(|(i, (high, low, close))| candle(i64::try_from(i).expect("small"), high, low, close))
+            .map(|(i, (high, low, close))| {
+                candle(i64::try_from(i).expect("small"), high, low, close)
+            })
             .collect()
     }
 
@@ -419,7 +428,9 @@ mod tests {
         let one = vec![candle(0, 100.5, 99.5, 100.0)];
         assert!(rsi_divergences(&one, &config).is_empty());
         // A flat series has no swings with strict comparison.
-        let flat: Vec<Candle> = (0..30).map(|i| candle(i64::from(i), 100.0, 100.0, 100.0)).collect();
+        let flat: Vec<Candle> = (0..30)
+            .map(|i| candle(i64::from(i), 100.0, 100.0, 100.0))
+            .collect();
         assert!(rsi_divergences(&flat, &config).is_empty());
     }
 
@@ -461,4 +472,3 @@ mod tests {
         );
     }
 }
-

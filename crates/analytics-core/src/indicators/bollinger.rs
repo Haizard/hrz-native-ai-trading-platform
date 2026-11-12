@@ -92,7 +92,9 @@ mod tests {
 
     #[test]
     fn bands_are_symmetric_around_the_middle() {
-        let values: Vec<f64> = (0..30).map(|i| 100.0 + (i as f64 * 0.7).sin() * 5.0).collect();
+        let values: Vec<f64> = (0..30)
+            .map(|i| 100.0 + (i as f64 * 0.7).sin() * 5.0)
+            .collect();
         for point in bollinger(&values, 20, 2.0).into_iter().flatten() {
             assert!(((point.upper - point.middle) - (point.middle - point.lower)).abs() < 1e-9);
         }
@@ -120,6 +122,8 @@ mod tests {
         assert!(bollinger(&[1.0], 20, 2.0).iter().all(Option::is_none));
         assert!(bollinger(&[1.0; 30], 0, 2.0).iter().all(Option::is_none));
         assert!(bollinger(&[1.0; 30], 20, -1.0).iter().all(Option::is_none));
-        assert!(bollinger(&[1.0; 30], 20, f64::NAN).iter().all(Option::is_none));
+        assert!(bollinger(&[1.0; 30], 20, f64::NAN)
+            .iter()
+            .all(Option::is_none));
     }
 }

@@ -88,6 +88,32 @@ pub struct ScriptHeader {
     pub max_bars_back: usize,
 }
 
+/// Machine-readable Pine-Lite version and compiler builtin catalog.
+#[derive(Debug, Serialize)]
+pub struct ScriptCapabilities {
+    /// Stable language identifier.
+    pub language: &'static str,
+    /// Source annotation version accepted by the lexer.
+    pub language_version: u32,
+    /// Call arities, result shapes, and explicitly complete parameter/host
+    /// metadata from the compiler registry.
+    pub catalog: pine_lite::builtins::BuiltinCatalog,
+}
+
+/// `GET /scripts/capabilities`.
+///
+/// The compiler registry is the source of truth for call bounds and result
+/// shapes. Metadata marked incomplete stays explicitly incomplete in the
+/// response; clients must not infer host support from an unspecified entry.
+#[must_use]
+pub async fn capabilities() -> Json<ScriptCapabilities> {
+    Json(ScriptCapabilities {
+        language: "pine_lite",
+        language_version: pine_lite::LANGUAGE_VERSION,
+        catalog: pine_lite::builtins::CATALOG,
+    })
+}
+
 /// `POST /scripts/vet`.
 ///
 /// # Errors
@@ -170,9 +196,7 @@ pub(crate) fn collect_inputs(script: &pine_lite::parse::Script) -> Vec<ScriptInp
                             return None;
                         }
                         match &a.value.kind {
-                            pine_lite::parse::ExprKind::Num(n) => {
-                                Some(serde_json::Value::from(*n))
-                            }
+                            pine_lite::parse::ExprKind::Num(n) => Some(serde_json::Value::from(*n)),
                             pine_lite::parse::ExprKind::Bool(b) => {
                                 Some(serde_json::Value::from(*b))
                             }
@@ -213,6 +237,18 @@ pub(crate) fn collect_inputs(script: &pine_lite::parse::Script) -> Vec<ScriptInp
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn capability_discovery_serializes_the_compiler_catalog_and_version() {
+        let response = capabilities().await;
+        let value = serde_json::to_value(response.0).expect("capability response serializes");
+        assert_eq!(value["language"], "pine_lite");
+        assert_eq!(value["language_version"], pine_lite::LANGUAGE_VERSION);
+        assert_eq!(
+            value["catalog"],
+            serde_json::to_value(pine_lite::builtins::CATALOG).expect("catalog serializes")
+        );
+    }
+
     #[test]
     fn a_valid_script_reports_header_and_inputs() {
         let src = concat!(
@@ -223,7 +259,10 @@ mod tests {
         );
         let response = vet_response(src);
         assert!(response.valid, "{:?}", response.issues);
-        assert_eq!(response.header.as_ref().expect("header").title.as_deref(), Some("My RSI"));
+        assert_eq!(
+            response.header.as_ref().expect("header").title.as_deref(),
+            Some("My RSI")
+        );
         assert_eq!(response.inputs.len(), 1);
         assert_eq!(response.inputs[0].name, "len");
         assert_eq!(response.inputs[0].default, Some(serde_json::json!(14.0)));
@@ -292,7 +331,10 @@ mod tests {
     fn a_source_without_the_annotation_is_refused() {
         let response = vet_response("plot(close)\n");
         assert!(!response.valid);
-        assert!(response.issues.iter().any(|i| i.message.contains("@pine_lite")));
+        assert!(response
+            .issues
+            .iter()
+            .any(|i| i.message.contains("@pine_lite")));
     }
 
     #[test]

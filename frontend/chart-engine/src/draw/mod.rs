@@ -27,6 +27,7 @@ use crate::drawing::{DrawingKind, DrawingOptions, DrawingPart, Extend};
 use crate::scene::Frame;
 use analytics_core::types::Candle;
 
+pub mod annotation;
 pub mod channels;
 pub mod cyclic;
 pub mod elliott;
@@ -38,7 +39,6 @@ pub mod patterns;
 pub mod pitchforks;
 pub mod positions;
 pub mod shapes;
-pub mod annotation;
 
 /// One point of a drawing, resolved: `(milliseconds, price)`.
 pub type Point = (f64, f64);
@@ -262,7 +262,12 @@ impl Stage {
     /// the first close at the bottom edge and the last at the top, which is a
     /// pixel position a test can name without inverting the mapping.
     pub(crate) fn ramp(bars: usize, first: f64, step: f64) -> Self {
-        Self::over(bars, |index| first + index as f64 * step, first, first + (bars as f64 - 1.0) * step)
+        Self::over(
+            bars,
+            |index| first + index as f64 * step,
+            first,
+            first + (bars as f64 - 1.0) * step,
+        )
     }
 
     /// `bars` candles that closed at one price, under a window wide enough to
@@ -341,11 +346,7 @@ pub(crate) const T0_NS: i64 = 1_700_000_000_000_000_000;
 /// `points` is `kind.anchors()` long -- `place` refused anything else -- so a
 /// group function may index the points its kind declares and no further.
 #[must_use]
-pub fn parts(
-    kind: DrawingKind,
-    selected: bool,
-    geometry: Geometry<'_>,
-) -> Vec<DrawingPart> {
+pub fn parts(kind: DrawingKind, selected: bool, geometry: Geometry<'_>) -> Vec<DrawingPart> {
     let mut parts = match kind {
         // Lines.
         DrawingKind::Trendline => lines::stroked(geometry, Extend::None),
@@ -483,20 +484,35 @@ mod completeness_gate {
         for part in parts {
             match part {
                 DrawingPart::Segment { x1, y1, x2, y2, .. } => {
-                    assert!(x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite(), "{kind:?} has NaN in a segment");
+                    assert!(
+                        x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite(),
+                        "{kind:?} has NaN in a segment"
+                    );
                 }
                 DrawingPart::Rect { x, y, w, h, .. } => {
-                    assert!(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite(), "{kind:?} has NaN in a rect");
+                    assert!(
+                        x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite(),
+                        "{kind:?} has NaN in a rect"
+                    );
                 }
                 DrawingPart::Text { x, y, .. } => {
-                    assert!(x.is_finite() && y.is_finite(), "{kind:?} has NaN in text position");
+                    assert!(
+                        x.is_finite() && y.is_finite(),
+                        "{kind:?} has NaN in text position"
+                    );
                 }
                 DrawingPart::Ellipse { cx, cy, rx, ry, .. } => {
-                    assert!(cx.is_finite() && cy.is_finite() && rx.is_finite() && ry.is_finite(), "{kind:?} has NaN in ellipse");
+                    assert!(
+                        cx.is_finite() && cy.is_finite() && rx.is_finite() && ry.is_finite(),
+                        "{kind:?} has NaN in ellipse"
+                    );
                 }
                 DrawingPart::Polygon { points: pts, .. } => {
                     for &(px, py) in pts {
-                        assert!(px.is_finite() && py.is_finite(), "{kind:?} has NaN in polygon");
+                        assert!(
+                            px.is_finite() && py.is_finite(),
+                            "{kind:?} has NaN in polygon"
+                        );
                     }
                 }
                 DrawingPart::Handle { x, y, .. } => {
@@ -504,7 +520,10 @@ mod completeness_gate {
                 }
                 DrawingPart::Zone { x, y, w, h, .. } => {
                     for value in [x, y, w, h] {
-                        assert!(value.is_finite(), "{kind:?} emitted a non-finite zone edge: {value}");
+                        assert!(
+                            value.is_finite(),
+                            "{kind:?} emitted a non-finite zone edge: {value}"
+                        );
                     }
                 }
             }
@@ -527,7 +546,10 @@ mod completeness_gate {
                 text: Some("test"),
             };
             let parts = parts(kind, false, geom);
-            assert!(!parts.is_empty(), "{kind:?} produced no parts with minimum points");
+            assert!(
+                !parts.is_empty(),
+                "{kind:?} produced no parts with minimum points"
+            );
             assert_finite(&parts, kind);
         }
     }
@@ -562,7 +584,10 @@ mod completeness_gate {
             let parts2 = parts(kind, false, geom2);
 
             let changed = format!("{parts1:?}") != format!("{parts2:?}");
-            assert!(changed, "{kind:?}: parts did not change when the last point moved");
+            assert!(
+                changed,
+                "{kind:?}: parts did not change when the last point moved"
+            );
         }
     }
 
@@ -570,7 +595,10 @@ mod completeness_gate {
     fn many_kinds_draw_with_extra_points() {
         let stage = Stage::ramp(40, 120.0, 0.25);
         let opts = DrawingOptions::default();
-        let many_kinds: Vec<_> = REGISTRY.iter().filter(|t| t.anchors.points_for().is_none()).collect();
+        let many_kinds: Vec<_> = REGISTRY
+            .iter()
+            .filter(|t| t.anchors.points_for().is_none())
+            .collect();
         for tool in many_kinds {
             let kind = tool.kind;
             let min = kind.anchors().minimum();
@@ -584,7 +612,10 @@ mod completeness_gate {
                     text: Some("test"),
                 };
                 let parts = parts(kind, false, geom);
-                assert!(!parts.is_empty(), "{kind:?} with {n} points produced nothing");
+                assert!(
+                    !parts.is_empty(),
+                    "{kind:?} with {n} points produced nothing"
+                );
                 assert_finite(&parts, kind);
             }
         }
@@ -723,7 +754,9 @@ mod completeness_gate {
         // whose top is its low edge is a band drawn one price off.
         assert!(*y < stage.frame.y_at(101.0));
         assert!(
-            parts.iter().any(|part| matches!(part, DrawingPart::Text { text, .. } if text == "demand")),
+            parts
+                .iter()
+                .any(|part| matches!(part, DrawingPart::Text { text, .. } if text == "demand")),
             "the label is drawn beside the box, not lost"
         );
     }
@@ -821,11 +854,15 @@ mod completeness_gate {
             stage.geometry(&[(stage.ms(2), 103.0), (stage.ms(10), 101.0)], &options),
         );
         assert!(
-            parts.iter().any(|part| matches!(part, DrawingPart::Zone { .. })),
+            parts
+                .iter()
+                .any(|part| matches!(part, DrawingPart::Zone { .. })),
             "price_range still draws a Rect: {parts:?}"
         );
         assert!(
-            !parts.iter().any(|part| matches!(part, DrawingPart::Text { .. })),
+            !parts
+                .iter()
+                .any(|part| matches!(part, DrawingPart::Text { .. })),
             "the left-edge labels are the part's tags now"
         );
     }

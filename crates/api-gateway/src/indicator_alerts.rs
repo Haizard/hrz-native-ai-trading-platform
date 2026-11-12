@@ -145,7 +145,11 @@ async fn handle_market_event(
         if row.event_name != event_name {
             continue;
         }
-        if !passes_session_gate(&row.channels, event.bar_time, &analytics_core::SessionWindow::defaults()) {
+        if !passes_session_gate(
+            &row.channels,
+            event.bar_time,
+            &analytics_core::SessionWindow::defaults(),
+        ) {
             debug!(
                 workspace = %row.workspace_id,
                 event = %event_name,
@@ -392,12 +396,21 @@ mod tests {
     #[test]
     fn a_session_gate_reads_the_channels_json_and_refuses_unknown_names() {
         let json = serde_json::json!({"webhook": true, "session": "london"});
-        assert_eq!(gated_session(&json), Some(analytics_core::SessionKind::London));
+        assert_eq!(
+            gated_session(&json),
+            Some(analytics_core::SessionKind::London)
+        );
         let json = serde_json::json!({"session": "new_york"});
-        assert_eq!(gated_session(&json), Some(analytics_core::SessionKind::NewYork));
+        assert_eq!(
+            gated_session(&json),
+            Some(analytics_core::SessionKind::NewYork)
+        );
         // Unknown names are None -- ungated -- because a typo'd gate silently
         // deleting all deliveries would be worse than delivering ungated.
-        assert_eq!(gated_session(&serde_json::json!({"session": "londoner"})), None);
+        assert_eq!(
+            gated_session(&serde_json::json!({"session": "londoner"})),
+            None
+        );
         // And a preference with no session key at all is simply ungated.
         assert_eq!(gated_session(&serde_json::json!({"webhook": true})), None);
     }
@@ -408,12 +421,20 @@ mod tests {
         let windows = analytics_core::SessionWindow::defaults();
         let ns_per_min = 60 * 1_000_000_000i64;
         // 08:30 UTC is inside London 07:00-10:00.
-        assert!(passes_session_gate(&gate, 8 * 60 * ns_per_min + 30 * ns_per_min, &windows));
+        assert!(passes_session_gate(
+            &gate,
+            8 * 60 * ns_per_min + 30 * ns_per_min,
+            &windows
+        ));
         // 16:00 is outside every window.
         assert!(!passes_session_gate(&gate, 16 * 60 * ns_per_min, &windows));
         // And an ungated preference passes everywhere, which is the default.
         let ungated = serde_json::json!({});
-        assert!(passes_session_gate(&ungated, 16 * 60 * ns_per_min, &windows));
+        assert!(passes_session_gate(
+            &ungated,
+            16 * 60 * ns_per_min,
+            &windows
+        ));
     }
 
     #[test]
@@ -421,7 +442,10 @@ mod tests {
         // The preference's event_name is the event kind's canonical name, so
         // a shell can offer the menu from `EventKind::ALL` and the worker
         // matches on exactly those strings.
-        assert_eq!(analytics_core::events::EventKind::FvgCreated.name(), "fvg_created");
+        assert_eq!(
+            analytics_core::events::EventKind::FvgCreated.name(),
+            "fvg_created"
+        );
         assert_eq!(
             analytics_core::events::EventKind::LiquiditySweep.name(),
             "liquidity_sweep"

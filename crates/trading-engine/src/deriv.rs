@@ -19,9 +19,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use market_data::deriv_trade::{
-    ContractOrder, DerivTradingGateway, ProposalParams, Purchase,
-};
+use market_data::deriv_trade::{ContractOrder, DerivTradingGateway, ProposalParams, Purchase};
 use zeroize::Zeroizing;
 
 use crate::error::ExecutionError;
@@ -84,7 +82,10 @@ impl DerivAdapter {
     /// One OTP session's worth of calls, with our account and token bound.
     async fn with_session<T>(
         &self,
-        f: impl FnOnce(market_data::deriv_trade::TradingSession<'_>) -> futures::future::BoxFuture<'_, Result<T, market_data::MarketDataError>>,
+        f: impl FnOnce(
+            market_data::deriv_trade::TradingSession<'_>,
+        )
+            -> futures::future::BoxFuture<'_, Result<T, market_data::MarketDataError>>,
     ) -> Result<T, ExecutionError> {
         self.gateway
             .session(&self.account_id, &self.token, f)
@@ -185,9 +186,11 @@ impl ExchangeAdapter for DerivAdapter {
                 })
             })
             .await
-            .map(|(proposal, purchase): (market_data::deriv_trade::Proposal, Purchase)| {
-                (proposal, purchase)
-            })?;
+            .map(
+                |(proposal, purchase): (market_data::deriv_trade::Proposal, Purchase)| {
+                    (proposal, purchase)
+                },
+            )?;
         let (proposal, purchase) = purchase;
         self.remember(&client_id, purchase.contract_id);
         Ok(OrderAck {
@@ -266,9 +269,15 @@ mod tests {
         assert_eq!(params.underlying_symbol, "R_75");
         assert_eq!(params.amount, 5.0);
         assert_eq!(params.multiplier, Some(DEFAULT_MULTIPLIER));
-        assert!(params.duration.is_none(), "multipliers run to sell or stop-out");
+        assert!(
+            params.duration.is_none(),
+            "multipliers run to sell or stop-out"
+        );
 
-        let sell = OrderRequest { side: OrderSide::Sell, ..order };
+        let sell = OrderRequest {
+            side: OrderSide::Sell,
+            ..order
+        };
         let params = adapter.map_order(&sell).expect("maps");
         assert_eq!(params.contract_type, "MULTDOWN");
     }

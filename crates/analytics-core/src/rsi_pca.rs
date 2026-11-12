@@ -98,7 +98,10 @@ pub fn jacobi_eigen(mut a: [[f64; D]; D]) -> (Vec<f64>, Vec<[f64; D]>) {
         })
         .collect();
     pairs.sort_by(|x, y| y.0.total_cmp(&x.0));
-    (pairs.iter().map(|p| p.0).collect(), pairs.into_iter().map(|p| p.1).collect())
+    (
+        pairs.iter().map(|p| p.0).collect(),
+        pairs.into_iter().map(|p| p.1).collect(),
+    )
 }
 
 /// The fitted model: center means, eigenvectors, least-squares coefficients,
@@ -119,7 +122,12 @@ pub struct RsiPcaModel {
 /// Fit on the rows of `rows[start..end]` (all must be Some), against the
 /// `lookahead`-bar log returns aligned with them. The caller guarantees the
 /// train window ends `lookahead` bars before the prediction point.
-pub fn fit(closes: &[f64], rows: &[[Option<f64>; D]], start: usize, end: usize) -> Option<RsiPcaModel> {
+pub fn fit(
+    closes: &[f64],
+    rows: &[[Option<f64>; D]],
+    start: usize,
+    end: usize,
+) -> Option<RsiPcaModel> {
     let n = end - start;
     if n < D + 10 || end + LOOKAHEAD > closes.len() {
         return None;
@@ -281,7 +289,9 @@ pub fn detect_rsi_pca(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
             prev_pred = None;
         }
         let Some(m) = &model else { continue };
-        let Some(pred) = predict(m, &rows[i]) else { continue };
+        let Some(pred) = predict(m, &rows[i]) else {
+            continue;
+        };
         // The signal: the prediction crossing its rolling extremes.
         let side = if pred >= m.long_thresh && prev_pred.map_or(true, |p| p < m.long_thresh) {
             Some(Side::Buy)
@@ -338,7 +348,8 @@ mod tests {
         let mut price = 100.0;
         (0..n)
             .map(|i| {
-                let drift = (i as f64 / 25.0).sin() * 0.004 + ((i * 7919) % 13) as f64 * 0.0001 - 0.0006;
+                let drift =
+                    (i as f64 / 25.0).sin() * 0.004 + ((i * 7919) % 13) as f64 * 0.0001 - 0.0006;
                 price *= 1.0 + drift;
                 k(i as i64 * 3_600_000_000_000, price)
             })
@@ -388,7 +399,12 @@ mod tests {
         let n = preds.len().min(realized.len()) as f64;
         let mp = preds.iter().sum::<f64>() / n;
         let mr = realized.iter().sum::<f64>() / n;
-        let cov: f64 = preds.iter().zip(&realized).map(|(p, r)| (p - mp) * (r - mr)).sum::<f64>() / n;
+        let cov: f64 = preds
+            .iter()
+            .zip(&realized)
+            .map(|(p, r)| (p - mp) * (r - mr))
+            .sum::<f64>()
+            / n;
         let sp = (preds.iter().map(|p| (p - mp).powi(2)).sum::<f64>() / n).sqrt();
         let sr = (realized.iter().map(|r| (r - mr).powi(2)).sum::<f64>() / n).sqrt();
         let corr = cov / (sp * sr);
@@ -401,9 +417,18 @@ mod tests {
         let events = detect_rsi_pca(&candles, "T");
         assert!(!events.is_empty(), "the extremes produce signals");
         assert!(events.iter().all(|e| e.kind == EventKind::RsiPcaSignal));
-        assert!(events.iter().any(|e| e.side == Some(Side::Buy)), "longs exist");
-        assert!(events.iter().any(|e| e.side == Some(Side::Sell)), "shorts exist");
-        assert!(events.iter().all(|e| e.magnitude.is_some()), "the prediction rides along");
+        assert!(
+            events.iter().any(|e| e.side == Some(Side::Buy)),
+            "longs exist"
+        );
+        assert!(
+            events.iter().any(|e| e.side == Some(Side::Sell)),
+            "shorts exist"
+        );
+        assert!(
+            events.iter().all(|e| e.magnitude.is_some()),
+            "the prediction rides along"
+        );
     }
 
     #[test]
@@ -417,7 +442,11 @@ mod tests {
         // Future bars replaced by wild values -- only appended after `cut`.
         let mut tail: Vec<Candle> = candles[cut..].to_vec();
         for (i, c) in tail.iter_mut().enumerate() {
-            let wild = if i % 2 == 0 { c.close * 1.2 } else { c.close * 0.8 };
+            let wild = if i % 2 == 0 {
+                c.close * 1.2
+            } else {
+                c.close * 0.8
+            };
             *c = k(c.open_time, wild);
         }
         perturbed.extend(tail);
@@ -425,12 +454,18 @@ mod tests {
             .into_iter()
             .filter(|e| e.bar_time < candles[cut].open_time)
             .collect();
-        let ev_a: Vec<_> = events_a.into_iter().filter(|e| e.bar_time < candles[cut].open_time).collect();
+        let ev_a: Vec<_> = events_a
+            .into_iter()
+            .filter(|e| e.bar_time < candles[cut].open_time)
+            .collect();
         assert_eq!(ev_a.len(), events_b.len(), "same signals before the cut");
         for (a, b) in ev_a.iter().zip(&events_b) {
             assert_eq!(a.bar_time, b.bar_time);
             assert_eq!(a.side, b.side);
-            assert_eq!(a.magnitude, b.magnitude, "identical predictions before the cut");
+            assert_eq!(
+                a.magnitude, b.magnitude,
+                "identical predictions before the cut"
+            );
         }
     }
 }

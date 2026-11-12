@@ -22,7 +22,9 @@ use serde_json::{json, Value};
 
 use crate::agent::Agent;
 use crate::error::AgentError;
-use crate::llm_client::{ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult, ToolSpec, Usage};
+use crate::llm_client::{
+    ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult, ToolSpec, Usage,
+};
 use crate::skills::Skill;
 
 /// Where authored skills go.
@@ -331,7 +333,7 @@ impl Agent {
             };
             push_merged(&mut messages, role, turn.text.clone());
         }
-                // The document rides the user's own message, delimited, so the
+        // The document rides the user's own message, delimited, so the
         // transcript stays text-only and a resumed interview still reads: the
         // distillation lives on in the assistant's summary turn.
         let message = match &request.document {
@@ -462,14 +464,18 @@ impl Agent {
 
         Ok(AuthorAnswer {
             message: last_problems.map_or_else(
-                || "The draft kept failing validation. Tell me the pattern's name and its \
+                || {
+                    "The draft kept failing validation. Tell me the pattern's name and its \
                     rules once more, plainly, and I will write it up cleanly."
-                    .into(),
-                |problems| format!(
-                    "I could not save the draft -- the validator said: {}. Let me fix that; \
+                        .into()
+                },
+                |problems| {
+                    format!(
+                        "I could not save the draft -- the validator said: {}. Let me fix that; \
                      confirm once more and I will save it right.",
-                    problems.join("; ")
-                ),
+                        problems.join("; ")
+                    )
+                },
             ),
             saved: None,
             turns,
@@ -600,14 +606,21 @@ mod tests {
     async fn a_text_reply_is_the_next_interview_question() {
         let (agent, writer, client) = setup(vec![text_reply("Which candles make the zone?")]);
         let answer = agent
-            .author_skill(&request(writer.clone(), "I trade fair value gaps.", Vec::new()))
+            .author_skill(&request(
+                writer.clone(),
+                "I trade fair value gaps.",
+                Vec::new(),
+            ))
             .await
             .unwrap();
         assert_eq!(answer.message, "Which candles make the zone?");
         assert!(answer.saved.is_none());
         assert_eq!(answer.turns, 1);
         assert_eq!(client.call_count(), 1);
-        assert!(writer.0.lock().unwrap().is_empty(), "no question saves a skill");
+        assert!(
+            writer.0.lock().unwrap().is_empty(),
+            "no question saves a skill"
+        );
     }
 
     #[tokio::test]
@@ -663,9 +676,18 @@ mod tests {
     async fn repeated_roles_in_the_history_are_merged() {
         let (agent, writer, client) = setup(vec![text_reply("go on")]);
         let history = vec![
-            ChatTurn { role: "user".into(), text: "I trade gaps.".into() },
-            ChatTurn { role: "user".into(), text: "Three-candle ones.".into() },
-            ChatTurn { role: "assistant".into(), text: "How do you enter?".into() },
+            ChatTurn {
+                role: "user".into(),
+                text: "I trade gaps.".into(),
+            },
+            ChatTurn {
+                role: "user".into(),
+                text: "Three-candle ones.".into(),
+            },
+            ChatTurn {
+                role: "assistant".into(),
+                text: "How do you enter?".into(),
+            },
         ];
         let _ = agent
             .author_skill(&request(writer, "On the retest.", history))
@@ -673,8 +695,15 @@ mod tests {
             .unwrap();
         let sent = &client.requests()[0].messages;
         // user+user merged, then assistant, then the new user message.
-        assert_eq!(sent.len(), 3, "two consecutive user turns become one: {sent:?}");
-        assert!(sent[0].text().contains("I trade gaps.") && sent[0].text().contains("Three-candle ones."));
+        assert_eq!(
+            sent.len(),
+            3,
+            "two consecutive user turns become one: {sent:?}"
+        );
+        assert!(
+            sent[0].text().contains("I trade gaps.")
+                && sent[0].text().contains("Three-candle ones.")
+        );
         assert_eq!(sent[2].text(), "On the retest.");
     }
 

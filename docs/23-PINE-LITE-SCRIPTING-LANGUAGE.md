@@ -46,6 +46,18 @@ Non-goals (deliberate):
 - No Pine source compatibility — scripts that run on TradingView will need
   small edits. The syntax aims at the common subset with v5 naming.
 
+### Version and migration contract
+
+The current source-language version is **1**. `GET /scripts/capabilities`
+returns that version together with the machine-readable builtin catalog; its
+`catalog.schema_version` versions the catalog wire shape independently of
+script syntax. Additive builtin entries do not change either version. A
+breaking syntax or execution-semantics change requires a language-version
+bump, and a breaking catalog JSON change requires a catalog-schema bump.
+Pine-Lite does not auto-convert TradingView Pine: migrate by adapting the
+script to the documented v1 subset, then run `POST /scripts/vet` and preview
+it on representative candles before activating it.
+
 ## Crate and dependency rules
 
 New crate `crates/pine-lite` (leaf, like `analytics-core`):
@@ -65,9 +77,11 @@ fuel-metered in-process gateway preview is an open isolation decision; do not
 describe the current preview path as WASM-sandboxed.
 
 `ai-agent` must never depend on `pine-lite` (its rule stands): the AI emits
-*text*; the gateway calls `pine-lite` to vet it. `analytics-core` is the only
-source of indicator math, so `ta.*` is implemented **by calling** the existing
-functions, never by reimplementing them.
+*text*; the gateway calls `pine-lite` to vet it. `analytics-core` is the
+canonical shared source of indicator math. Compatible `ta.*` adapters call
+its implementations; formulas without a matching shared API remain in
+`pine-lite/src/ta.rs` where Pine-Lite's input or output semantics require a
+local adapter.
 
 ## The language
 
@@ -162,12 +176,16 @@ result: `ta.rsi(close, 14)[1]` is refused at vet time, so assign first
 **compile error**, not a runtime `na`.
 
 Multi-value calls are taken apart on the assignment line, one name per
-output: `macd_line, signal_line, hist = ta.macd(close, 12, 26, 9)`,
-`basis, upper, lower = ta.bb(close, 20, 2)`, `k, d = ta.stoch(close, 14)`.
+output: `macd_line, signal_line, hist = ta.macd(close)` (defaults 12/26/9),
+`basis, upper, lower = ta.bb(close)` (defaults 20/2),
+`k, d = ta.stoch(close, 14)`.
 A multi-output call read as a single value is a compile error naming the
 fix; `ta.stoch` alone still reads as its %K. Other multi-output calls are
-`ta.dmi(length)`, `ta.kc(length, mult)`, and
-`ta.supertrend(mult, atr_length)`.
+`ta.dmi(length=14)`, `ta.kc(length=20, mult=2)`, and
+`ta.supertrend(mult=3, atr_length=10)`. Named and positional arguments use
+the same catalog signatures. Rolling calculations return `na` until the
+requested lookback is available; they do not shrink the window to fit the
+loaded history.
 
 ### Cross-market reads (`sec=` / `request.*`)
 
@@ -245,31 +263,36 @@ and timeframe must be quoted literals, the pool caps at 8 keys per script.
 
 ## Builtin namespaces
 
-Call arity, static result kinds, and multi-output shapes are registered in
-`pine-lite::builtins::CATALOG` (schema version 2). The generator prompt and
-repair cheatsheet include a section rendered from that catalog, and the type
-checker reads the same metadata. Parameter names/defaults, host-data
-requirements, and runtime semantics are still documented and implemented
-separately; the registry does not yet replace those contracts.
+Call arity, static result kinds, multi-output shapes, parameter names/defaults,
+host-data requirements, and runtime support are registered in
+`pine-lite::builtins::CATALOG` (schema version 2) for the registered builtin
+surface. `GET /scripts/capabilities` exposes this catalog without a second
+hand-maintained copy; the generator prompt and repair cheatsheet render their
+call reference from the same source. The type checker and interpreter use the
+registered signatures. `metadata_complete` is the boundary of the stronger
+parameter/host-data contract: when it is false, consumers may rely on the
+registered call bounds and result shape, but must not infer omitted parameter
+or host-support details. The market/provider capability report remains
+`GET /capabilities`.
 
 | Namespace | Contents (v1) |
 | --- | --- |
-| `ta.` | sma, ema, rma (Wilder), wma, rsi, atr, tr, change, mom, roc, highest, lowest, UTC-day session VWAP, crossover/crossunder/cross; multi-value: macd → (line, signal, hist), bb → (basis, upper, lower), stoch → (k, d) |
+| `ta.` | Averages/oscillators: sma, ema, rma, wma, hma, tema, swma, alma, vwma, rsi, stoch, macd, cci, mfi, willr, ao. Windows/statistics: highest, lowest, highestbars, lowestbars, stdev, variance, deviation, median, mode, percentrank, percentile_linear_interpolation, percentile_nearest_rank, range, correlation, covariance, linreg/lsma. OHLCV: atr, tr, vwap, cmf, obv, pvt, nvi, wad, ad. Events: change, mom, roc, cum, crossover/crossunder/cross, rising/falling (current strictly above/below all values in prior lookback), barssince, valuewhen, pivothigh/pivotlow. Multi-value: macd → (line, signal, hist), bb → (basis, upper, lower), stoch → (k, d), dmi → (+DI, -DI, ADX), kc → (basis, upper, lower), supertrend → (line, direction). |
 | `math.` | abs, min, max, floor, ceil, round, pow, sqrt, log, exp, sign, avg, sum |
 | `input.` | int, float, bool, string, color — with `defval`, `minval`, `maxval`, `title`; values are host-supplied per chart |
 | `strategy.` | entry, exit, close, close_all, cancel — see Phase 7 |
 | `color.` | 17 named colors + hex |
 | free functions | `na`, `nz`, `fixnan`, `barstate.isconfirmed` (always true in this platform — the host only runs on closed bars), `bar_index`, `last_bar_index`, `time`, `time_close`, `open/high/low/close/volume`, `hl2/hlc3/ohlc4`, `syminfo.ticker` |
 
-`ta.sma`, `ta.ema`, `ta.rsi`, and `ta.atr` currently wrap their
-`analytics-core` counterparts; `ta.vwap` uses its per-bar UTC-session series
-API. Other formulas live in `pine-lite/src/ta.rs`, including functions with
-existing `analytics-core` equivalents (for example MACD, Bollinger bands,
-stochastic, CCI, MFI, Williams %R, OBV, and Supertrend). Their warm-up and
-edge-case semantics must be compared before consolidating them; do not assume
-cross-crate numerical parity from the function name alone. New shared
-indicator formulas should be added to `analytics-core` first, then exposed by
-Pine-Lite with the language's explicit `na`/series mapping.
+`ta.sma`, `ta.ema`, `ta.rsi`, `ta.atr`, `ta.cmf`, and `ta.ao` wrap
+`analytics-core`; `ta.vwap` uses its per-bar UTC-session series API. `ta.ao()`
+uses the standard 5/34 midpoint SMAs, and `ta.cmf(length)` requires OHLCV
+volume. Other formulas are implemented in `pine-lite/src/ta.rs`. Phase 3
+consolidated compatible implementations and added numeric fixtures; formulas
+with different output warm-up or input shape remain explicit Pine-Lite
+implementations. Same names alone do not guarantee parity. New shared formulas
+should be added to `analytics-core` first, then exposed by Pine-Lite with the
+language's explicit `na`/series mapping.
 
 ## Plot contract
 
@@ -388,7 +411,7 @@ backtest, or a bot.
 | 2 | Parser → AST with spans | Golden parse tests incl. error cases | **done** — parser and span/error cases in `crates/pine-lite/src/parse.rs`. |
 | 3 | Type checker + casting rules | Refusal tests for every casting rule | **done** — checker refusal and arity tests in `crates/pine-lite/src/typecheck.rs`; public vet path in `src/lib.rs`. |
 | 4 | Series interpreter: per-bar exec, history, na, var, inputs | Equivalence: hand-computed series fixtures | **done** for the implemented value model — runtime and fuel tests in `crates/pine-lite/src/interp.rs`, `tests/model_ergonomics.rs`, and `tests/strategy_execution.rs`. |
-| 5 | `ta.*` over analytics-core (incl. new macd/stoch/bb there) | Parity tests vs analytics-core units | **done** for the exposed, tested set — implementations and numeric fixtures in `crates/pine-lite/src/ta.rs`, including pinned SMA/EMA/RSI/ATR parity. This is not full Pine TA parity. |
+| 5 | Quantitative standard library: complete advertised `ta.*` surface | Numeric fixtures, complete catalog metadata, and AI-reference coverage | **done** for every advertised builtin — numeric tests in `crates/pine-lite/src/ta.rs` and `tests/ta_ohlcv_pack.rs`, completeness checks in `builtins.rs`, and prompt discovery coverage in `crates/api-gateway/src/pine_codegen.rs`. This is not the full TradingView Pine API. |
 | 6 | Plot statements → `ScriptPane` output contract | Positioning tests in chart-engine | **done** for current plot/drawing types — projection tests in `frontend/chart-engine/src/script.rs` and `scene.rs`; frontend painter in `frontend/app/app.js`. |
 | 7 | Strategy calls → backtester replay intents | Pine execution and `ScriptStrategy` replay agree on supported intents; runtime failures are observable | **done** for the adapter's supported intents — `crates/backtester/src/script_strategy.rs` and `crates/backtester/tests/script_parity.rs`; runtime failures now abort replay with diagnostics. |
 | 8 | Static analyser + sandbox front-end + fuel budgets | Adversarial tests mirror docs/08's list | **partial** — Pine-Lite static limits and fuel/call/array/object guards are in `crates/pine-lite/src/limits.rs` and `interp.rs`, with runaway-loop tests in `tests/model_ergonomics.rs`. The gateway still invokes native `pine_lite::run`; Pine-Lite is not in the Wasmtime guest. See the isolation decision in `docs/08-SANDBOX-WASM.md`. |

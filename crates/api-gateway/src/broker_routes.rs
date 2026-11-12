@@ -94,15 +94,15 @@ struct BrokerDescription {
 }
 
 const SUPPORTED: [BrokerDescription; 2] = [
-BrokerDescription {
-    venue: "binance",
-    name: "Binance",
-    keys_url: "https://www.binance.com/en/my/settings/api-management",
-    guidance:
-        "Create an API key with **Enable Reading** and **Enable Spot & Margin Trading** only. \
+    BrokerDescription {
+        venue: "binance",
+        name: "Binance",
+        keys_url: "https://www.binance.com/en/my/settings/api-management",
+        guidance:
+            "Create an API key with **Enable Reading** and **Enable Spot & Margin Trading** only. \
                Leave **Enable Withdrawals** off -- this platform places orders and never moves \
                funds, and a key that can withdraw is refused here.",
-},
+    },
     BrokerDescription {
         venue: "deriv",
         name: "Deriv",
@@ -450,8 +450,12 @@ async fn check_and_record(
                     can_withdraw: false,
                     can_deposit: false,
                     account_type: Some(
-                        if auth.is_virtual == Some(1.0) { "virtual" } else { "real" }
-                            .to_string(),
+                        if auth.is_virtual == Some(1.0) {
+                            "virtual"
+                        } else {
+                            "real"
+                        }
+                        .to_string(),
                     ),
                     permissions: auth.scopes,
                     account_id: Some(auth.loginid),
@@ -613,7 +617,11 @@ fn checked_label(raw: &str) -> Result<String, ApiError> {
 /// Both problems are reported together: a user fixing one field and being told
 /// about the other on the next attempt is the round-trip-per-requirement shape
 /// the live gate already avoids.
-fn checked_credentials(venue: &str, api_key: &str, api_secret: &str) -> Result<(String, String), ApiError> {
+fn checked_credentials(
+    venue: &str,
+    api_key: &str,
+    api_secret: &str,
+) -> Result<(String, String), ApiError> {
     let mut problems: Vec<String> = Vec::new();
     let key = api_key.trim();
     let secret = api_secret.trim();
@@ -793,7 +801,8 @@ mod tests {
     fn credentials_are_not_echoed_back_in_a_validation_error() {
         // The failure this prevents: `api_key` pasted into the secret box, and
         // the validation message repeating it into a log.
-        let error = checked_credentials("binance", "", "SECRET-should-not-appear").expect_err("must refuse");
+        let error = checked_credentials("binance", "", "SECRET-should-not-appear")
+            .expect_err("must refuse");
         assert_eq!(error.code(), "BROKER_CREDENTIALS_INVALID");
         assert!(
             !error.message().contains("SECRET-should-not-appear"),
@@ -814,7 +823,8 @@ mod tests {
     fn both_credential_problems_are_reported_at_once() {
         let error = checked_credentials("binance", "", "").expect_err("must refuse");
         // Deriv needs no secret: the token alone validates.
-        let (key, secret) = checked_credentials("deriv", "the-token", "").expect("deriv allows an empty secret");
+        let (key, secret) =
+            checked_credentials("deriv", "the-token", "").expect("deriv allows an empty secret");
         assert_eq!(key, "the-token");
         assert!(secret.is_empty());
         let details = error.details().expect("a detail");

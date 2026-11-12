@@ -1047,7 +1047,10 @@ mod tests {
             .resolve(TOTAL);
         // Capped at the margin now: resolve() lets the window hang a
         // quarter-width past the newest bar, and no further.
-        assert_eq!(forward.end(), TOTAL + (100.0 * RIGHT_MARGIN_FRACTION) as usize);
+        assert_eq!(
+            forward.end(),
+            TOTAL + (100.0 * RIGHT_MARGIN_FRACTION) as usize
+        );
 
         let backward = viewport
             .apply(

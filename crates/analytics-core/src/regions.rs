@@ -350,7 +350,8 @@ fn zone_for(
         }
     }
 
-    let (mitigated, died_at) = mitigation_and_death(candles, break_index, side, price_low, price_high);
+    let (mitigated, died_at) =
+        mitigation_and_death(candles, break_index, side, price_low, price_high);
     Some(Region {
         side,
         name: kind.name().to_owned(),

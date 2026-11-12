@@ -14,6 +14,7 @@ analytics-core = { workspace = true }
 strategy-dsl = { workspace = true, features = ["yaml"] }
 strategy-runtime = { workspace = true }
 backtester = { workspace = true }
+pine-lite = { workspace = true }
 db = { workspace = true }
 
 anyhow = { workspace = true }

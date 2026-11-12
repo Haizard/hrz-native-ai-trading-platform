@@ -43,7 +43,8 @@ pub fn tpo_profile(candles: &[Candle], bucket_size: f64) -> TpoProfile {
             single_prints: Vec::new(),
         };
     }
-    let mut counts: std::collections::BTreeMap<i64, (f64, usize)> = std::collections::BTreeMap::new();
+    let mut counts: std::collections::BTreeMap<i64, (f64, usize)> =
+        std::collections::BTreeMap::new();
     for c in candles {
         // Every cell the bar's range covers gets one time unit. The cell
         // count is bounded by the window: a 500-bar window with a 1%
@@ -57,7 +58,10 @@ pub fn tpo_profile(candles: &[Candle], bucket_size: f64) -> TpoProfile {
     }
     let cells: Vec<TpoCell> = counts
         .values()
-        .map(|(price, count)| TpoCell { price: *price, count: *count })
+        .map(|(price, count)| TpoCell {
+            price: *price,
+            count: *count,
+        })
         .collect();
     if cells.is_empty() {
         return TpoProfile {
@@ -68,7 +72,11 @@ pub fn tpo_profile(candles: &[Candle], bucket_size: f64) -> TpoProfile {
             single_prints: Vec::new(),
         };
     }
-    let poc = cells.iter().max_by_key(|c| c.count).map(|c| c.price).unwrap_or(0.0);
+    let poc = cells
+        .iter()
+        .max_by_key(|c| c.count)
+        .map(|c| c.price)
+        .unwrap_or(0.0);
     // The value area: 70% of total time, expanded from the POC outward.
     let total: usize = cells.iter().map(|c| c.count).sum();
     let target = (total as f64 * 0.7).ceil() as usize;
@@ -76,7 +84,8 @@ pub fn tpo_profile(candles: &[Candle], bucket_size: f64) -> TpoProfile {
     let (mut lo, mut hi) = (poc_idx, poc_idx);
     let mut covered = cells[poc_idx].count;
     while covered < target && (lo > 0 || hi + 1 < cells.len()) {
-        let expand_lo = lo > 0 && (hi + 1 >= cells.len() || cells[lo - 1].count >= cells[hi + 1].count);
+        let expand_lo =
+            lo > 0 && (hi + 1 >= cells.len() || cells[lo - 1].count >= cells[hi + 1].count);
         if expand_lo {
             lo -= 1;
             covered += cells[lo].count;
@@ -85,7 +94,11 @@ pub fn tpo_profile(candles: &[Candle], bucket_size: f64) -> TpoProfile {
             covered += cells[hi].count;
         }
     }
-    let single_prints: Vec<f64> = cells.iter().filter(|c| c.count == 1).map(|c| c.price).collect();
+    let single_prints: Vec<f64> = cells
+        .iter()
+        .filter(|c| c.count == 1)
+        .map(|c| c.price)
+        .collect();
     TpoProfile {
         val: cells[lo].price,
         vah: cells[hi].price,
@@ -101,8 +114,14 @@ fn initial_balance(candles: &[Candle], ib_bars: usize) -> Option<(f64, f64)> {
     if candles.len() < ib_bars + 1 {
         return None;
     }
-    let hi = candles[..ib_bars].iter().map(|c| c.high).fold(f64::MIN, f64::max);
-    let lo = candles[..ib_bars].iter().map(|c| c.low).fold(f64::MAX, f64::min);
+    let hi = candles[..ib_bars]
+        .iter()
+        .map(|c| c.high)
+        .fold(f64::MIN, f64::max);
+    let lo = candles[..ib_bars]
+        .iter()
+        .map(|c| c.low)
+        .fold(f64::MAX, f64::min);
     Some((lo, hi))
 }
 
@@ -114,7 +133,12 @@ pub fn detect_auction(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
     }
     let n = candles.len() - 1;
     let last = &candles[n];
-    let mut push = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>, formed: Option<i64>| {
+    let mut push = |kind: EventKind,
+                    side: Option<Side>,
+                    price: f64,
+                    low: Option<f64>,
+                    high: Option<f64>,
+                    formed: Option<i64>| {
         out.push(MarketEvent {
             kind,
             symbol: symbol.to_string(),
@@ -136,17 +160,45 @@ pub fn detect_auction(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
     if let Some((ib_lo, ib_hi)) = initial_balance(candles, 4) {
         let prev = &candles[n - 1];
         if prev.close <= ib_hi && last.close > ib_hi {
-            push(EventKind::InitialBalanceBreakout, Some(Side::Buy), ib_hi, Some(ib_lo), Some(ib_hi), Some(candles[0].open_time));
+            push(
+                EventKind::InitialBalanceBreakout,
+                Some(Side::Buy),
+                ib_hi,
+                Some(ib_lo),
+                Some(ib_hi),
+                Some(candles[0].open_time),
+            );
         } else if prev.close >= ib_lo && last.close < ib_lo {
-            push(EventKind::InitialBalanceBreakout, Some(Side::Sell), ib_lo, Some(ib_lo), Some(ib_hi), Some(candles[0].open_time));
+            push(
+                EventKind::InitialBalanceBreakout,
+                Some(Side::Sell),
+                ib_lo,
+                Some(ib_lo),
+                Some(ib_hi),
+                Some(candles[0].open_time),
+            );
         }
         // The reversal: traded beyond and closed back in, on the tail.
         let traded_above = last.high > ib_hi || prev.high > ib_hi;
         let traded_below = last.low < ib_lo || prev.low < ib_lo;
         if traded_above && last.close < ib_hi && prev.close <= ib_hi && prev.high <= ib_hi {
-            push(EventKind::InitialBalanceReversal, Some(Side::Sell), ib_hi, Some(ib_lo), Some(ib_hi), Some(candles[0].open_time));
+            push(
+                EventKind::InitialBalanceReversal,
+                Some(Side::Sell),
+                ib_hi,
+                Some(ib_lo),
+                Some(ib_hi),
+                Some(candles[0].open_time),
+            );
         } else if traded_below && last.close > ib_lo && prev.close >= ib_lo && prev.low >= ib_lo {
-            push(EventKind::InitialBalanceReversal, Some(Side::Buy), ib_lo, Some(ib_lo), Some(ib_hi), Some(candles[0].open_time));
+            push(
+                EventKind::InitialBalanceReversal,
+                Some(Side::Buy),
+                ib_lo,
+                Some(ib_lo),
+                Some(ib_hi),
+                Some(candles[0].open_time),
+            );
         }
     }
 
@@ -158,9 +210,23 @@ pub fn detect_auction(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
         // Acceptance: TWO consecutive closes beyond the value area's edge.
         let prev = &candles[n - 1];
         if prev.close > profile.vah && last.close > profile.vah {
-            push(EventKind::AcceptanceEvent, Some(Side::Buy), profile.vah, Some(profile.val), Some(profile.vah), None);
+            push(
+                EventKind::AcceptanceEvent,
+                Some(Side::Buy),
+                profile.vah,
+                Some(profile.val),
+                Some(profile.vah),
+                None,
+            );
         } else if prev.close < profile.val && last.close < profile.val {
-            push(EventKind::AcceptanceEvent, Some(Side::Sell), profile.val, Some(profile.val), Some(profile.vah), None);
+            push(
+                EventKind::AcceptanceEvent,
+                Some(Side::Sell),
+                profile.val,
+                Some(profile.val),
+                Some(profile.vah),
+                None,
+            );
         }
         // The newest single print still UNFILLED below/above price: the
         // unfinished auction the market owes a revisit.
@@ -175,10 +241,24 @@ pub fn detect_auction(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
             .filter(|p| **p > last.high)
             .min_by(|a, b| a.total_cmp(b));
         if let Some(p) = unvisited_below {
-            push(EventKind::SinglePrint, Some(Side::Buy), *p, Some(*p), Some(*p + bucket), None);
+            push(
+                EventKind::SinglePrint,
+                Some(Side::Buy),
+                *p,
+                Some(*p),
+                Some(*p + bucket),
+                None,
+            );
         }
         if let Some(p) = unvisited_above {
-            push(EventKind::SinglePrint, Some(Side::Sell), *p, Some(*p - bucket), Some(*p), None);
+            push(
+                EventKind::SinglePrint,
+                Some(Side::Sell),
+                *p,
+                Some(*p - bucket),
+                Some(*p),
+                None,
+            );
         }
     }
 
@@ -187,15 +267,30 @@ pub fn detect_auction(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
     if !profile.cells.is_empty() && profile.cells.len() > 4 {
         let edge_hi = profile.cells[profile.cells.len() - 1];
         let edge_lo = profile.cells[0];
-        let mean_count = profile.cells.iter().map(|c| c.count).sum::<usize>() as f64 / profile.cells.len() as f64;
+        let mean_count = profile.cells.iter().map(|c| c.count).sum::<usize>() as f64
+            / profile.cells.len() as f64;
         let heavy = |c: &TpoCell| c.count as f64 > mean_count * 1.5;
         // The newest swing high sits in the heavy edge cell and the close
         // already left it below: the poor high.
         if heavy(&edge_hi) && last.close < edge_hi.price - bucket {
-            push(EventKind::PoorExtreme, Some(Side::Buy), edge_hi.price, Some(edge_hi.price - bucket), Some(edge_hi.price), None);
+            push(
+                EventKind::PoorExtreme,
+                Some(Side::Buy),
+                edge_hi.price,
+                Some(edge_hi.price - bucket),
+                Some(edge_hi.price),
+                None,
+            );
         }
         if heavy(&edge_lo) && last.close > edge_lo.price + bucket {
-            push(EventKind::PoorExtreme, Some(Side::Sell), edge_lo.price, Some(edge_lo.price), Some(edge_lo.price + bucket), None);
+            push(
+                EventKind::PoorExtreme,
+                Some(Side::Sell),
+                edge_lo.price,
+                Some(edge_lo.price),
+                Some(edge_lo.price + bucket),
+                None,
+            );
         }
     }
 
@@ -235,17 +330,27 @@ mod tests {
         let p = tpo_profile(&candles, 0.2);
         assert_eq!(p.poc.floor(), 100.0, "time concentrates at 100");
         // The 101 cell got exactly one bar: a single print.
-        assert!(p.single_prints.iter().any(|price| *price > 100.8), "the one-bar cell is a single print");
-        assert!(p.val <= p.poc && p.poc <= p.vah, "the value area brackets the POC");
+        assert!(
+            p.single_prints.iter().any(|price| *price > 100.8),
+            "the one-bar cell is a single print"
+        );
+        assert!(
+            p.val <= p.poc && p.poc <= p.vah,
+            "the value area brackets the POC"
+        );
     }
 
     #[test]
     fn the_ib_breakout_fires_beyond_the_first_hours_range() {
         // IB (bars 0..3): 100..101. Then a close at 102.
-        let mut candles: Vec<Candle> = (0..30).map(|i| k(i as i64 * 900_000_000_000, 100.4, 100.9, 100.1, 100.5)).collect();
+        let mut candles: Vec<Candle> = (0..30)
+            .map(|i| k(i as i64 * 900_000_000_000, 100.4, 100.9, 100.1, 100.5))
+            .collect();
         candles.push(k(30 * 900_000_000_000, 100.6, 102.2, 100.5, 102.0));
         let events = detect_auction(&candles, "T");
-        let ib = events.iter().find(|e| e.kind == EventKind::InitialBalanceBreakout);
+        let ib = events
+            .iter()
+            .find(|e| e.kind == EventKind::InitialBalanceBreakout);
         assert!(ib.is_some(), "closing beyond the first hour fires");
         assert_eq!(ib.expect("checked").side, Some(Side::Buy));
     }
@@ -254,12 +359,17 @@ mod tests {
     fn acceptance_needs_two_closes_beyond_value() {
         // A profile concentrated at 100 (lots of time), then two closes at
         // the top -- one is a probe, two is acceptance.
-        let mut candles: Vec<Candle> = (0..40).map(|i| k(i as i64 * 900_000_000_000, 100.0, 100.6, 99.6, 100.1)).collect();
+        let mut candles: Vec<Candle> = (0..40)
+            .map(|i| k(i as i64 * 900_000_000_000, 100.0, 100.6, 99.6, 100.1))
+            .collect();
         candles.push(k(40 * 900_000_000_000, 100.1, 102.0, 100.0, 101.8));
         candles.push(k(41 * 900_000_000_000, 101.8, 102.4, 101.6, 102.1));
         let events = detect_auction(&candles, "T");
         let acc = events.iter().find(|e| e.kind == EventKind::AcceptanceEvent);
-        assert!(acc.is_some(), "two closes above the value area is acceptance");
+        assert!(
+            acc.is_some(),
+            "two closes above the value area is acceptance"
+        );
         assert_eq!(acc.expect("checked").side, Some(Side::Buy));
     }
 }

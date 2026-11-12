@@ -51,7 +51,12 @@ struct FredObservation {
 
 /// Fetch the newest `limit` observations of a series, newest-first.
 #[cfg(feature = "net")]
-pub async fn fetch_fred(client: &reqwest::Client, api_key: &str, series: &str, limit: usize) -> Result<Vec<FredPoint>, String> {
+pub async fn fetch_fred(
+    client: &reqwest::Client,
+    api_key: &str,
+    series: &str,
+    limit: usize,
+) -> Result<Vec<FredPoint>, String> {
     let url = format!(
         "https://api.stlouisfed.org/fred/series/observations?series_id={series}&api_key={api_key}&file_type=json&sort_order=desc&limit={limit}"
     );
@@ -68,7 +73,10 @@ pub async fn fetch_fred(client: &reqwest::Client, api_key: &str, series: &str, l
         .into_iter()
         .filter_map(|o| {
             let value = o.value.parse().ok()?;
-            Some(FredPoint { date: o.date, value })
+            Some(FredPoint {
+                date: o.date,
+                value,
+            })
         })
         .collect();
     points.sort_by(|a, b| b.date.cmp(&a.date));
@@ -175,7 +183,10 @@ mod tests {
     use super::*;
 
     fn p(date: &str, value: f64) -> FredPoint {
-        FredPoint { date: date.to_string(), value }
+        FredPoint {
+            date: date.to_string(),
+            value,
+        }
     }
 
     #[test]
@@ -193,7 +204,11 @@ mod tests {
         let ctx = macro_context(&funds_tail, &dgs10, &dgs2, &dfii10, &dollar).expect("context");
         assert!((ctx.curve - (-0.6)).abs() < 1e-9, "the curve inverts");
         assert!(ctx.funds_direction > 1.4, "the hiking direction");
-        assert!(ctx.composite > 0.3, "the mix reads tight: {}", ctx.composite);
+        assert!(
+            ctx.composite > 0.3,
+            "the mix reads tight: {}",
+            ctx.composite
+        );
         assert_eq!(context_label(0.5), "tight and tightening");
         assert_eq!(context_label(-0.5), "loose and loosening");
     }

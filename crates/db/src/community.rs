@@ -471,12 +471,12 @@ pub async fn get_community_install(
 /// # Errors
 /// Returns [`DbError::Pool`] when the count cannot be read.
 pub async fn count_author_indicators(pool: &PgPool, user_id: Uuid) -> Result<i64, DbError> {
-    Ok(sqlx::query_scalar(
-        "SELECT COUNT(*) FROM community_indicators WHERE author_user_id = $1",
+    Ok(
+        sqlx::query_scalar("SELECT COUNT(*) FROM community_indicators WHERE author_user_id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?,
     )
-    .bind(user_id)
-    .fetch_one(pool)
-    .await?)
 }
 
 /// How many items this user has installed.
@@ -484,12 +484,12 @@ pub async fn count_author_indicators(pool: &PgPool, user_id: Uuid) -> Result<i64
 /// # Errors
 /// Returns [`DbError::Pool`] when the count cannot be read.
 pub async fn count_community_installs(pool: &PgPool, user_id: Uuid) -> Result<i64, DbError> {
-    Ok(sqlx::query_scalar(
-        "SELECT COUNT(*) FROM community_indicator_installs WHERE user_id = $1",
+    Ok(
+        sqlx::query_scalar("SELECT COUNT(*) FROM community_indicator_installs WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?,
     )
-    .bind(user_id)
-    .fetch_one(pool)
-    .await?)
 }
 
 /// Insert a catalog row and its first version atomically.

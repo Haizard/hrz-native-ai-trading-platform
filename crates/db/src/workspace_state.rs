@@ -7,16 +7,13 @@ use uuid::Uuid;
 use crate::error::DbError;
 
 /// The caller's stored workspace snapshot, if one has been saved.
-pub async fn get_workspace_state(
-    pool: &PgPool,
-    user_id: Uuid,
-) -> Result<Option<Value>, DbError> {
-    Ok(sqlx::query_scalar(
-        "SELECT state FROM workspace_state WHERE user_id = $1",
+pub async fn get_workspace_state(pool: &PgPool, user_id: Uuid) -> Result<Option<Value>, DbError> {
+    Ok(
+        sqlx::query_scalar("SELECT state FROM workspace_state WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?,
     )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await?)
 }
 
 /// Replace the caller's snapshot and return its `updated_at` in nanoseconds.

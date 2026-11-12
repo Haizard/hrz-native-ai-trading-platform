@@ -66,9 +66,17 @@ pub fn surprise(actual: f64, forecast: f64, trailing_changes: &[f64]) -> Surpris
     let raw = actual - forecast;
     let sigma = if trailing_changes.len() >= 4 {
         let mean = trailing_changes.iter().sum::<f64>() / trailing_changes.len() as f64;
-        let var = trailing_changes.iter().map(|c| (c - mean).powi(2)).sum::<f64>() / trailing_changes.len() as f64;
+        let var = trailing_changes
+            .iter()
+            .map(|c| (c - mean).powi(2))
+            .sum::<f64>()
+            / trailing_changes.len() as f64;
         let sd = var.sqrt();
-        if sd > 0.0 { raw / sd } else { 0.0 }
+        if sd > 0.0 {
+            raw / sd
+        } else {
+            0.0
+        }
     } else {
         0.0
     };
@@ -240,7 +248,12 @@ pub fn point_value(p: &BlsPoint) -> Option<f64> {
 /// Fetch the newest `count` points of a series from BLS v2. The key rides
 /// the request; failures come back as text the caller can surface.
 #[cfg(feature = "net")]
-pub async fn fetch_series(client: &reqwest::Client, api_key: &str, series: &str, count: usize) -> Result<Vec<BlsPoint>, String> {
+pub async fn fetch_series(
+    client: &reqwest::Client,
+    api_key: &str,
+    series: &str,
+    count: usize,
+) -> Result<Vec<BlsPoint>, String> {
     // `latest: true` returns exactly ONE point -- the history the engine
     // needs comes from the year range (BLS v2's own rule).
     let this_year = std::time::SystemTime::now()
@@ -297,7 +310,11 @@ mod tests {
         let trailing = [90.0, 110.0, 95.0, 105.0, 100.0, 92.0, 108.0];
         let s = surprise(160.0, 100.0, &trailing);
         assert!(s.raw == 60.0);
-        assert!(s.sigma > 3.0, "a 60k surprise on a tight trailing reads extreme: {}", s.sigma);
+        assert!(
+            s.sigma > 3.0,
+            "a 60k surprise on a tight trailing reads extreme: {}",
+            s.sigma
+        );
         // A flat trailing: sigma 0, not a made-up number.
         let flat = [100.0, 100.0, 100.0, 100.0];
         assert_eq!(surprise(160.0, 100.0, &flat).sigma, 0.0);
@@ -318,7 +335,10 @@ mod tests {
             revision: Some(-70.0),
             retrieved_ns: 0,
         };
-        let s = Surprise { raw: 100.0, sigma: 2.0 };
+        let s = Surprise {
+            raw: 100.0,
+            sigma: 2.0,
+        };
         // Strong report, but the -70k revision subtracts its own weight.
         let bias = macro_bias_with_context(&release, &s, Some(4.2), Some(0.3));
         assert!(bias > 1.0, "the composite reads USD-supportive: {bias}");
@@ -337,6 +357,10 @@ mod tests {
         assert!(next > now, "the next release is in the future");
         // It must be 13:30 UTC on its day.
         let day_part = next % (3_600_000_000_000 * 24);
-        assert_eq!(day_part, 13 * 3_600_000_000_000 + 30 * 60_000_000_000, "08:30 ET = 13:30 UTC");
+        assert_eq!(
+            day_part,
+            13 * 3_600_000_000_000 + 30 * 60_000_000_000,
+            "08:30 ET = 13:30 UTC"
+        );
     }
 }

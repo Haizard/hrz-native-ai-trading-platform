@@ -27,7 +27,12 @@ fn use_repo_frontend() {
 async fn get(app: &axum::Router, uri: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
     let response = app
         .clone()
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).expect("request"))
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("request"),
+        )
         .await
         .expect("the router must answer");
     let status = response.status();

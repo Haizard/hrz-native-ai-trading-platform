@@ -3,8 +3,8 @@
 //! be refused, and each refusal burned one of the generator's five attempts.
 //! These tests pin the tolerances so the gap stays closed.
 
-use pine_lite::{vet, Inputs};
 use analytics_core::types::{Candle, Timeframe};
+use pine_lite::{vet, Inputs};
 
 fn candles(n: usize) -> Vec<Candle> {
     (0..n)
@@ -183,7 +183,11 @@ fn while_nesting_beyond_four_is_refused() {
         "plot(close)\n",
     );
     let errs = vet(src).expect_err("nesting cap");
-    assert!(errs.iter().any(|e| e.message.contains("nesting deeper than 4")), "{errs:?}");
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("nesting deeper than 4")),
+        "{errs:?}"
+    );
 }
 
 #[test]
@@ -219,7 +223,10 @@ fn a_default_may_read_the_caller_series_history() {
     );
     let (_, parsed) = vet(src).expect("the history default vets");
     let output = run_ok(&parsed);
-    assert_eq!(output.plots[0].values[5], 102.0, "close[1] at bar 5 == close(bar 4)");
+    assert_eq!(
+        output.plots[0].values[5], 102.0,
+        "close[1] at bar 5 == close(bar 4)"
+    );
 }
 
 #[test]
@@ -231,7 +238,11 @@ fn a_required_parameter_after_a_default_is_refused() {
         "plot(f(1.0, 2.0))\n",
     );
     let errs = vet(src).expect_err("required-after-optional");
-    assert!(errs.iter().any(|e| e.message.contains("defaults must be trailing")), "{errs:?}");
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("defaults must be trailing")),
+        "{errs:?}"
+    );
 }
 
 #[test]

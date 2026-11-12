@@ -44,27 +44,111 @@ pub struct DerivInstrument {
 /// The Deriv instruments phase 2 serves. Synthetics first (the user demand),
 /// the liquid majors' CFDs beside them.
 pub const DERIV_INSTRUMENTS: &[DerivInstrument] = &[
-    DerivInstrument { symbol: "Volatility 10", code: "R_10", product: "synthetic" },
-    DerivInstrument { symbol: "Volatility 25", code: "R_25", product: "synthetic" },
-    DerivInstrument { symbol: "Volatility 50", code: "R_50", product: "synthetic" },
-    DerivInstrument { symbol: "Volatility 75", code: "R_75", product: "synthetic" },
-    DerivInstrument { symbol: "Volatility 100", code: "R_100", product: "synthetic" },
-    DerivInstrument { symbol: "Volatility 10 (1s)", code: "1HZ10V", product: "synthetic" },
-    DerivInstrument { symbol: "Volatility 25 (1s)", code: "1HZ25V", product: "synthetic" },
-    DerivInstrument { symbol: "Volatility 50 (1s)", code: "1HZ50V", product: "synthetic" },
-    DerivInstrument { symbol: "Volatility 75 (1s)", code: "1HZ75V", product: "synthetic" },
-    DerivInstrument { symbol: "Volatility 100 (1s)", code: "1HZ100V", product: "synthetic" },
-    DerivInstrument { symbol: "Boom 500", code: "BOOM500", product: "synthetic" },
-    DerivInstrument { symbol: "Boom 1000", code: "BOOM1000", product: "synthetic" },
-    DerivInstrument { symbol: "Crash 500", code: "CRASH500", product: "synthetic" },
-    DerivInstrument { symbol: "Crash 1000", code: "CRASH1000", product: "synthetic" },
-    DerivInstrument { symbol: "Step Index", code: "stpRNG", product: "synthetic" },
-    DerivInstrument { symbol: "Jump 75", code: "JD75", product: "synthetic" },
-    DerivInstrument { symbol: "Jump 100", code: "JD100", product: "synthetic" },
-    DerivInstrument { symbol: "EURUSD", code: "frxEURUSD", product: "forex-cfd" },
-    DerivInstrument { symbol: "GBPUSD", code: "frxGBPUSD", product: "forex-cfd" },
-    DerivInstrument { symbol: "USDJPY", code: "frxUSDJPY", product: "forex-cfd" },
-    DerivInstrument { symbol: "Gold", code: "frxXAUUSD", product: "forex-cfd" },
+    DerivInstrument {
+        symbol: "Volatility 10",
+        code: "R_10",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Volatility 25",
+        code: "R_25",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Volatility 50",
+        code: "R_50",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Volatility 75",
+        code: "R_75",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Volatility 100",
+        code: "R_100",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Volatility 10 (1s)",
+        code: "1HZ10V",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Volatility 25 (1s)",
+        code: "1HZ25V",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Volatility 50 (1s)",
+        code: "1HZ50V",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Volatility 75 (1s)",
+        code: "1HZ75V",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Volatility 100 (1s)",
+        code: "1HZ100V",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Boom 500",
+        code: "BOOM500",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Boom 1000",
+        code: "BOOM1000",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Crash 500",
+        code: "CRASH500",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Crash 1000",
+        code: "CRASH1000",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Step Index",
+        code: "stpRNG",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Jump 75",
+        code: "JD75",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "Jump 100",
+        code: "JD100",
+        product: "synthetic",
+    },
+    DerivInstrument {
+        symbol: "EURUSD",
+        code: "frxEURUSD",
+        product: "forex-cfd",
+    },
+    DerivInstrument {
+        symbol: "GBPUSD",
+        code: "frxGBPUSD",
+        product: "forex-cfd",
+    },
+    DerivInstrument {
+        symbol: "USDJPY",
+        code: "frxUSDJPY",
+        product: "forex-cfd",
+    },
+    DerivInstrument {
+        symbol: "Gold",
+        code: "frxXAUUSD",
+        product: "forex-cfd",
+    },
 ];
 
 /// Our display symbol -> the Deriv code, when served.
@@ -204,7 +288,10 @@ impl DerivClient {
     /// With an explicit endpoint (tests).
     #[must_use]
     pub fn new(app_id: impl Into<String>, ws_url: impl Into<String>) -> Self {
-        Self { app_id: app_id.into(), ws_url: ws_url.into() }
+        Self {
+            app_id: app_id.into(),
+            ws_url: ws_url.into(),
+        }
     }
 
     /// Open a Deriv WebSocket (plain tokio-tungstenite: the current public
@@ -261,12 +348,16 @@ impl DerivClient {
         let (fetch_tf, ratio) = Self::fetch_plan(tf).ok_or_else(|| {
             MarketDataError::Normalization(format!("deriv has no granularity for {tf}"))
         })?;
-        let granularity = granularity_for(fetch_tf).expect("the plan only names direct granularities");
+        let granularity =
+            granularity_for(fetch_tf).expect("the plan only names direct granularities");
         let mut socket = self.connect().await?;
         // Resampling fetches `ratio` bars per output bar, padded for the
         // partial group at the window's edge.
         let fetch_count = if ratio > 1 {
-            count.saturating_mul(ratio).saturating_add(ratio).clamp(1, 5000)
+            count
+                .saturating_mul(ratio)
+                .saturating_add(ratio)
+                .clamp(1, 5000)
         } else {
             count.clamp(1, 5000)
         };
@@ -295,9 +386,8 @@ impl DerivClient {
                     "deriv closed the socket before answering".to_string(),
                 ));
             };
-            let frame = frame.map_err(|e| {
-                MarketDataError::Normalization(format!("deriv socket error: {e}"))
-            })?;
+            let frame = frame
+                .map_err(|e| MarketDataError::Normalization(format!("deriv socket error: {e}")))?;
             let Message::Text(text) = frame else { continue };
             let parsed: DerivResponse = serde_json::from_str(&text).map_err(|e| {
                 MarketDataError::Normalization(format!("deriv reply did not parse: {e}"))
@@ -368,9 +458,8 @@ impl DerivClient {
                     "deriv closed the socket before answering quote history".into(),
                 ));
             };
-            let frame = frame.map_err(|e| {
-                MarketDataError::Normalization(format!("deriv socket error: {e}"))
-            })?;
+            let frame = frame
+                .map_err(|e| MarketDataError::Normalization(format!("deriv socket error: {e}")))?;
             let Message::Text(text) = frame else { continue };
             let parsed: DerivResponse = serde_json::from_str(&text).map_err(|e| {
                 MarketDataError::Normalization(format!("deriv quote reply did not parse: {e}"))
@@ -485,9 +574,8 @@ impl DerivClient {
                     "deriv closed the socket before the tick batch".to_string(),
                 ));
             };
-            let frame = frame.map_err(|e| {
-                MarketDataError::Normalization(format!("deriv socket error: {e}"))
-            })?;
+            let frame = frame
+                .map_err(|e| MarketDataError::Normalization(format!("deriv socket error: {e}")))?;
             let Message::Text(text) = frame else { continue };
             let parsed: DerivStreamMsg = serde_json::from_str(&text).map_err(|e| {
                 MarketDataError::Normalization(format!("deriv reply did not parse: {e}"))
@@ -507,7 +595,11 @@ impl DerivClient {
                     .times
                     .into_iter()
                     .zip(h.prices)
-                    .map(|(epoch, quote)| DerivTick { quote, epoch, symbol: None })
+                    .map(|(epoch, quote)| DerivTick {
+                        quote,
+                        epoch,
+                        symbol: None,
+                    })
                     .collect::<Vec<_>>();
             }
         };
@@ -533,9 +625,8 @@ impl DerivClient {
                     "deriv closed the tick stream".to_string(),
                 ));
             };
-            let frame = frame.map_err(|e| {
-                MarketDataError::Normalization(format!("deriv socket error: {e}"))
-            })?;
+            let frame = frame
+                .map_err(|e| MarketDataError::Normalization(format!("deriv socket error: {e}")))?;
             let Message::Text(text) = frame else { continue };
             let parsed: DerivStreamMsg = serde_json::from_str(&text).map_err(|e| {
                 MarketDataError::Normalization(format!("deriv reply did not parse: {e}"))
@@ -576,9 +667,8 @@ impl DerivClient {
                     "deriv closed the socket before answering".to_string(),
                 ));
             };
-            let frame = frame.map_err(|e| {
-                MarketDataError::Normalization(format!("deriv socket error: {e}"))
-            })?;
+            let frame = frame
+                .map_err(|e| MarketDataError::Normalization(format!("deriv socket error: {e}")))?;
             let Message::Text(text) = frame else { continue };
             let parsed: DerivAuthResponse = serde_json::from_str(&text).map_err(|e| {
                 MarketDataError::Normalization(format!("deriv reply did not parse: {e}"))
@@ -675,8 +765,14 @@ mod tests {
             assert!(granularity_for(tf).is_none(), "{tf:?}");
             assert!(DerivClient::fetch_plan(tf).is_some(), "{tf:?}");
         }
-        assert_eq!(DerivClient::fetch_plan(Timeframe::H6), Some((Timeframe::H2, 3)));
-        assert_eq!(DerivClient::fetch_plan(Timeframe::W1), Some((Timeframe::D1, 7)));
+        assert_eq!(
+            DerivClient::fetch_plan(Timeframe::H6),
+            Some((Timeframe::H2, 3))
+        );
+        assert_eq!(
+            DerivClient::fetch_plan(Timeframe::W1),
+            Some((Timeframe::D1, 7))
+        );
     }
 
     #[test]
@@ -694,12 +790,19 @@ mod tests {
             r#"{"error":{"code":"InvalidSymbol","message":"Symbol not active"}}"#,
         )
         .expect("parses");
-        assert_eq!(err.error.expect("error").code.as_deref(), Some("InvalidSymbol"));
+        assert_eq!(
+            err.error.expect("error").code.as_deref(),
+            Some("InvalidSymbol")
+        );
     }
 
     #[test]
     fn a_tick_becomes_a_zero_volume_builder_trade() {
-        let tick = DerivTick { quote: 101.25, epoch: 1_700_000_061, symbol: None };
+        let tick = DerivTick {
+            quote: 101.25,
+            epoch: 1_700_000_061,
+            symbol: None,
+        };
         let trade = tick_as_builder_trade(&tick, "Volatility 75");
         assert_eq!(trade.symbol, "Volatility 75");
         assert!((trade.price - 101.25).abs() < 1e-9);
@@ -723,10 +826,8 @@ mod tests {
     #[ignore = "live stream smoke: run explicitly with --include-ignored"]
     async fn live_ticks_stream_for_a_few_seconds() {
         let client = DerivClient::from_env();
-        let (mut socket, batch, _early) = client
-            .subscribe_ticks("R_75", 10)
-            .await
-            .expect("subscribe");
+        let (mut socket, batch, _early) =
+            client.subscribe_ticks("R_75", 10).await.expect("subscribe");
         assert!(!batch.is_empty(), "the venue seeds a tick batch");
         let tick = tokio::time::timeout(
             std::time::Duration::from_secs(20),
@@ -751,7 +852,10 @@ mod tests {
             r#"{"error":{"code":"InvalidToken","message":"The token is invalid"}}"#,
         )
         .expect("parses");
-        assert_eq!(bad.error.expect("error").code.as_deref(), Some("InvalidToken"));
+        assert_eq!(
+            bad.error.expect("error").code.as_deref(),
+            Some("InvalidToken")
+        );
     }
 
     #[tokio::test]

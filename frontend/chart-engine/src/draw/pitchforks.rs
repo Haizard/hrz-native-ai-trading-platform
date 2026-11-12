@@ -57,11 +57,7 @@ pub fn fork(geometry: Geometry<'_>, template: Template) -> Vec<DrawingPart> {
     if geometry.points.len() < 3 {
         return Vec::new();
     }
-    let (first, second, third) = (
-        geometry.points[0],
-        geometry.points[1],
-        geometry.points[2],
-    );
+    let (first, second, third) = (geometry.points[0], geometry.points[1], geometry.points[2]);
     let (handle, first_tine, second_tine) = match template {
         Template::Andrews => (first, second, third),
         Template::Schiff => ((first.0, midpoint_price(first, second)), second, third),
@@ -138,21 +134,15 @@ fn pixel(geometry: Geometry<'_>, point: Point) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drawing::DrawingOptions;
     use crate::draw::Stage;
+    use crate::drawing::DrawingOptions;
 
     /// A fork's three strokes, median first.
     fn lines(geometry: Geometry<'_>, template: Template) -> Vec<(f64, f64, f64, f64)> {
         fork(geometry, template)
             .into_iter()
             .filter_map(|part| match part {
-                DrawingPart::Segment {
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    ..
-                } => Some((x1, y1, x2, y2)),
+                DrawingPart::Segment { x1, y1, x2, y2, .. } => Some((x1, y1, x2, y2)),
                 _ => None,
             })
             .collect()
@@ -191,7 +181,11 @@ mod tests {
 
         // Three different lines: no template can be drawn as another.
         for (a, b) in [(andrews, schiff), (andrews, modified), (schiff, modified)] {
-            assert_ne!(y_at(a, right), y_at(b, right), "two templates share a median");
+            assert_ne!(
+                y_at(a, right),
+                y_at(b, right),
+                "two templates share a median"
+            );
         }
 
         // Andrews starts at the handle; Schiff has been lifted halfway toward the
@@ -204,7 +198,8 @@ mod tests {
         // median passes through that pivot -- the fact that distinguishes it here.
         let shifted = midpoint(points[0], points[1]);
         assert!(
-            (y_at(modified, geometry.frame.x_at_ms(shifted.0)) - geometry.frame.y_at(shifted.1)).abs()
+            (y_at(modified, geometry.frame.x_at_ms(shifted.0)) - geometry.frame.y_at(shifted.1))
+                .abs()
                 < 1e-9,
             "the Modified Schiff median runs from the midpoint of the first two pivots"
         );
@@ -245,11 +240,13 @@ mod tests {
         let mid_price = (points[1].1 + points[2].1) / 2.0;
 
         assert!(
-            (y_at(median, stage.frame.x_at_ms(points[0].0)) - stage.frame.y_at(points[0].1)).abs() < 1e-9,
+            (y_at(median, stage.frame.x_at_ms(points[0].0)) - stage.frame.y_at(points[0].1)).abs()
+                < 1e-9,
             "the median runs through the handle"
         );
         assert!(
-            (y_at(median, stage.frame.x_at_ms(mid_time)) - stage.frame.y_at(mid_price)).abs() < 1e-9
+            (y_at(median, stage.frame.x_at_ms(mid_time)) - stage.frame.y_at(mid_price)).abs()
+                < 1e-9
         );
     }
 
@@ -268,12 +265,15 @@ mod tests {
         let mid_time = (points[1].0 + points[2].0) / 2.0;
 
         assert!(
-            (y_at(median, stage.frame.x_at_ms(mid_time)) - stage.frame.y_at((points[1].1 + points[2].1) / 2.0)).abs()
+            (y_at(median, stage.frame.x_at_ms(mid_time))
+                - stage.frame.y_at((points[1].1 + points[2].1) / 2.0))
+            .abs()
                 < 1e-9,
             "the median still aims at the tines' midpoint"
         );
         assert!(
-            (y_at(median, stage.frame.x_at_ms(points[0].0)) - stage.frame.y_at(points[0].1)).abs() < 1e-9
+            (y_at(median, stage.frame.x_at_ms(points[0].0)) - stage.frame.y_at(points[0].1)).abs()
+                < 1e-9
         );
     }
 
@@ -328,7 +328,10 @@ mod tests {
         let furthest = geometry.x(2);
         for line in lines(geometry, Template::Andrews) {
             assert_eq!(line.0, 0.0, "extend left reaches the plot's left edge");
-            assert_eq!(line.2, furthest, "and stops at the last pivot, not the handle");
+            assert_eq!(
+                line.2, furthest,
+                "and stops at the last pivot, not the handle"
+            );
         }
     }
 

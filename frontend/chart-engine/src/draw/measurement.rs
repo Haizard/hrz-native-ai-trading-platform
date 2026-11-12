@@ -234,7 +234,10 @@ pub fn anchored_vp(geometry: Geometry<'_>) -> Vec<DrawingPart> {
 }
 
 /// Shared volume profile rendering: horizontal bars from a histogram.
-fn volume_histogram(geometry: Geometry<'_>, bars: &[analytics_core::types::Candle]) -> Vec<DrawingPart> {
+fn volume_histogram(
+    geometry: Geometry<'_>,
+    bars: &[analytics_core::types::Candle],
+) -> Vec<DrawingPart> {
     if bars.is_empty() {
         return Vec::new();
     }
@@ -250,7 +253,8 @@ fn volume_histogram(geometry: Geometry<'_>, bars: &[analytics_core::types::Candl
         return Vec::new();
     }
     let bucket = span / 50.0;
-    let profile = analytics_core::volume_profile::calculate_volume_profile_from_candles(bars, bucket);
+    let profile =
+        analytics_core::volume_profile::calculate_volume_profile_from_candles(bars, bucket);
     if profile.histogram.is_empty() {
         return Vec::new();
     }
@@ -270,7 +274,7 @@ fn volume_histogram(geometry: Geometry<'_>, bars: &[analytics_core::types::Candl
         let y = geometry.frame.y_at(node.price_level);
         let bar_h = (geometry.frame.y_at(node.price_level - bucket / 2.0)
             - geometry.frame.y_at(node.price_level + bucket / 2.0))
-            .abs();
+        .abs();
         let w = (node.volume / max_vol) * max_w;
         parts.push(DrawingPart::Rect {
             x: anchor_x,

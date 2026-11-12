@@ -35,10 +35,10 @@ use crate::market_structure::{
 use crate::rsi_divergence::{latest_rsi_divergence, RsiDivergence, RsiDivergenceConfig};
 use crate::sessions::{SessionEngine, SessionKind, SessionWindow};
 use crate::types::{Candle, Trade};
-use crate::volume_score::{latest_volume_score, VolumeScoreConfig};
 use crate::volume_profile::{
     calculate_volume_profile, calculate_volume_profile_from_candles, VolumeProfile,
 };
+use crate::volume_score::{latest_volume_score, VolumeScoreConfig};
 use crate::vwap::calculate_vwap_series;
 
 /// Tuning for [`build_market_state`].
@@ -545,9 +545,7 @@ fn assemble(
         session: session.session(),
         session_vwap: session.vwap(),
         session_open: session.open(),
-        session_delta: session
-            .session()
-            .map(|_| session.delta()),
+        session_delta: session.session().map(|_| session.delta()),
         rsi_divergence,
         volume_score,
         provenance,

@@ -457,7 +457,10 @@ pub async fn search_symbols(
         })
         .collect::<Vec<_>>();
     for instrument in deriv_matches {
-        if !results.iter().any(|row| row.symbol.eq_ignore_ascii_case(&instrument.symbol)) {
+        if !results
+            .iter()
+            .any(|row| row.symbol.eq_ignore_ascii_case(&instrument.symbol))
+        {
             results.push(instrument);
         }
     }

@@ -305,27 +305,27 @@ impl WindowService {
                     }
                 }
                 _ => match self
-                .backfill
-                .fetch_klines(&symbol, timeframe, fetch_from, fetch_to)
-                .await
-            {
-                Ok(rows) => {
-                    fetched = rows
-                        .iter()
-                        .map(|row| self.candle_from_kline(&symbol, timeframe, row))
-                        .collect();
-                }
-                // A chart that can draw the recent part of its window beats one
-                // that draws nothing because a deeper page failed. The shortfall
-                // is visible in `source`, which is what makes this survivable
-                // rather than silent.
-                Err(e) => {
-                    tracing::warn!(
-                        symbol, %timeframe, error = %e,
-                        "the venue refused part of the window; serving what is in RAM"
-                    );
-                }
-            },
+                    .backfill
+                    .fetch_klines(&symbol, timeframe, fetch_from, fetch_to)
+                    .await
+                {
+                    Ok(rows) => {
+                        fetched = rows
+                            .iter()
+                            .map(|row| self.candle_from_kline(&symbol, timeframe, row))
+                            .collect();
+                    }
+                    // A chart that can draw the recent part of its window beats one
+                    // that draws nothing because a deeper page failed. The shortfall
+                    // is visible in `source`, which is what makes this survivable
+                    // rather than silent.
+                    Err(e) => {
+                        tracing::warn!(
+                            symbol, %timeframe, error = %e,
+                            "the venue refused part of the window; serving what is in RAM"
+                        );
+                    }
+                },
             }
         }
         let venue = fetched.len();
@@ -335,13 +335,27 @@ impl WindowService {
         // ask for the newest page with endTime only so restart/cold-cache does
         // not make the instrument look like it never traded.
         if fetched.is_empty() && buffered.is_empty() && deriv_code.is_none() {
-            match self.backfill.fetch_latest_klines(&symbol, timeframe, to_ns, wanted_bars(from_ns, to_ns, timeframe)).await {
+            match self
+                .backfill
+                .fetch_latest_klines(
+                    &symbol,
+                    timeframe,
+                    to_ns,
+                    wanted_bars(from_ns, to_ns, timeframe),
+                )
+                .await
+            {
                 Ok(rows) if !rows.is_empty() => {
                     tracing::info!(symbol, %timeframe, count = rows.len(), "loaded latest retained venue candles outside requested window");
-                    fetched = rows.iter().map(|row| self.candle_from_kline(&symbol, timeframe, row)).collect();
+                    fetched = rows
+                        .iter()
+                        .map(|row| self.candle_from_kline(&symbol, timeframe, row))
+                        .collect();
                 }
                 Ok(_) => {}
-                Err(error) => tracing::debug!(symbol, %timeframe, %error, "latest retained candle lookup found no history"),
+                Err(error) => {
+                    tracing::debug!(symbol, %timeframe, %error, "latest retained candle lookup found no history")
+                }
             }
         }
 

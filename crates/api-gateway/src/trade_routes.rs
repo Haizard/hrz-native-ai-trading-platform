@@ -14,9 +14,9 @@
 //! - `GET /trade/portfolio` — the open contracts and their live PnL.
 //! - `POST /trade/sell` — an early exit on one contract.
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -214,7 +214,9 @@ async fn deriv_adapter_for(
                 kek_fingerprint: stored.kek_fingerprint,
             },
         )
-        .map_err(|e| ApiError::unavailable(format!("the stored credential could not be opened: {e}")))?;
+        .map_err(|e| {
+            ApiError::unavailable(format!("the stored credential could not be opened: {e}"))
+        })?;
     let mut adapter = trading_engine::deriv::DerivAdapter::new(
         ::market_data::deriv_trade::DerivTradingGateway::from_env(),
         loginid,
@@ -292,9 +294,10 @@ pub async fn portfolio(
     // Any Deriv instrument works for a portfolio read; the gateway is
     // account-scoped, not symbol-scoped.
     let adapter = deriv_adapter_for(&state, database, &user, "R_75", 0.0).await?;
-    let entries = adapter.portfolio().await.map_err(|e| {
-        ApiError::unavailable(format!("the venue's portfolio is unreachable: {e}"))
-    })?;
+    let entries = adapter
+        .portfolio()
+        .await
+        .map_err(|e| ApiError::unavailable(format!("the venue's portfolio is unreachable: {e}")))?;
     Ok(Json(
         entries
             .into_iter()
@@ -344,7 +347,10 @@ mod tests {
         assert_eq!(order.client_order_id, "ui-abc");
         assert_eq!(order.quantity, 25.0);
         assert_eq!(order.symbol, "DERIV:VOLATILITY 75");
-        assert!(matches!(order.order_type, trading_engine::OrderType::Market));
+        assert!(matches!(
+            order.order_type,
+            trading_engine::OrderType::Market
+        ));
     }
 
     #[test]
@@ -356,7 +362,11 @@ mod tests {
             multiplier: None,
             idempotency_key: None,
         };
-        let err = checked_order(&OrderRequest { side: "up".to_string(), ..base.clone() }).expect_err("side");
+        let err = checked_order(&OrderRequest {
+            side: "up".to_string(),
+            ..base.clone()
+        })
+        .expect_err("side");
         assert!(err.message().contains("buy or sell"), "{}", err.message());
 
         let err = checked_order(&OrderRequest {
@@ -364,9 +374,17 @@ mod tests {
             ..base.clone()
         })
         .expect_err("symbol");
-        assert!(err.message().contains("not a Deriv instrument"), "{}", err.message());
+        assert!(
+            err.message().contains("not a Deriv instrument"),
+            "{}",
+            err.message()
+        );
 
-        let err = checked_order(&OrderRequest { stake: 0.0, ..base.clone() }).expect_err("stake");
+        let err = checked_order(&OrderRequest {
+            stake: 0.0,
+            ..base.clone()
+        })
+        .expect_err("stake");
         assert!(err.message().contains("positive"), "{}", err.message());
 
         let err = checked_order(&OrderRequest {

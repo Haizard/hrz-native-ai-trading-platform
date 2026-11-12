@@ -14,7 +14,7 @@
 use analytics_core::types::{Candle, Timeframe};
 
 use crate::parse::{Arg, BinOp, BlockKind, CmpOp, Expr, ExprKind, Item, Script, UnOp, VarMode};
-use crate::ta::{self, NA, Series};
+use crate::ta::{self, Series, NA};
 
 /// Host-supplied input values, by variable name. Anything the script declares
 /// with `input.*` but the host does not supply runs on its declared default.
@@ -530,8 +530,64 @@ const MAX_TA_CACHE_CALL_SITES: usize = 500;
 /// variable before writing it, calls a function it did not define, or exceeds
 /// a dynamic budget -- all things static checking cannot see (values that
 /// only appear at runtime, like a loop bound computed from `close`).
-pub fn run(script: &Script, candles: &[Candle], inputs: &Inputs) -> Result<Output, crate::ScriptError> {
+pub fn run(
+    script: &Script,
+    candles: &[Candle],
+    inputs: &Inputs,
+) -> Result<Output, crate::ScriptError> {
     let mut vm = Vm::new(script, candles, inputs);
+    vm.run()
+}
+
+/// A snapshot of per-variable series state at the end of a run, suitable for
+/// initializing an incremental run over additional bars (`run_incremental`).
+///
+/// Captures the ring-buffer contents and carry-forward flags for every
+/// variable, so a streaming consumer can run the full history once, save the
+/// state, and then process each new bar without re-evaluating the whole
+/// window. Does **not** capture array heaps, drawing objects, or strategy
+/// account snapshots -- scripts that use those must re-run from scratch.
+#[derive(Debug, Clone)]
+pub struct SeriesState {
+    /// Per-variable ring buffers, oldest bar first. Each buffer's length is
+    /// the number of bars the variable was seen on.
+    pub vars: std::collections::HashMap<String, Vec<f64>>,
+    /// Parallel to `vars`: `true` on slots where an assignment actually ran.
+    pub vars_written: std::collections::HashMap<String, Vec<bool>>,
+    /// Variable modes (`var`, `varip`, plain) so `var` sticky state survives.
+    pub var_modes: std::collections::HashMap<String, VarMode>,
+}
+
+/// Capture the variable state at the end of a run, for incremental use.
+impl Vm<'_> {
+    /// Snapshot the variable series state. Called after `run()` completes.
+    #[must_use]
+    pub fn series_state(&self) -> SeriesState {
+        SeriesState {
+            vars: self.vars.clone(),
+            vars_written: self.vars_written.clone(),
+            var_modes: self.var_modes.clone(),
+        }
+    }
+}
+
+/// Run a vetted script over `new_candles`, initializing each variable's ring
+/// buffer from `prev_state`. Use this for streaming: run the full history
+/// once with [`run`], capture [`Vm::series_state`], then call this for each
+/// new bar.
+///
+/// # Errors
+/// Returns a [`ScriptError`](crate::ScriptError) for the same reasons as
+/// [`run`], plus when `prev_state` references a variable the script does not
+/// declare (those entries are ignored) or when the script declares a variable
+/// `prev_state` does not cover (it starts empty, as on a first run).
+pub fn run_incremental(
+    script: &Script,
+    new_candles: &[Candle],
+    inputs: &Inputs,
+    prev_state: &SeriesState,
+) -> Result<Output, crate::ScriptError> {
+    let mut vm = Vm::from_series_state(script, new_candles, inputs, prev_state);
     vm.run()
 }
 
@@ -683,6 +739,11 @@ pub struct Vm<'a> {
     security_ticker: Option<String>,
     out: Output,
     bar: usize,
+    /// How many bars the variable buffers already span (from a previous
+    /// `SeriesState`). Used by `read_history` so a history read that reaches
+    /// into the previous state's buffer lands on the right slot instead of
+    /// returning `na` or panicking.
+    prev_bar_count: usize,
     steps: u64,
     fuel: u64,
 }
@@ -720,7 +781,10 @@ pub const MAX_ARRAY_LEN: usize = 4096;
 /// The body-less script a `request.security` sub-VM runs: it has no
 /// statements, only the caller's cloned expression, so one `'static` anchor
 /// serves every sub-run and the lifetime stays honest.
-static EMPTY_SCRIPT: Script = Script { items: Vec::new(), header: crate::Header::empty() };
+static EMPTY_SCRIPT: Script = Script {
+    items: Vec::new(),
+    header: crate::Header::empty(),
+};
 
 impl<'a> Vm<'a> {
     fn new(script: &'a Script, candles: &'a [Candle], inputs: &'a Inputs) -> Self {
@@ -791,9 +855,13 @@ impl<'a> Vm<'a> {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::FuncDef { name, params, body, method_of: Some(t), .. } => {
-                    Some(((t.clone(), name.clone()), (params.clone(), &**body)))
-                }
+                Item::FuncDef {
+                    name,
+                    params,
+                    body,
+                    method_of: Some(t),
+                    ..
+                } => Some(((t.clone(), name.clone()), (params.clone(), &**body))),
                 _ => None,
             })
             .collect();
@@ -846,6 +914,117 @@ impl<'a> Vm<'a> {
             account: None,
             out: Output::default(),
             bar: 0,
+            prev_bar_count: 0,
+            steps: 0,
+            fuel,
+        }
+    }
+
+    /// Build a VM whose variable ring buffers are initialized from a previous
+    /// run's [`SeriesState`], for incremental execution (`run_incremental`).
+    /// Every other field starts fresh, as on a first run: the new candles are
+    /// the only history this VM sees, and variable buffers carry forward from
+    /// `prev_state`.
+    fn from_series_state(
+        script: &'a Script,
+        candles: &'a [Candle],
+        inputs: &'a Inputs,
+        prev_state: &SeriesState,
+    ) -> Self {
+        let fuel = (candles.len() as u64).max(1) * FUEL_PER_1000_BARS / 1000;
+        // How many bars the previous state's buffers span: every variable
+        // buffer has one entry per bar, so any non-empty buffer gives the
+        // count. All buffers are extended below to span the new candles too,
+        // so `buf[self.bar]` never panics during the new run.
+        let prev_bar_count = prev_state
+            .vars
+            .values()
+            .next()
+            .map(|buf| buf.len())
+            .unwrap_or(0);
+        let total_bars = prev_bar_count + candles.len();
+        // Extend every variable buffer with NA slots for the new bars, and
+        // every carry-flag buffer with `false`, so indexing stays in bounds.
+        let mut vars = prev_state.vars.clone();
+        let mut vars_written = prev_state.vars_written.clone();
+        for buf in vars.values_mut() {
+            buf.resize(total_bars, NA);
+        }
+        for wrote in vars_written.values_mut() {
+            wrote.resize(total_bars, false);
+        }
+        let type_defs = script
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::TypeDef { name, fields, .. } => Some((name.clone(), fields.clone())),
+                _ => None,
+            })
+            .collect();
+        let methods = script
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::FuncDef {
+                    name,
+                    params,
+                    body,
+                    method_of: Some(t),
+                    ..
+                } => Some(((t.clone(), name.clone()), (params.clone(), &**body))),
+                _ => None,
+            })
+            .collect();
+        Self {
+            script,
+            type_defs,
+            candles,
+            inputs,
+            vars,
+            vars_written,
+            var_modes: prev_state.var_modes.clone(),
+            funcs: std::collections::HashMap::new(),
+            call_depth: 0,
+            loop_scopes: Vec::new(),
+            scopes: Vec::new(),
+            series_args: Vec::new(),
+            deferred: Vec::new(),
+            deferred_seen: std::collections::HashSet::new(),
+            heap: Vec::new(),
+            collecting: false,
+            series_cache: std::collections::HashMap::new(),
+            ta_call_cache: std::collections::HashMap::new(),
+            ta_cache_values: 0,
+            ta_cache_enabled: true,
+            security_value_cache: std::collections::HashMap::new(),
+            current_input_name: String::new(),
+            input_timeframes: std::collections::HashMap::new(),
+            last_input_tf: None,
+            objects_live: Vec::new(),
+            objects_seq: Vec::new(),
+            objects_clock: 0,
+            tables_live: Vec::new(),
+            linefills_live: Vec::new(),
+            polylines_live: Vec::new(),
+            points_heap: Vec::new(),
+            maps_live: Vec::new(),
+            str_vars: std::collections::HashMap::new(),
+            str_vars_written: std::collections::HashMap::new(),
+            str_heap: Vec::new(),
+            ltf_heap: Vec::new(),
+            matrices_live: Vec::new(),
+            last_input_sym: None,
+            input_symbols: std::collections::HashMap::new(),
+            ltf_slots: std::collections::HashMap::new(),
+            udts_live: Vec::new(),
+            var_udt_types: std::collections::HashMap::new(),
+            last_udt_type: None,
+            methods,
+            security_ticker: script.header.sec.clone(),
+            account: None,
+            out: Output::default(),
+            bar: 0,
+            prev_bar_count,
             steps: 0,
             fuel,
         }
@@ -857,12 +1036,7 @@ impl<'a> Vm<'a> {
     /// outlive its parent's meter), every ring starts empty, and `ta.*` over
     /// the pooled candles composes normally. Nested security calls are refused
     /// at vet time because the flat pool cannot express a per-call context.
-    fn new_for_pool(
-        expr: &Expr,
-        candles: &'a [Candle],
-        inputs: &'a Inputs,
-        fuel: u64,
-    ) -> Self {
+    fn new_for_pool(expr: &Expr, candles: &'a [Candle], inputs: &'a Inputs, fuel: u64) -> Self {
         // An empty script: the sub-run has no statements of its own, only
         // the caller's cloned expression (parked in `deferred`). No
         // `'static` dance needed because `with_fuel` only ever READS the
@@ -923,7 +1097,11 @@ impl<'a> Vm<'a> {
             // flavor comes from the instrument's product.
             knobs.pointvalue = self.inputs.pointvalue.unwrap_or(1.0);
             knobs.contracts = self.inputs.contracts;
-            self.out.simulation = Some(crate::sim::simulate(&self.out.intents, self.candles, &knobs));
+            self.out.simulation = Some(crate::sim::simulate(
+                &self.out.intents,
+                self.candles,
+                &knobs,
+            ));
             if wants_state {
                 // Fixpoint over state reads: pass 2 decides against pass 1's
                 // account, but ITERATED dependence (leg 2 arms only after leg
@@ -981,7 +1159,11 @@ impl<'a> Vm<'a> {
             .filter_map(|f| {
                 let (a, b) = (remap[f.line1], remap[f.line2]);
                 if a != usize::MAX && b != usize::MAX {
-                    Some(OutputLineFill { line1: a, line2: b, color: f.color })
+                    Some(OutputLineFill {
+                        line1: a,
+                        line2: b,
+                        color: f.color,
+                    })
                 } else {
                     None
                 }
@@ -1089,8 +1271,12 @@ impl<'a> Vm<'a> {
     /// same one-bar-late shape Pine documents for its broker emulator. Pass
     /// 2 parked the simulated snapshots in `account`; this bar's row answers.
     fn strategy_read(&self, name: &str) -> f64 {
-        let Some(snaps) = &self.account else { return 0.0 };
-        let Some(s) = snaps.get(self.bar) else { return 0.0 };
+        let Some(snaps) = &self.account else {
+            return 0.0;
+        };
+        let Some(s) = snaps.get(self.bar) else {
+            return 0.0;
+        };
         match name {
             "strategy.position_size" => s.position_size,
             "strategy.position_avg_price" => s.avg_price,
@@ -1133,7 +1319,13 @@ impl<'a> Vm<'a> {
             // A type declaration is read at VM construction; the item
             // itself does nothing per bar.
             Item::TypeDef { .. } => {}
-            Item::Assign { name, mode, expr, op, .. } => {
+            Item::Assign {
+                name,
+                mode,
+                expr,
+                op,
+                ..
+            } => {
                 // `x = input.int(...)` -- the input reads its name from the
                 // assignment target.
                 if let ExprKind::Call { callee, .. } = &expr.kind {
@@ -1166,7 +1358,11 @@ impl<'a> Vm<'a> {
                     if self.var_udt_types.contains_key(base) {
                         let value = self.eval_f(expr)?;
                         let handle = self.read_name(base)?;
-                        let idx = if handle.is_finite() && handle >= 0.0 { handle as usize } else { usize::MAX };
+                        let idx = if handle.is_finite() && handle >= 0.0 {
+                            handle as usize
+                        } else {
+                            usize::MAX
+                        };
                         let Some((type_name, values)) = self.udts_live.get_mut(idx) else {
                             return Err(crate::ScriptError {
                                 kind: crate::ErrorKind::Type,
@@ -1270,9 +1466,9 @@ impl<'a> Vm<'a> {
                 };
                 let outputs = self.call_multi(callee, args)?;
                 for (index, name) in names.iter().enumerate() {
-                    let value = outputs.get(index).map_or(NA, |series| {
-                        series.get(self.bar).copied().unwrap_or(NA)
-                    });
+                    let value = outputs
+                        .get(index)
+                        .map_or(NA, |series| series.get(self.bar).copied().unwrap_or(NA));
                     let buf = self
                         .vars
                         .entry(name.clone())
@@ -1287,7 +1483,14 @@ impl<'a> Vm<'a> {
             Item::Expr { expr, .. } => {
                 self.eval_stmt(expr)?;
             }
-            Item::Block { kind, exprs, loop_var, body, els, .. } => match kind {
+            Item::Block {
+                kind,
+                exprs,
+                loop_var,
+                body,
+                els,
+                ..
+            } => match kind {
                 BlockKind::If => {
                     let cond = self.eval_f(&exprs[0])?;
                     if self.truthy(cond) {
@@ -1355,10 +1558,12 @@ impl<'a> Vm<'a> {
     fn eval_stmt(&mut self, expr: &Expr) -> Result<(), crate::ScriptError> {
         self.tick()?;
         match &expr.kind {
-            ExprKind::Call { callee, args } => {
-                self.call_stmt(callee, args)
-            }
-            ExprKind::Bin { left, op: BinOp::Cmp(_), right } => {
+            ExprKind::Call { callee, args } => self.call_stmt(callee, args),
+            ExprKind::Bin {
+                left,
+                op: BinOp::Cmp(_),
+                right,
+            } => {
                 // `flag and plot(...)`-style mixing is refused by the type
                 // checker; a bare comparison as a statement does nothing, but
                 // evaluating it keeps `x == y` from erroring.
@@ -1378,7 +1583,11 @@ impl<'a> Vm<'a> {
     /// `color.rgb(r, g, b[, transparency])` builds from channels, and
     /// `color.from_gradient(v, bottom, top, c_bottom, c_top)` interpolates
     /// every channel including alpha. All pack 0xAARRGGBB.
-    fn color_call(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+    fn color_call(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+    ) -> Result<Option<f64>, crate::ScriptError> {
         let bad = |what: &str| crate::ScriptError {
             kind: crate::ErrorKind::Type,
             span: crate::Span::new(1, 1),
@@ -1404,7 +1613,9 @@ impl<'a> Vm<'a> {
                 let mut chan = |i: usize| -> Result<u32, crate::ScriptError> {
                     Ok(self
                         .arg_f(args, i)?
-                        .ok_or_else(|| bad("`color.rgb` needs red, green and blue channels (0-255)"))?
+                        .ok_or_else(|| {
+                            bad("`color.rgb` needs red, green and blue channels (0-255)")
+                        })?
                         .clamp(0.0, 255.0)
                         .round() as u32)
                 };
@@ -1418,10 +1629,12 @@ impl<'a> Vm<'a> {
                 let v = self.arg_f(args, 0)?.unwrap_or(NA);
                 let bottom = self.arg_f(args, 1)?.unwrap_or(NA);
                 let top = self.arg_f(args, 2)?.unwrap_or(NA);
-                let c_bottom = self.arg_color_pos(args, 3)
-                    .ok_or_else(|| bad("`color.from_gradient` needs (value, bottom, top, bottom_color, top_color)"))?;
-                let c_top = self.arg_color_pos(args, 4)
-                    .ok_or_else(|| bad("`color.from_gradient` needs (value, bottom, top, bottom_color, top_color)"))?;
+                let c_bottom = self.arg_color_pos(args, 3).ok_or_else(|| {
+                    bad("`color.from_gradient` needs (value, bottom, top, bottom_color, top_color)")
+                })?;
+                let c_top = self.arg_color_pos(args, 4).ok_or_else(|| {
+                    bad("`color.from_gradient` needs (value, bottom, top, bottom_color, top_color)")
+                })?;
                 if !v.is_finite() || !bottom.is_finite() || !top.is_finite() || top == bottom {
                     return Ok(Some(NA));
                 }
@@ -1440,7 +1653,11 @@ impl<'a> Vm<'a> {
 
     /// `chart.point.new(bar, price)`: one vertex for the Pine-form
     /// polyline, returned as a heap handle (a float, so it rides arrays).
-    fn chart_point_handle(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+    fn chart_point_handle(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+    ) -> Result<Option<f64>, crate::ScriptError> {
         if callee != "chart.point.new" {
             return Ok(None);
         }
@@ -1462,7 +1679,11 @@ impl<'a> Vm<'a> {
     /// line_width=)`: a freeform path through parallel (bar, price) arrays,
     /// hand back the path's handle. `None` when the callee is not
     /// polyline.new.
-    fn polyline_handle(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+    fn polyline_handle(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+    ) -> Result<Option<f64>, crate::ScriptError> {
         if callee != "polyline.new" {
             return Ok(None);
         }
@@ -1483,24 +1704,38 @@ impl<'a> Vm<'a> {
             let hy = self.arg_f(args, 1)?.unwrap_or(NA);
             // Snapshot both arrays BEFORE anything else mutable: array_ref
             // borrows self, so clone the vertex data out.
-            let xs = { self.array_ref(hx).map_err(|_| bad("`polyline.new` argument 1 is the array of bar indices (build it with var + array.push)"))?.clone() };
-            let ys = { self.array_ref(hy).map_err(|_| bad("`polyline.new` argument 2 is the array of prices"))?.clone() };
+            let xs = {
+                self.array_ref(hx).map_err(|_| bad("`polyline.new` argument 1 is the array of bar indices (build it with var + array.push)"))?.clone()
+            };
+            let ys = {
+                self.array_ref(hy)
+                    .map_err(|_| bad("`polyline.new` argument 2 is the array of prices"))?
+                    .clone()
+            };
             if xs.len() != ys.len() || xs.len() < 2 {
                 return Err(bad("`polyline.new` needs the bar-index and price arrays to hold the same number of points, at least 2"));
             }
             for (x, y) in xs.iter().zip(ys.iter()) {
                 if !x.is_finite() || !y.is_finite() {
-                    return Err(bad("`polyline.new` points must be finite numbers (na vertex)"));
+                    return Err(bad(
+                        "`polyline.new` points must be finite numbers (na vertex)",
+                    ));
                 }
                 points.push((*x, *y));
             }
         } else {
-            let handles = { self.array_ref(hx).map_err(|_| bad("`polyline.new` takes one array of chart.point handles (or two parallel arrays)"))?.clone() };
+            let handles = {
+                self.array_ref(hx).map_err(|_| bad("`polyline.new` takes one array of chart.point handles (or two parallel arrays)"))?.clone()
+            };
             if handles.len() < 2 {
                 return Err(bad("`polyline.new` needs at least 2 chart.point handles"));
             }
             for h in handles {
-                let idx = if h.is_finite() && h >= 0.0 { h as usize } else { usize::MAX };
+                let idx = if h.is_finite() && h >= 0.0 {
+                    h as usize
+                } else {
+                    usize::MAX
+                };
                 let Some(pt) = self.points_heap.get(idx) else {
                     return Err(bad("`polyline.new`'s array holds a handle that is not a chart.point -- build the array with array.push(a, chart.point.new(bar, price))"));
                 };
@@ -1535,7 +1770,11 @@ impl<'a> Vm<'a> {
         }
         self.tick()?;
         let h = self.arg_f(args, 0)?.unwrap_or(NA);
-        let idx = if h.is_finite() && h >= 0.0 { h as usize } else { usize::MAX };
+        let idx = if h.is_finite() && h >= 0.0 {
+            h as usize
+        } else {
+            usize::MAX
+        };
         if idx >= self.polylines_live.len() {
             return Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
@@ -1549,7 +1788,11 @@ impl<'a> Vm<'a> {
 
     /// `linefill.new(l1, l2, color)`: fill between two line objects, hand
     /// back the fill's handle. `None` when the callee is not linefill.new.
-    fn linefill_handle(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+    fn linefill_handle(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+    ) -> Result<Option<f64>, crate::ScriptError> {
         if callee != "linefill.new" {
             return Ok(None);
         }
@@ -1560,8 +1803,16 @@ impl<'a> Vm<'a> {
             .arg_color_named(args, "color")
             .or_else(|| self.arg_color_pos(args, 2))
             .unwrap_or(0xFF_60_A5_FA);
-        let idx1 = if h1.is_finite() && h1 >= 0.0 { h1 as usize } else { usize::MAX };
-        let idx2 = if h2.is_finite() && h2 >= 0.0 { h2 as usize } else { usize::MAX };
+        let idx1 = if h1.is_finite() && h1 >= 0.0 {
+            h1 as usize
+        } else {
+            usize::MAX
+        };
+        let idx2 = if h2.is_finite() && h2 >= 0.0 {
+            h2 as usize
+        } else {
+            usize::MAX
+        };
         let is_line = |i: usize, objects: &[Option<ScriptObject>]| {
             matches!(
                 objects.get(i),
@@ -1576,7 +1827,11 @@ impl<'a> Vm<'a> {
             });
         }
         let handle = self.linefills_live.len() as f64;
-        self.linefills_live.push(Some(OutputLineFill { line1: idx1, line2: idx2, color }));
+        self.linefills_live.push(Some(OutputLineFill {
+            line1: idx1,
+            line2: idx2,
+            color,
+        }));
         Ok(Some(handle))
     }
 
@@ -1588,7 +1843,11 @@ impl<'a> Vm<'a> {
         }
         self.tick()?;
         let h = self.arg_f(args, 0)?.unwrap_or(NA);
-        let idx = if h.is_finite() && h >= 0.0 { h as usize } else { usize::MAX };
+        let idx = if h.is_finite() && h >= 0.0 {
+            h as usize
+        } else {
+            usize::MAX
+        };
         if idx >= self.linefills_live.len() {
             return Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
@@ -1602,20 +1861,32 @@ impl<'a> Vm<'a> {
 
     /// `table.new(position.top_right, columns, rows, ...)`: create a panel,
     /// hand back its handle. `None` when the callee is not table.new.
-    fn table_handle(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+    fn table_handle(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+    ) -> Result<Option<f64>, crate::ScriptError> {
         if callee != "table.new" {
             return Ok(None);
         }
         self.tick()?;
         let position = match args.first().map(|a| &a.value.kind) {
-            Some(ExprKind::Member { path }) => path.strip_prefix("position.").unwrap_or("").to_string(),
+            Some(ExprKind::Member { path }) => {
+                path.strip_prefix("position.").unwrap_or("").to_string()
+            }
             Some(ExprKind::Ident(name)) => name.strip_prefix("position.").unwrap_or("").to_string(),
             _ => String::new(),
         };
         let known = [
-            "top_right", "top_left", "top_center",
-            "bottom_right", "bottom_left", "bottom_center",
-            "middle_right", "middle_left", "middle_center",
+            "top_right",
+            "top_left",
+            "top_center",
+            "bottom_right",
+            "bottom_left",
+            "bottom_center",
+            "middle_right",
+            "middle_left",
+            "middle_center",
         ];
         if !known.contains(&position.as_str()) {
             return Err(crate::ScriptError {
@@ -1644,7 +1915,11 @@ impl<'a> Vm<'a> {
         }
         self.tick()?;
         let h = self.arg_f(args, 0)?.unwrap_or(NA);
-        let idx = if h.is_finite() && h >= 0.0 { h as usize } else { usize::MAX };
+        let idx = if h.is_finite() && h >= 0.0 {
+            h as usize
+        } else {
+            usize::MAX
+        };
         if idx >= self.tables_live.len() {
             return Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
@@ -1673,7 +1948,14 @@ impl<'a> Vm<'a> {
                 ),
             });
         }
-        table.cells.insert((col, row), OutputTableCell { text, bg, text_color });
+        table.cells.insert(
+            (col, row),
+            OutputTableCell {
+                text,
+                bg,
+                text_color,
+            },
+        );
         Ok(true)
     }
 
@@ -1682,7 +1964,11 @@ impl<'a> Vm<'a> {
     /// constructor. The cap STOPS drawing rather than killing the run
     /// (TradingView's behavior): past MAX_OBJECTS the call is a no-op and
     /// the handle is na.
-    fn draw_object(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+    fn draw_object(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+    ) -> Result<Option<f64>, crate::ScriptError> {
         let object = match callee {
             "line.new" => {
                 self.tick()?;
@@ -1691,10 +1977,21 @@ impl<'a> Vm<'a> {
                 let bar2 = self.arg_f(args, 2)?.unwrap_or(NA);
                 let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
                 let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
-                let style = self.arg_str(args, "style").unwrap_or_else(|| "solid".into());
+                let style = self
+                    .arg_str(args, "style")
+                    .unwrap_or_else(|| "solid".into());
                 let width = self.arg_named_f(args, "width").unwrap_or(1.0);
                 let extend = self.arg_extend(args)?;
-                ScriptObject::Line { bar1, price1, bar2, price2, color, style, width, extend }
+                ScriptObject::Line {
+                    bar1,
+                    price1,
+                    bar2,
+                    price2,
+                    color,
+                    style,
+                    width,
+                    extend,
+                }
             }
             "label.new" => {
                 self.tick()?;
@@ -1702,7 +1999,12 @@ impl<'a> Vm<'a> {
                 let price = self.arg_f(args, 1)?.unwrap_or(NA);
                 let text = self.arg_text(args, "text", 2)?.unwrap_or_default();
                 let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
-                ScriptObject::Label { bar, price, text, color }
+                ScriptObject::Label {
+                    bar,
+                    price,
+                    text,
+                    color,
+                }
             }
             "box.new" => {
                 self.tick()?;
@@ -1715,8 +2017,19 @@ impl<'a> Vm<'a> {
                 // distinct from the fill, off when unasked.
                 let border_color = self.arg_color_named(args, "border_color");
                 let border_width = self.arg_named_f(args, "border_width").unwrap_or(1.0);
-                let border_style = self.arg_str(args, "border_style").unwrap_or_else(|| "solid".into());
-                ScriptObject::Box { left, top, right, bottom, color, border_color, border_width, border_style }
+                let border_style = self
+                    .arg_str(args, "border_style")
+                    .unwrap_or_else(|| "solid".into());
+                ScriptObject::Box {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    color,
+                    border_color,
+                    border_width,
+                    border_style,
+                }
             }
             // ---- time-anchored drawing objects (docs/28): the same three
             // shapes with unix-nanos anchors instead of bar indexes, so a
@@ -1729,10 +2042,21 @@ impl<'a> Vm<'a> {
                 let t2 = self.arg_f(args, 2)?.unwrap_or(NA);
                 let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
                 let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
-                let style = self.arg_str(args, "style").unwrap_or_else(|| "solid".into());
+                let style = self
+                    .arg_str(args, "style")
+                    .unwrap_or_else(|| "solid".into());
                 let width = self.arg_named_f(args, "width").unwrap_or(1.0);
                 let extend = self.arg_extend(args)?;
-                ScriptObject::LineTime { t1, price1, t2, price2, color, style, width, extend }
+                ScriptObject::LineTime {
+                    t1,
+                    price1,
+                    t2,
+                    price2,
+                    color,
+                    style,
+                    width,
+                    extend,
+                }
             }
             "label.new_time" => {
                 self.tick()?;
@@ -1740,7 +2064,12 @@ impl<'a> Vm<'a> {
                 let price = self.arg_f(args, 1)?.unwrap_or(NA);
                 let text = self.arg_text(args, "text", 2)?.unwrap_or_default();
                 let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
-                ScriptObject::LabelTime { nanos, price, text, color }
+                ScriptObject::LabelTime {
+                    nanos,
+                    price,
+                    text,
+                    color,
+                }
             }
             "box.new_time" => {
                 self.tick()?;
@@ -1752,8 +2081,19 @@ impl<'a> Vm<'a> {
                 // docs/31: the same border knobs as the bar-index box.
                 let border_color = self.arg_color_named(args, "border_color");
                 let border_width = self.arg_named_f(args, "border_width").unwrap_or(1.0);
-                let border_style = self.arg_str(args, "border_style").unwrap_or_else(|| "solid".into());
-                ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color, border_color, border_width, border_style }
+                let border_style = self
+                    .arg_str(args, "border_style")
+                    .unwrap_or_else(|| "solid".into());
+                ScriptObject::BoxTime {
+                    left_nanos,
+                    top,
+                    right_nanos,
+                    bottom,
+                    color,
+                    border_color,
+                    border_width,
+                    border_style,
+                }
             }
             "fib.new" => {
                 self.tick()?;
@@ -1792,12 +2132,16 @@ impl<'a> Vm<'a> {
             let same_kind = |o: &Option<ScriptObject>| {
                 matches!(
                     (o, &object),
-                    (Some(ScriptObject::Line { .. } | ScriptObject::LineTime { .. }),
-                        ScriptObject::Line { .. } | ScriptObject::LineTime { .. })
-                        | (Some(ScriptObject::Box { .. } | ScriptObject::BoxTime { .. }),
-                            ScriptObject::Box { .. } | ScriptObject::BoxTime { .. })
-                        | (Some(ScriptObject::Label { .. } | ScriptObject::LabelTime { .. }),
-                            ScriptObject::Label { .. } | ScriptObject::LabelTime { .. })
+                    (
+                        Some(ScriptObject::Line { .. } | ScriptObject::LineTime { .. }),
+                        ScriptObject::Line { .. } | ScriptObject::LineTime { .. }
+                    ) | (
+                        Some(ScriptObject::Box { .. } | ScriptObject::BoxTime { .. }),
+                        ScriptObject::Box { .. } | ScriptObject::BoxTime { .. }
+                    ) | (
+                        Some(ScriptObject::Label { .. } | ScriptObject::LabelTime { .. }),
+                        ScriptObject::Label { .. } | ScriptObject::LabelTime { .. }
+                    )
                 )
             };
             let live = self.objects_live.iter().filter(|o| same_kind(o)).count();
@@ -1839,7 +2183,9 @@ impl<'a> Vm<'a> {
         let err = |reason: &str| crate::ScriptError {
             kind: crate::ErrorKind::Type,
             span: crate::Span::new(1, 1),
-            message: format!("`{callee}` needs a live drawing handle from line.new/label.new/box.new: {reason}"),
+            message: format!(
+                "`{callee}` needs a live drawing handle from line.new/label.new/box.new: {reason}"
+            ),
         };
         if !h.is_finite() || h < 0.0 {
             return Err(err("got na or a negative handle"));
@@ -1867,22 +2213,30 @@ impl<'a> Vm<'a> {
                 let idx = self.object_index(args, callee)?;
                 let v = self.arg_f(args, 1)?.unwrap_or(NA);
                 match &mut self.objects_live[idx] {
-                    Some(ScriptObject::Line { bar1, bar2, price1, price2, .. }) => {
-                        match callee {
-                            "line.set_x1" => *bar1 = v,
-                            "line.set_x2" => *bar2 = v,
-                            "line.set_y1" => *price1 = v,
-                            _ => *price2 = v,
-                        }
-                    }
-                    Some(ScriptObject::LineTime { t1, t2, price1, price2, .. }) => {
-                        match callee {
-                            "line.set_x1" => *t1 = v,
-                            "line.set_x2" => *t2 = v,
-                            "line.set_y1" => *price1 = v,
-                            _ => *price2 = v,
-                        }
-                    }
+                    Some(ScriptObject::Line {
+                        bar1,
+                        bar2,
+                        price1,
+                        price2,
+                        ..
+                    }) => match callee {
+                        "line.set_x1" => *bar1 = v,
+                        "line.set_x2" => *bar2 = v,
+                        "line.set_y1" => *price1 = v,
+                        _ => *price2 = v,
+                    },
+                    Some(ScriptObject::LineTime {
+                        t1,
+                        t2,
+                        price1,
+                        price2,
+                        ..
+                    }) => match callee {
+                        "line.set_x1" => *t1 = v,
+                        "line.set_x2" => *t2 = v,
+                        "line.set_y1" => *price1 = v,
+                        _ => *price2 = v,
+                    },
                     _ => return Err(kind_err(callee, "line")),
                 }
                 Ok(true)
@@ -1891,7 +2245,8 @@ impl<'a> Vm<'a> {
                 let idx = self.object_index(args, callee)?;
                 let c = self.arg_color_pos(args, 1).unwrap_or(0xFF_94_A3_B8_u32);
                 match &mut self.objects_live[idx] {
-                    Some(ScriptObject::Line { color, .. }) | Some(ScriptObject::LineTime { color, .. }) => *color = c,
+                    Some(ScriptObject::Line { color, .. })
+                    | Some(ScriptObject::LineTime { color, .. }) => *color = c,
                     _ => return Err(kind_err(callee, "line")),
                 }
                 Ok(true)
@@ -1900,7 +2255,8 @@ impl<'a> Vm<'a> {
                 let idx = self.object_index(args, callee)?;
                 let e = self.extend_from_pos(args, 1)?;
                 match &mut self.objects_live[idx] {
-                    Some(ScriptObject::Line { extend, .. }) | Some(ScriptObject::LineTime { extend, .. }) => *extend = e,
+                    Some(ScriptObject::Line { extend, .. })
+                    | Some(ScriptObject::LineTime { extend, .. }) => *extend = e,
                     _ => return Err(kind_err(callee, "line")),
                 }
                 Ok(true)
@@ -1909,22 +2265,30 @@ impl<'a> Vm<'a> {
                 let idx = self.object_index(args, callee)?;
                 let v = self.arg_f(args, 1)?.unwrap_or(NA);
                 match &mut self.objects_live[idx] {
-                    Some(ScriptObject::Box { left, right, top, bottom, .. }) => {
-                        match callee {
-                            "box.set_left" => *left = v,
-                            "box.set_right" => *right = v,
-                            "box.set_top" => *top = v,
-                            _ => *bottom = v,
-                        }
-                    }
-                    Some(ScriptObject::BoxTime { left_nanos, right_nanos, top, bottom, .. }) => {
-                        match callee {
-                            "box.set_left" => *left_nanos = v,
-                            "box.set_right" => *right_nanos = v,
-                            "box.set_top" => *top = v,
-                            _ => *bottom = v,
-                        }
-                    }
+                    Some(ScriptObject::Box {
+                        left,
+                        right,
+                        top,
+                        bottom,
+                        ..
+                    }) => match callee {
+                        "box.set_left" => *left = v,
+                        "box.set_right" => *right = v,
+                        "box.set_top" => *top = v,
+                        _ => *bottom = v,
+                    },
+                    Some(ScriptObject::BoxTime {
+                        left_nanos,
+                        right_nanos,
+                        top,
+                        bottom,
+                        ..
+                    }) => match callee {
+                        "box.set_left" => *left_nanos = v,
+                        "box.set_right" => *right_nanos = v,
+                        "box.set_top" => *top = v,
+                        _ => *bottom = v,
+                    },
                     _ => return Err(kind_err(callee, "box")),
                 }
                 Ok(true)
@@ -1933,7 +2297,8 @@ impl<'a> Vm<'a> {
                 let idx = self.object_index(args, callee)?;
                 let c = self.arg_color_pos(args, 1).unwrap_or(0xFF_94_A3_B8_u32);
                 match &mut self.objects_live[idx] {
-                    Some(ScriptObject::Box { border_color, .. }) | Some(ScriptObject::BoxTime { border_color, .. }) => *border_color = Some(c),
+                    Some(ScriptObject::Box { border_color, .. })
+                    | Some(ScriptObject::BoxTime { border_color, .. }) => *border_color = Some(c),
                     _ => return Err(kind_err(callee, "box")),
                 }
                 Ok(true)
@@ -1942,7 +2307,8 @@ impl<'a> Vm<'a> {
                 let idx = self.object_index(args, callee)?;
                 let v = self.arg_f(args, 1)?.unwrap_or(1.0);
                 match &mut self.objects_live[idx] {
-                    Some(ScriptObject::Box { border_width, .. }) | Some(ScriptObject::BoxTime { border_width, .. }) => *border_width = v,
+                    Some(ScriptObject::Box { border_width, .. })
+                    | Some(ScriptObject::BoxTime { border_width, .. }) => *border_width = v,
                     _ => return Err(kind_err(callee, "box")),
                 }
                 Ok(true)
@@ -1951,7 +2317,8 @@ impl<'a> Vm<'a> {
                 let idx = self.object_index(args, callee)?;
                 let c = self.arg_color_pos(args, 1).unwrap_or(0x33_94_A3_B8_u32);
                 match &mut self.objects_live[idx] {
-                    Some(ScriptObject::Box { color, .. }) | Some(ScriptObject::BoxTime { color, .. }) => *color = c,
+                    Some(ScriptObject::Box { color, .. })
+                    | Some(ScriptObject::BoxTime { color, .. }) => *color = c,
                     _ => return Err(kind_err(callee, "box")),
                 }
                 Ok(true)
@@ -1961,10 +2328,18 @@ impl<'a> Vm<'a> {
                 let v = self.arg_f(args, 1)?.unwrap_or(NA);
                 match &mut self.objects_live[idx] {
                     Some(ScriptObject::Label { bar, price, .. }) => {
-                        if callee == "label.set_x" { *bar = v } else { *price = v }
+                        if callee == "label.set_x" {
+                            *bar = v
+                        } else {
+                            *price = v
+                        }
                     }
                     Some(ScriptObject::LabelTime { nanos, price, .. }) => {
-                        if callee == "label.set_x" { *nanos = v } else { *price = v }
+                        if callee == "label.set_x" {
+                            *nanos = v
+                        } else {
+                            *price = v
+                        }
                     }
                     _ => return Err(kind_err(callee, "label")),
                 }
@@ -1979,7 +2354,8 @@ impl<'a> Vm<'a> {
                 })?;
                 let text = self.eval_s(&arg.value)?;
                 match &mut self.objects_live[idx] {
-                    Some(ScriptObject::Label { text: t, .. }) | Some(ScriptObject::LabelTime { text: t, .. }) => *t = text,
+                    Some(ScriptObject::Label { text: t, .. })
+                    | Some(ScriptObject::LabelTime { text: t, .. }) => *t = text,
                     _ => return Err(kind_err(callee, "label")),
                 }
                 Ok(true)
@@ -1988,7 +2364,8 @@ impl<'a> Vm<'a> {
                 let idx = self.object_index(args, callee)?;
                 let c = self.arg_color_pos(args, 1).unwrap_or(0xFF_94_A3_B8_u32);
                 match &mut self.objects_live[idx] {
-                    Some(ScriptObject::Label { color, .. }) | Some(ScriptObject::LabelTime { color, .. }) => *color = c,
+                    Some(ScriptObject::Label { color, .. })
+                    | Some(ScriptObject::LabelTime { color, .. }) => *color = c,
                     _ => return Err(kind_err(callee, "label")),
                 }
                 Ok(true)
@@ -1996,9 +2373,18 @@ impl<'a> Vm<'a> {
             "line.delete" | "label.delete" | "box.delete" => {
                 let idx = self.object_index(args, callee)?;
                 let matches_kind = match (&self.objects_live[idx], callee) {
-                    (Some(ScriptObject::Line { .. }) | Some(ScriptObject::LineTime { .. }), "line.delete") => true,
-                    (Some(ScriptObject::Label { .. }) | Some(ScriptObject::LabelTime { .. }), "label.delete") => true,
-                    (Some(ScriptObject::Box { .. }) | Some(ScriptObject::BoxTime { .. }), "box.delete") => true,
+                    (
+                        Some(ScriptObject::Line { .. }) | Some(ScriptObject::LineTime { .. }),
+                        "line.delete",
+                    ) => true,
+                    (
+                        Some(ScriptObject::Label { .. }) | Some(ScriptObject::LabelTime { .. }),
+                        "label.delete",
+                    ) => true,
+                    (
+                        Some(ScriptObject::Box { .. }) | Some(ScriptObject::BoxTime { .. }),
+                        "box.delete",
+                    ) => true,
                     _ => false,
                 };
                 if !matches_kind {
@@ -2015,8 +2401,8 @@ impl<'a> Vm<'a> {
     fn call_stmt(&mut self, callee: &str, args: &[Arg]) -> Result<(), crate::ScriptError> {
         self.tick()?;
         match callee {
-            "plot" | "plotshape" | "plotchar" | "plotarrow" | "plotcandle" | "plotbar"
-            | "fill" | "bgcolor" | "barcolor" => {
+            "plot" | "plotshape" | "plotchar" | "plotarrow" | "plotcandle" | "plotbar" | "fill"
+            | "bgcolor" | "barcolor" => {
                 if self.collecting {
                     // Defer by call site: one AST node, one plot, however many
                     // bars (or branch firings) reach it. The key is the callee
@@ -2051,8 +2437,15 @@ impl<'a> Vm<'a> {
                 let value = self.arg_f(args, 0)?.unwrap_or(NA);
                 let title = self.arg_str(args, "title").unwrap_or_default();
                 let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
-                let dashed = self.arg_str(args, "linestyle").is_some_and(|s| s != "solid");
-                self.out.hlines.push(HLine { value, title, color, dashed });
+                let dashed = self
+                    .arg_str(args, "linestyle")
+                    .is_some_and(|s| s != "solid");
+                self.out.hlines.push(HLine {
+                    value,
+                    title,
+                    color,
+                    dashed,
+                });
                 Ok(())
             }
             "fill" | "bgcolor" | "barcolor" => {
@@ -2063,17 +2456,31 @@ impl<'a> Vm<'a> {
                 Ok(())
             }
             "strategy.entry" => {
-                let id = self.arg_str(args, "id").or_else(|| self.arg_str_pos(args, 0)).unwrap_or_default();
-                let dir = self.arg_str(args, "direction").or_else(|| self.arg_str_pos(args, 1)).unwrap_or_default();
+                let id = self
+                    .arg_str(args, "id")
+                    .or_else(|| self.arg_str_pos(args, 0))
+                    .unwrap_or_default();
+                let dir = self
+                    .arg_str(args, "direction")
+                    .or_else(|| self.arg_str_pos(args, 1))
+                    .unwrap_or_default();
                 let qty = self.arg_named_f(args, "qty");
                 self.out.strategy_used = true;
-                self.out
-                    .intents
-                    .push((self.bar, Intent::Entry { id, long: dir != "short", qty }));
+                self.out.intents.push((
+                    self.bar,
+                    Intent::Entry {
+                        id,
+                        long: dir != "short",
+                        qty,
+                    },
+                ));
                 Ok(())
             }
             "strategy.exit" => {
-                let id = self.arg_str(args, "id").or_else(|| self.arg_str_pos(args, 0)).unwrap_or_default();
+                let id = self
+                    .arg_str(args, "id")
+                    .or_else(|| self.arg_str_pos(args, 0))
+                    .unwrap_or_default();
                 let stop = self.arg_named_f(args, "stop");
                 let limit = self.arg_named_f(args, "limit");
                 let qty_percent = self.arg_named_f(args, "qty_percent");
@@ -2098,27 +2505,47 @@ impl<'a> Vm<'a> {
                 let trail_offset = ticks(self.arg_named_f(args, "trail_offset"))?;
                 let trail_price = self.arg_named_f(args, "trail_price");
                 self.out.strategy_used = true;
-                self.out.intents.push((self.bar, Intent::Exit {
-                    id, stop, limit, qty_percent, trail_points, trail_offset, trail_price,
-                }));
+                self.out.intents.push((
+                    self.bar,
+                    Intent::Exit {
+                        id,
+                        stop,
+                        limit,
+                        qty_percent,
+                        trail_points,
+                        trail_offset,
+                        trail_price,
+                    },
+                ));
                 Ok(())
             }
             "strategy.close" => {
-                let id = self.arg_str(args, "id").or_else(|| self.arg_str_pos(args, 0));
+                let id = self
+                    .arg_str(args, "id")
+                    .or_else(|| self.arg_str_pos(args, 0));
                 let qty_percent = self.arg_named_f(args, "qty_percent");
                 self.out.strategy_used = true;
-                self.out.intents.push((self.bar, Intent::Close { id, qty_percent }));
+                self.out
+                    .intents
+                    .push((self.bar, Intent::Close { id, qty_percent }));
                 Ok(())
             }
             "strategy.close_all" => {
                 self.out.strategy_used = true;
-                self.out.intents.push((self.bar, Intent::Close { id: None, qty_percent: None }));
+                self.out.intents.push((
+                    self.bar,
+                    Intent::Close {
+                        id: None,
+                        qty_percent: None,
+                    },
+                ));
                 Ok(())
             }
             "strategy.cancel" => Ok(()),
             // The risk limits (Pine's strategy.risk.* calls): they set
             // account-level rules the simulator enforces from the next bar.
-            "strategy.risk.max_position_size" | "strategy.risk.max_intraday_loss"
+            "strategy.risk.max_position_size"
+            | "strategy.risk.max_intraday_loss"
             | "strategy.risk.max_drawdown" => {
                 let kind = match callee {
                     "strategy.risk.max_position_size" => RiskLimitKind::MaxPositionSize,
@@ -2134,7 +2561,9 @@ impl<'a> Vm<'a> {
                     });
                 }
                 self.out.strategy_used = true;
-                self.out.intents.push((self.bar, Intent::RiskLimit { kind, value }));
+                self.out
+                    .intents
+                    .push((self.bar, Intent::RiskLimit { kind, value }));
                 Ok(())
             }
             "strategy.risk.allow_entry_in" => {
@@ -2162,7 +2591,13 @@ impl<'a> Vm<'a> {
                     }
                 };
                 self.out.strategy_used = true;
-                self.out.intents.push((self.bar, Intent::RiskDirection { allow_long, allow_short }));
+                self.out.intents.push((
+                    self.bar,
+                    Intent::RiskDirection {
+                        allow_long,
+                        allow_short,
+                    },
+                ));
                 Ok(())
             }
             // ---- drawing objects (docs/23 Phase 13): statements that push
@@ -2189,7 +2624,11 @@ impl<'a> Vm<'a> {
                 // replay fires exactly once per triggering bar, which is what
                 // freq_once_per_bar_close means on TradingView.
                 let nanos = self.candles.get(self.bar).map(|c| c.open_time).unwrap_or(0);
-                self.out.alerts.push(ScriptAlert { bar: self.bar, nanos, text });
+                self.out.alerts.push(ScriptAlert {
+                    bar: self.bar,
+                    nanos,
+                    text,
+                });
                 Ok(())
             }
             _ if self.table_handle(callee, args)?.is_some() => Ok(()),
@@ -2265,7 +2704,10 @@ impl<'a> Vm<'a> {
             }
             "matrix.set" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
-                let (r, c) = (self.arg_f(args, 1)?.unwrap_or(NA), self.arg_f(args, 2)?.unwrap_or(NA));
+                let (r, c) = (
+                    self.arg_f(args, 1)?.unwrap_or(NA),
+                    self.arg_f(args, 2)?.unwrap_or(NA),
+                );
                 let value = self.arg_f(args, 3)?.unwrap_or(NA);
                 let (rows, cols, data) = self.matrix_ref(handle)?;
                 let (r, c) = (r as usize, c as usize);
@@ -2273,7 +2715,9 @@ impl<'a> Vm<'a> {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Type,
                         span: crate::Span::new(1, 1),
-                        message: format!("matrix.set ({r}, {c}) is outside the {rows}x{cols} matrix"),
+                        message: format!(
+                            "matrix.set ({r}, {c}) is outside the {rows}x{cols} matrix"
+                        ),
                     });
                 }
                 data[r * *cols + c] = value;
@@ -2312,8 +2756,16 @@ impl<'a> Vm<'a> {
                     let to = self.arg_f(args, 3)?.unwrap_or(NA);
                     let list = self.str_array_ref(handle)?;
                     let len = list.len();
-                    let lo = if from.is_finite() { from.max(0.0) as usize } else { 0 };
-                    let hi = if to.is_finite() { (to.max(0.0) as usize).min(len) } else { len };
+                    let lo = if from.is_finite() {
+                        from.max(0.0) as usize
+                    } else {
+                        0
+                    };
+                    let hi = if to.is_finite() {
+                        (to.max(0.0) as usize).min(len)
+                    } else {
+                        len
+                    };
                     for slot in list.iter_mut().take(hi).skip(lo) {
                         *slot = v.clone();
                     }
@@ -2326,8 +2778,16 @@ impl<'a> Vm<'a> {
                 let to = self.arg_f(args, 3)?.unwrap_or(NA);
                 let list = self.array_ref(handle)?;
                 let len = list.len();
-                let lo = if from.is_finite() { from.max(0.0) as usize } else { 0 };
-                let hi = if to.is_finite() { (to.max(0.0) as usize).min(len) } else { len };
+                let lo = if from.is_finite() {
+                    from.max(0.0) as usize
+                } else {
+                    0
+                };
+                let hi = if to.is_finite() {
+                    (to.max(0.0) as usize).min(len)
+                } else {
+                    len
+                };
                 for v in list.iter_mut().take(hi).skip(lo) {
                     *v = value;
                 }
@@ -2398,7 +2858,11 @@ impl<'a> Vm<'a> {
             }
             _ => {
                 let v = self.eval_f(expr)?;
-                Ok(if v.is_finite() { v as u32 } else { 0xFF_94_A3_B8 })
+                Ok(if v.is_finite() {
+                    v as u32
+                } else {
+                    0xFF_94_A3_B8
+                })
             }
         }
     }
@@ -2431,12 +2895,19 @@ impl<'a> Vm<'a> {
         let n = self.candles.len();
         let (mut a, mut b) = (vec![NA; n], vec![NA; n]);
         let mut color = vec![None; n];
-        let color_arg = args.iter().find(|x| x.name.as_deref() == Some("color")).map(|x| x.value.clone());
+        let color_arg = args
+            .iter()
+            .find(|x| x.name.as_deref() == Some("color"))
+            .map(|x| x.value.clone());
         let saved_bar = self.bar;
         for bar in 0..n {
             self.bar = bar;
-            if let Some(x) = args.first() { a[bar] = self.eval_f(&x.value)?; }
-            if let Some(x) = args.get(1) { b[bar] = self.eval_f(&x.value)?; }
+            if let Some(x) = args.first() {
+                a[bar] = self.eval_f(&x.value)?;
+            }
+            if let Some(x) = args.get(1) {
+                b[bar] = self.eval_f(&x.value)?;
+            }
             color[bar] = match &color_arg {
                 Some(e) => self.eval_color_opt(e)?,
                 None => Some(0xFF_60_A5_FA),
@@ -2476,20 +2947,40 @@ impl<'a> Vm<'a> {
             let (mut o, mut h, mut l, mut c) = (vec![NA; n], vec![NA; n], vec![NA; n], vec![NA; n]);
             let mut body = vec![0u32; n];
             let mut wick = vec![0u32; n];
-            let color_arg = args.iter().find(|a| a.name.as_deref() == Some("color")).map(|a| a.value.clone());
-            let wick_arg = args.iter().find(|a| a.name.as_deref() == Some("wickcolor")).map(|a| a.value.clone());
+            let color_arg = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some("color"))
+                .map(|a| a.value.clone());
+            let wick_arg = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some("wickcolor"))
+                .map(|a| a.value.clone());
             let saved_bar = self.bar;
             for bar in 0..n {
                 self.bar = bar;
-                if let Some(a) = args.first() { o[bar] = self.eval_f(&a.value)?; }
-                if let Some(a) = args.get(1) { h[bar] = self.eval_f(&a.value)?; }
-                if let Some(a) = args.get(2) { l[bar] = self.eval_f(&a.value)?; }
-                if let Some(a) = args.get(3) { c[bar] = self.eval_f(&a.value)?; }
+                if let Some(a) = args.first() {
+                    o[bar] = self.eval_f(&a.value)?;
+                }
+                if let Some(a) = args.get(1) {
+                    h[bar] = self.eval_f(&a.value)?;
+                }
+                if let Some(a) = args.get(2) {
+                    l[bar] = self.eval_f(&a.value)?;
+                }
+                if let Some(a) = args.get(3) {
+                    c[bar] = self.eval_f(&a.value)?;
+                }
                 let up = !c[bar].is_finite() || !o[bar].is_finite() || c[bar] >= o[bar];
                 body[bar] = match &color_arg {
                     Some(expr) => self.eval_color_expr(expr)?,
                     // TradingView's up green / down red.
-                    None => if up { 0xFF_26_A6_9A } else { 0xFF_EF_53_50 },
+                    None => {
+                        if up {
+                            0xFF_26_A6_9A
+                        } else {
+                            0xFF_EF_53_50
+                        }
+                    }
                 };
                 wick[bar] = match &wick_arg {
                     Some(expr) => self.eval_color_expr(expr)?,
@@ -2499,7 +2990,9 @@ impl<'a> Vm<'a> {
             self.bar = saved_bar;
             return Ok(Plot {
                 id: format!("p{}", self.out.plots.len()),
-                title: self.arg_str(args, "title").unwrap_or_else(|| "candles".into()),
+                title: self
+                    .arg_str(args, "title")
+                    .unwrap_or_else(|| "candles".into()),
                 values: c.clone(),
                 style: crate::PlotStyle::Line,
                 color: 0,
@@ -2586,8 +3079,14 @@ impl<'a> Vm<'a> {
                     _ => None,
                 })
                 .unwrap_or_default();
-            let text_arg = args.iter().find(|a| a.name.as_deref() == Some("text")).map(|a| a.value.clone());
-            let text_color_arg = args.iter().find(|a| a.name.as_deref() == Some("textcolor")).map(|a| a.value.clone());
+            let text_arg = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some("text"))
+                .map(|a| a.value.clone());
+            let text_color_arg = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some("textcolor"))
+                .map(|a| a.value.clone());
             let saved_bar = self.bar;
             for (bar, v) in series.iter().enumerate() {
                 if self.truthy(*v) {
@@ -2666,7 +3165,11 @@ impl<'a> Vm<'a> {
             ExprKind::Member { path } => self.read_member(path)?,
             ExprKind::History { base, offset } => {
                 let off = self.eval_f(offset)?;
-                let off = if off.is_finite() { off.max(0.0) as usize } else { 0 };
+                let off = if off.is_finite() {
+                    off.max(0.0) as usize
+                } else {
+                    0
+                };
                 self.read_history(base, off)?
             }
             ExprKind::Switch { subject, arms } => {
@@ -2716,12 +3219,20 @@ impl<'a> Vm<'a> {
             ExprKind::Bin { left, op, right } => {
                 // String equality: `s == "UP"` compares as text when either
                 // side is string-typed.
-                if matches!(op, BinOp::Cmp(crate::parse::CmpOp::Eq) | BinOp::Cmp(crate::parse::CmpOp::Ne))
-                    && (self.expr_is_string(left) || self.expr_is_string(right))
+                if matches!(
+                    op,
+                    BinOp::Cmp(crate::parse::CmpOp::Eq) | BinOp::Cmp(crate::parse::CmpOp::Ne)
+                ) && (self.expr_is_string(left) || self.expr_is_string(right))
                 {
                     let (l, r) = (self.eval_s(left)?, self.eval_s(right)?);
                     let eq = l == r;
-                    return Ok(f64::from(if matches!(op, BinOp::Cmp(crate::parse::CmpOp::Eq)) { eq } else { !eq }));
+                    return Ok(f64::from(
+                        if matches!(op, BinOp::Cmp(crate::parse::CmpOp::Eq)) {
+                            eq
+                        } else {
+                            !eq
+                        },
+                    ));
                 }
                 let l = self.eval_f(left)?;
                 let r = self.eval_f(right)?;
@@ -2806,7 +3317,11 @@ impl<'a> Vm<'a> {
         if let Some((base, field)) = name.split_once('.') {
             if self.var_udt_types.contains_key(base) {
                 let handle = self.read_name(base)?;
-                let idx = if handle.is_finite() && handle >= 0.0 { handle as usize } else { usize::MAX };
+                let idx = if handle.is_finite() && handle >= 0.0 {
+                    handle as usize
+                } else {
+                    usize::MAX
+                };
                 let Some((type_name, values)) = self.udts_live.get(idx) else {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Type,
@@ -2820,7 +3335,10 @@ impl<'a> Vm<'a> {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Type,
                         span: crate::Span::new(1, 1),
-                        message: format!("type {type_name} has no field `{field}`; fields: {}", known.join(", ")),
+                        message: format!(
+                            "type {type_name} has no field `{field}`; fields: {}",
+                            known.join(", ")
+                        ),
                     });
                 };
                 return Ok(values[fi]);
@@ -2963,7 +3481,8 @@ impl<'a> Vm<'a> {
         match &base.kind {
             ExprKind::Ident(name) => {
                 if let Some(buf) = self.vars.get(name) {
-                    if off > self.bar {
+                    let absolute_bar = self.bar + self.prev_bar_count;
+                    if off > absolute_bar {
                         return Ok(NA);
                     }
                     // The var buffer is SPARSE (a slot holds a value only
@@ -2971,7 +3490,7 @@ impl<'a> Vm<'a> {
                     // carried value -- the most recent assignment at or
                     // before the indexed bar, the same rule `read_name`
                     // applies to the current bar.
-                    let idx = self.bar - off;
+                    let idx = absolute_bar - off;
                     let mut value = buf[idx];
                     if !value.is_finite() {
                         // A slot the assignment RAN on is authoritative, na
@@ -2988,11 +3507,19 @@ impl<'a> Vm<'a> {
                     return Ok(value);
                 }
                 let series = self.builtin_series(name)?;
-                Ok(if off <= self.bar { series[self.bar - off] } else { NA })
+                Ok(if off <= self.bar {
+                    series[self.bar - off]
+                } else {
+                    NA
+                })
             }
             ExprKind::Member { path } => {
                 let series = self.builtin_series(path)?;
-                Ok(if off <= self.bar { series[self.bar - off] } else { NA })
+                Ok(if off <= self.bar {
+                    series[self.bar - off]
+                } else {
+                    NA
+                })
             }
             _ => Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
@@ -3008,7 +3535,7 @@ impl<'a> Vm<'a> {
             "ta.sma" | "ta.ema" | "ta.rma" | "ta.wma" | "ta.rsi" | "ta.atr"
         ) && args
             .iter()
-            .all(|arg| arg.name.is_none() && !Self::expr_depends_on_vars(&arg.value))
+            .all(|arg| !Self::expr_depends_on_vars(&arg.value))
     }
 
     fn compute_cacheable_ta_series(
@@ -3018,32 +3545,32 @@ impl<'a> Vm<'a> {
     ) -> Result<Series, crate::ScriptError> {
         Ok(match callee {
             "ta.sma" => {
-                let source = self.series_arg(args, 0)?;
-                let length = self.eval_ta_length(args, 1)?;
+                let source = self.series_arg(callee, args, 0)?;
+                let length = self.eval_ta_length(callee, args, 1)?;
                 ta::ta_sma(&source, length)
             }
             "ta.ema" => {
-                let source = self.series_arg(args, 0)?;
-                let length = self.eval_ta_length(args, 1)?;
+                let source = self.series_arg(callee, args, 0)?;
+                let length = self.eval_ta_length(callee, args, 1)?;
                 ta::ta_ema(&source, length)
             }
             "ta.rma" => {
-                let source = self.series_arg(args, 0)?;
-                let length = self.eval_ta_length(args, 1)?;
+                let source = self.series_arg(callee, args, 0)?;
+                let length = self.eval_ta_length(callee, args, 1)?;
                 ta::ta_rma(&source, length)
             }
             "ta.wma" => {
-                let source = self.series_arg(args, 0)?;
-                let length = self.eval_ta_length(args, 1)?;
+                let source = self.series_arg(callee, args, 0)?;
+                let length = self.eval_ta_length(callee, args, 1)?;
                 ta::ta_wma(&source, length)
             }
             "ta.rsi" => {
-                let source = self.series_arg(args, 0)?;
-                let length = self.eval_ta_length(args, 1)?;
+                let source = self.series_arg(callee, args, 0)?;
+                let length = self.eval_ta_length(callee, args, 1)?;
                 ta::ta_rsi(&source, length)
             }
             "ta.atr" => {
-                let length = self.eval_ta_length(args, 0)?;
+                let length = self.eval_ta_length(callee, args, 0)?;
                 ta::ta_atr(self.candles, length)
             }
             _ => unreachable!("only cacheable TA calls reach this helper"),
@@ -3052,11 +3579,11 @@ impl<'a> Vm<'a> {
 
     fn eval_ta_length(
         &mut self,
+        callee: &str,
         args: &[Arg],
         index: usize,
     ) -> Result<f64, crate::ScriptError> {
-        let arg = args.get(index);
-        match arg {
+        match builtin_argument(callee, args, index) {
             Some(arg) => self.eval_f(&arg.value),
             None => Ok(NA),
         }
@@ -3092,12 +3619,26 @@ impl<'a> Vm<'a> {
                     (days + 4).rem_euclid(7) as f64 + 1.0
                 })
                 .collect(),
-            "year" => self.candles.iter().map(|c| civil_from_nanos(c.open_time).0 as f64).collect(),
-            "month" => self.candles.iter().map(|c| civil_from_nanos(c.open_time).1 as f64).collect(),
-            "dayofmonth" => {
-                self.candles.iter().map(|c| civil_from_nanos(c.open_time).2 as f64).collect()
-            }
-            "hl2" => self.candles.iter().map(|c| (c.high + c.low) / 2.0).collect(),
+            "year" => self
+                .candles
+                .iter()
+                .map(|c| civil_from_nanos(c.open_time).0 as f64)
+                .collect(),
+            "month" => self
+                .candles
+                .iter()
+                .map(|c| civil_from_nanos(c.open_time).1 as f64)
+                .collect(),
+            "dayofmonth" => self
+                .candles
+                .iter()
+                .map(|c| civil_from_nanos(c.open_time).2 as f64)
+                .collect(),
+            "hl2" => self
+                .candles
+                .iter()
+                .map(|c| (c.high + c.low) / 2.0)
+                .collect(),
             "hlc3" => self
                 .candles
                 .iter()
@@ -3127,7 +3668,7 @@ impl<'a> Vm<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
-/// Borrow a heap array by handle. The handle rides a variable's ring
+    /// Borrow a heap array by handle. The handle rides a variable's ring
     /// buffer as a plain float; anything else (na, negative, out of range) is
     /// an error naming the real cause.
     fn array_ref(&mut self, handle: f64) -> Result<&mut Vec<f64>, crate::ScriptError> {
@@ -3153,7 +3694,9 @@ impl<'a> Vm<'a> {
             return Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
-                message: "that variable does not hold an array; create one with `var a = array.new()`".into(),
+                message:
+                    "that variable does not hold an array; create one with `var a = array.new()`"
+                        .into(),
             });
         }
         Ok(&mut self.heap[handle as usize])
@@ -3172,17 +3715,20 @@ impl<'a> Vm<'a> {
                 matches!(path.as_str(), "syminfo.ticker" | "timeframe.period")
             }
             ExprKind::Call { callee, .. } => {
-                matches!(callee.as_str(), "str.tostring" | "str.format" | "array.join")
+                matches!(
+                    callee.as_str(),
+                    "str.tostring" | "str.format" | "array.join"
+                )
             }
-            ExprKind::Bin { op: crate::parse::BinOp::Add(crate::parse::AddOp::Add), left, right } => {
-                self.expr_is_string(left) || self.expr_is_string(right)
-            }
+            ExprKind::Bin {
+                op: crate::parse::BinOp::Add(crate::parse::AddOp::Add),
+                left,
+                right,
+            } => self.expr_is_string(left) || self.expr_is_string(right),
             ExprKind::Ternary { then, els, .. } => {
                 self.expr_is_string(then) || self.expr_is_string(els)
             }
-            ExprKind::Switch { arms, .. } => {
-                arms.iter().any(|(_, r)| self.expr_is_string(r))
-            }
+            ExprKind::Switch { arms, .. } => arms.iter().any(|(_, r)| self.expr_is_string(r)),
             ExprKind::History { base, .. } => self.expr_is_string(base),
             _ => false,
         }
@@ -3215,7 +3761,8 @@ impl<'a> Vm<'a> {
     /// Route an array handle: the float heap below STR_TAG, the string
     /// heap at and above it.
     fn str_array_ref(&mut self, handle: f64) -> Result<&mut Vec<String>, crate::ScriptError> {
-        if !handle.is_finite() || handle < STR_TAG || handle >= STR_TAG + self.str_heap.len() as f64 {
+        if !handle.is_finite() || handle < STR_TAG || handle >= STR_TAG + self.str_heap.len() as f64
+        {
             return Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
@@ -3226,19 +3773,26 @@ impl<'a> Vm<'a> {
     }
 
     /// A live map by handle, or the create-one error.
-    fn map_ref(&mut self, handle: f64) -> Result<&mut std::collections::HashMap<String, f64>, crate::ScriptError> {
+    fn map_ref(
+        &mut self,
+        handle: f64,
+    ) -> Result<&mut std::collections::HashMap<String, f64>, crate::ScriptError> {
         if !handle.is_finite() || handle < 0.0 || handle >= self.maps_live.len() as f64 {
             return Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
-                message: "that variable does not hold a map; create one with `var m = map.new()`".into(),
+                message: "that variable does not hold a map; create one with `var m = map.new()`"
+                    .into(),
             });
         }
         Ok(&mut self.maps_live[handle as usize])
     }
 
     /// A live matrix by handle, or the create-one error.
-    fn matrix_ref(&mut self, handle: f64) -> Result<&mut (usize, usize, Vec<f64>), crate::ScriptError> {
+    fn matrix_ref(
+        &mut self,
+        handle: f64,
+    ) -> Result<&mut (usize, usize, Vec<f64>), crate::ScriptError> {
         if !handle.is_finite() || handle < 0.0 || handle >= self.matrices_live.len() as f64 {
             return Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
@@ -3252,7 +3806,9 @@ impl<'a> Vm<'a> {
     /// `array.get(a, i)`, bounds-checked.
     fn array_read(&mut self, handle: f64, index: f64) -> Result<f64, crate::ScriptError> {
         let list = self.array_ref(handle)?;
-        let i = if index.is_finite() && index >= 0.0 { index as usize } else {
+        let i = if index.is_finite() && index >= 0.0 {
+            index as usize
+        } else {
             return Ok(NA);
         };
         Ok(list.get(i).copied().unwrap_or(NA))
@@ -3270,10 +3826,14 @@ impl<'a> Vm<'a> {
         self.tick()?;
         macro_rules! a {
             ($i:expr, $default:expr) => {
-                match args.get($i) {
+                match builtin_argument(callee, args, $i) {
                     Some(arg) => {
                         let v = self.eval_f(&arg.value)?;
-                        if v.is_finite() { v } else { $default }
+                        if v.is_finite() {
+                            v
+                        } else {
+                            $default
+                        }
                     }
                     None => $default,
                 }
@@ -3281,17 +3841,12 @@ impl<'a> Vm<'a> {
         }
         let out = match callee {
             "ta.macd" => {
-                let src = self.series_arg(args, 0)?;
-                let (macd, signal, hist) = ta::ta_macd(
-                    &src,
-                    a!(1, 12.0),
-                    a!(2, 26.0),
-                    a!(3, 9.0),
-                );
+                let src = self.series_arg(callee, args, 0)?;
+                let (macd, signal, hist) = ta::ta_macd(&src, a!(1, 12.0), a!(2, 26.0), a!(3, 9.0));
                 vec![macd, signal, hist]
             }
             "ta.bb" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 let (basis, upper, lower) = ta::ta_bb(&src, a!(1, 20.0), a!(2, 2.0));
                 vec![basis, upper, lower]
             }
@@ -3308,7 +3863,7 @@ impl<'a> Vm<'a> {
                 vec![line, dirn]
             }
             "ta.stoch" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 let k = ta::ta_stoch(
                     &src,
                     &self.builtin_series("high")?,
@@ -3389,7 +3944,10 @@ impl<'a> Vm<'a> {
                 self.tick()?;
                 let mut values = vec![NA; layout.len()];
                 for (idx, (fname, _)) in layout.iter().enumerate() {
-                    if let Some(a) = args.iter().find(|a| a.name.as_deref() == Some(fname.as_str())) {
+                    if let Some(a) = args
+                        .iter()
+                        .find(|a| a.name.as_deref() == Some(fname.as_str()))
+                    {
                         values[idx] = self.eval_f(&a.value)?;
                     }
                 }
@@ -3407,9 +3965,13 @@ impl<'a> Vm<'a> {
             let name = self.current_input_name.clone();
             let default = self.arg_named_f(args, "defval").unwrap_or(0.0);
             return Ok(match kind {
-                "bool" => {
-                    f64::from(self.inputs.bools.get(&name).copied().unwrap_or(default != 0.0))
-                }
+                "bool" => f64::from(
+                    self.inputs
+                        .bools
+                        .get(&name)
+                        .copied()
+                        .unwrap_or(default != 0.0),
+                ),
                 "int" | "float" | "time" | "price" => {
                     self.inputs.numbers.get(&name).copied().unwrap_or(default)
                 }
@@ -3475,17 +4037,12 @@ impl<'a> Vm<'a> {
                 // name in `input_timeframes` (the Assign arm skips the
                 // write), and `request.security` resolves the var there.
                 "timeframe" => {
-                    self.last_input_tf = Some(
-                        self.inputs
-                            .strings
-                            .get(&name)
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                self.arg_str(args, "defval")
-                                    .or_else(|| self.arg_str_pos(args, 0))
-                                    .unwrap_or_else(|| "1h".to_string())
-                            }),
-                    );
+                    self.last_input_tf =
+                        Some(self.inputs.strings.get(&name).cloned().unwrap_or_else(|| {
+                            self.arg_str(args, "defval")
+                                .or_else(|| self.arg_str_pos(args, 0))
+                                .unwrap_or_else(|| "1h".to_string())
+                        }));
                     0.0
                 }
                 _ => default,
@@ -3493,20 +4050,34 @@ impl<'a> Vm<'a> {
         }
         macro_rules! a {
             ($i:expr, $default:expr) => {
-                match args.get($i) {
+                match builtin_argument(callee, args, $i) {
                     Some(arg) => {
                         let v = self.eval_f(&arg.value)?;
-                        if v.is_finite() { v } else { $default }
+                        if v.is_finite() {
+                            v
+                        } else {
+                            $default
+                        }
                     }
                     None => $default,
                 }
             };
             ($i:expr) => {
-                match args.get($i) {
+                match builtin_argument(callee, args, $i) {
                     Some(arg) => self.eval_f(&arg.value),
                     None => Ok(NA),
                 }
             };
+        }
+        if let Some(spec) = crate::builtins::lookup(callee).filter(|spec| spec.multi_output_only) {
+            let count = spec.multi_output_count.unwrap_or(2);
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: format!(
+                    "`{callee}` returns {count} values; write `a, b = {callee}(...)` or destructure all outputs"
+                ),
+            });
         }
         match callee {
             // `timeframe.change("4h")` -- true on the chart bars that OPEN a
@@ -3516,20 +4087,24 @@ impl<'a> Vm<'a> {
             "timeframe.change" => {
                 let spec = match args.first().map(|a| &a.value.kind) {
                     Some(ExprKind::Str(s)) => s.clone(),
-                    _ => {
-                        return Err(crate::ScriptError {
-                            kind: crate::ErrorKind::Type,
-                            span: crate::Span::new(1, 1),
-                            message: "`timeframe.change` takes a quoted timeframe: timeframe.change(\"4h\")".into(),
-                        })
-                    }
+                    _ => return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message:
+                            "`timeframe.change` takes a quoted timeframe: timeframe.change(\"4h\")"
+                                .into(),
+                    }),
                 };
                 let tf = spec.parse::<Timeframe>().map_err(|_| crate::ScriptError {
                     kind: crate::ErrorKind::Type,
                     span: crate::Span::new(1, 1),
                     message: format!("`timeframe.change` does not know the timeframe \"{spec}\" (known: 1m, 5m, 15m, 1h, 4h, 1d, 1w)"),
                 })?;
-                let t = self.candles.get(self.bar).map(|cd| cd.open_time).unwrap_or(0);
+                let t = self
+                    .candles
+                    .get(self.bar)
+                    .map(|cd| cd.open_time)
+                    .unwrap_or(0);
                 let prev = self
                     .bar
                     .checked_sub(1)
@@ -3553,12 +4128,18 @@ impl<'a> Vm<'a> {
                         return Err(crate::ScriptError {
                             kind: crate::ErrorKind::Type,
                             span: crate::Span::new(1, 1),
-                            message: "`time(session)` needs a quoted session spec like \"0800-1200\"".into(),
+                            message:
+                                "`time(session)` needs a quoted session spec like \"0800-1200\""
+                                    .into(),
                         })
                     }
                 };
                 let nanos = self.candles.get(self.bar).map_or(0, |c| c.open_time) as f64;
-                Ok(if session_hit(&spec, nanos as i64) { nanos } else { crate::ta::NA })
+                Ok(if session_hit(&spec, nanos as i64) {
+                    nanos
+                } else {
+                    crate::ta::NA
+                })
             }
             // The call form of the time-of-day reads: `hour(time)` is the
             // current bar's UTC hour exactly like the bare `hour` series.
@@ -3570,7 +4151,9 @@ impl<'a> Vm<'a> {
                 // idiomatic `hour(time[1])` -- a session-boundary test --
                 // computes over the referenced bar, not the current one.
                 let t = a!(0)?;
-                let nanos = if t.is_finite() && t.abs() > 1e15 { t } else {
+                let nanos = if t.is_finite() && t.abs() > 1e15 {
+                    t
+                } else {
                     self.candles.get(self.bar).map_or(0, |c| c.open_time) as f64
                 };
                 Ok(match callee {
@@ -3630,47 +4213,37 @@ impl<'a> Vm<'a> {
                 Ok(v) // full-window form handled by ta::fixnan_series in v2
             }
             "ta.sma" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_sma(&src, a!(1)?)[self.bar])
             }
             "ta.ema" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_ema(&src, a!(1)?)[self.bar])
             }
             "ta.rma" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_rma(&src, a!(1)?)[self.bar])
             }
             "ta.wma" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_wma(&src, a!(1)?)[self.bar])
             }
             "ta.rsi" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_rsi(&src, a!(1)?)[self.bar])
             }
-            // Multi-output builtins: the scalar path refuses them so an
-            // author learns the destructuring form instead of plotting half a
-            // Bollinger band by accident.
-            "ta.macd" | "ta.bb" | "ta.dmi" | "ta.kc" | "ta.supertrend" => Err(crate::ScriptError {
-                kind: crate::ErrorKind::Type,
-                span: crate::Span::new(1, 1),
-                message: format!(
-                    "`{callee}` returns 3 values; write `a, b, c = {callee}(...)`"
-                ),
-            }),
             "ta.atr" => Ok(ta::ta_atr(self.candles, a!(0)?)[self.bar]),
             "ta.stdev" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_stdev(&src, a!(1)?)[self.bar])
             }
             "ta.variance" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_variance(&src, a!(1)?)[self.bar])
             }
             "ta.correlation" | "ta.covariance" => {
-                let x = self.series_arg(args, 0)?;
-                let y = self.series_arg(args, 1)?;
+                let x = self.series_arg(callee, args, 0)?;
+                let y = self.series_arg(callee, args, 1)?;
                 let len = a!(2)?;
                 Ok(if callee == "ta.correlation" {
                     ta::ta_correlation(&x, &y, len)
@@ -3679,7 +4252,7 @@ impl<'a> Vm<'a> {
                 }[self.bar])
             }
             "ta.deviation" | "ta.median" | "ta.mode" | "ta.percentrank" | "ta.range" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 let len = a!(1)?;
                 Ok(match callee {
                     "ta.deviation" => ta::ta_deviation(&src, len),
@@ -3690,7 +4263,7 @@ impl<'a> Vm<'a> {
                 }[self.bar])
             }
             "ta.percentile_linear_interpolation" | "ta.percentile_nearest_rank" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 let (len, pct) = (a!(1)?, a!(2)?);
                 Ok(if callee == "ta.percentile_linear_interpolation" {
                     ta::ta_percentile_linear_interpolation(&src, len, pct)
@@ -3699,24 +4272,28 @@ impl<'a> Vm<'a> {
                 }[self.bar])
             }
             "ta.vwma" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_vwma(&src, self.candles, a!(1)?)[self.bar])
             }
             "ta.swma" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_swma(&src)[self.bar])
             }
             "ta.alma" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_alma(&src, a!(1)?, a!(2, 0.85), a!(3, 6.0))[self.bar])
             }
             "ta.lsma" | "ta.linreg" => {
-                let src = self.series_arg(args, 0)?;
-                let f = if callee == "ta.lsma" { ta::ta_lsma } else { ta::ta_linreg };
+                let src = self.series_arg(callee, args, 0)?;
+                let f = if callee == "ta.lsma" {
+                    ta::ta_lsma
+                } else {
+                    ta::ta_linreg
+                };
                 Ok(f(&src, a!(1)?, a!(2, 0.0))[self.bar])
             }
             "ta.tema" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_tema(&src, a!(1)?)[self.bar])
             }
             // The volume classics take no arguments -- the candles carry
@@ -3727,69 +4304,78 @@ impl<'a> Vm<'a> {
             "ta.wad" => Ok(ta::ta_wad(self.candles)[self.bar]),
             "ta.ad" => Ok(ta::ta_ad(self.candles)[self.bar]),
             "ta.hma" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_hma(&src, a!(1)?)[self.bar])
             }
             "ta.cci" => Ok(ta::ta_cci(self.candles, a!(0)?)[self.bar]),
             "ta.mfi" => Ok(ta::ta_mfi(self.candles, a!(0)?)[self.bar]),
+            "ta.cmf" => Ok(ta::ta_cmf(self.candles, a!(0)?)[self.bar]),
+            "ta.ao" => Ok(ta::ta_ao(self.candles)[self.bar]),
             "ta.willr" => Ok(ta::ta_willr(self.candles, a!(0)?)[self.bar]),
             "ta.barssince" => {
-                let cond = self.series_arg(args, 0)?;
+                let cond = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_barssince(&cond)[self.bar])
             }
             "ta.valuewhen" => {
-                let cond = self.series_arg(args, 0)?;
-                let src = self.series_arg(args, 1)?;
+                let cond = self.series_arg(callee, args, 0)?;
+                let src = self.series_arg(callee, args, 1)?;
                 let occ = a!(2)?;
-                Ok(ta::ta_valuewhen(&cond, &src, if occ.is_finite() { occ } else { 0.0 })
-                    [self.bar])
+                Ok(
+                    ta::ta_valuewhen(&cond, &src, if occ.is_finite() { occ } else { 0.0 })
+                        [self.bar],
+                )
             }
             "ta.highestbars" => Ok(ta::ta_highestbars(self.candles, a!(0)?)[self.bar]),
             "ta.lowestbars" => Ok(ta::ta_lowestbars(self.candles, a!(0)?)[self.bar]),
             "ta.cum" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_cum(&src)[self.bar])
             }
             "ta.pivothigh" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_pivothigh(&src, a!(1)?, a!(2)?)[self.bar])
             }
             "ta.pivotlow" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_pivotlow(&src, a!(1)?, a!(2)?)[self.bar])
             }
             "ta.rising" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_rising(&src, a!(1)?)[self.bar])
             }
             "ta.falling" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_falling(&src, a!(1)?)[self.bar])
             }
             "ta.tr" => Ok(ta::ta_tr(self.candles)[self.bar]),
             "ta.highest" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_highest(&src, a!(1)?)[self.bar])
             }
             "ta.lowest" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_lowest(&src, a!(1)?)[self.bar])
             }
             "ta.change" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_change(&src)[self.bar])
             }
             "ta.mom" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_mom(&src, a!(1)?)[self.bar])
             }
             "ta.roc" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::ta_roc(&src, a!(1)?)[self.bar])
             }
             "ta.stoch" => {
-                let src = self.series_arg(args, 0)?;
-                Ok(ta::ta_stoch(&src, &self.builtin_series("high")?, &self.builtin_series("low")?, a!(1)?)[self.bar])
+                let src = self.series_arg(callee, args, 0)?;
+                Ok(ta::ta_stoch(
+                    &src,
+                    &self.builtin_series("high")?,
+                    &self.builtin_series("low")?,
+                    a!(1, 14.0),
+                )[self.bar])
             }
             "ta.vwap" => Ok(ta::ta_vwap(self.candles)[self.bar]),
             // ---- request.security("SYM", "tf", expr) (Phase 11, docs/23):
@@ -3901,11 +4487,7 @@ impl<'a> Vm<'a> {
                     let at_open = opened.checked_sub(1);
                     let at_close = closed.checked_sub(1);
                     let chart_close = chart.open_time.saturating_add(chart.timeframe.nanos());
-                    let visible_source = if lookahead_on {
-                        at_open
-                    } else {
-                        at_close
-                    };
+                    let visible_source = if lookahead_on { at_open } else { at_close };
                     let output_source = if !gaps_on {
                         visible_source
                     } else if lookahead_on {
@@ -4019,11 +4601,7 @@ impl<'a> Vm<'a> {
             // ---- request.*: the second instrument's series, bar-aligned by
             // the host. A call with no `sec=` in the header is refused here
             // with the fix named -- the same honesty the vet layer gives.
-            "request.symbol" => Ok(self
-                .security_ticker
-                .clone()
-                .map(|_| 1.0)
-                .unwrap_or(NA)),
+            "request.symbol" => Ok(self.security_ticker.clone().map(|_| 1.0).unwrap_or(NA)),
             "request.open" | "request.high" | "request.low" | "request.close"
             | "request.volume" | "request.time" => {
                 let slot = self
@@ -4051,12 +4629,12 @@ impl<'a> Vm<'a> {
                 })
             }
             "ta.crossover" | "ta.crossunder" | "ta.cross" => {
-                let l = self.series_arg(args, 0)?;
-                let r = self.series_arg(args, 1)?;
-                Ok(if callee == "ta.crossover" {
-                    ta::ta_crossover(&l, &r)[self.bar]
-                } else {
-                    ta::ta_crossunder(&l, &r)[self.bar]
+                let l = self.series_arg(callee, args, 0)?;
+                let r = self.series_arg(callee, args, 1)?;
+                Ok(match callee {
+                    "ta.crossover" => ta::ta_crossover(&l, &r)[self.bar],
+                    "ta.crossunder" => ta::ta_crossunder(&l, &r)[self.bar],
+                    _ => ta::ta_cross(&l, &r)[self.bar],
                 })
             }
             "math.abs" => Ok(a!(0)?.abs()),
@@ -4068,11 +4646,19 @@ impl<'a> Vm<'a> {
             "math.tan" => Ok(a!(0)?.tan()),
             "math.asin" => {
                 let v = a!(0)?;
-                Ok(if (-1.0..=1.0).contains(&v) { v.asin() } else { NA })
+                Ok(if (-1.0..=1.0).contains(&v) {
+                    v.asin()
+                } else {
+                    NA
+                })
             }
             "math.acos" => {
                 let v = a!(0)?;
-                Ok(if (-1.0..=1.0).contains(&v) { v.acos() } else { NA })
+                Ok(if (-1.0..=1.0).contains(&v) {
+                    v.acos()
+                } else {
+                    NA
+                })
             }
             "math.atan" => Ok(a!(0)?.atan()),
             "math.atan2" => Ok(a!(0)?.atan2(a!(1)?)),
@@ -4082,7 +4668,11 @@ impl<'a> Vm<'a> {
                 let mut acc = a!(0)?;
                 for i in 1..args.len() {
                     let v = a!(i)?;
-                    acc = if callee == "math.min" { acc.min(v) } else { acc.max(v) };
+                    acc = if callee == "math.min" {
+                        acc.min(v)
+                    } else {
+                        acc.max(v)
+                    };
                 }
                 Ok(acc)
             }
@@ -4107,7 +4697,7 @@ impl<'a> Vm<'a> {
                 Ok(if count > 0.0 { sum / count } else { NA })
             }
             "math.sum" => {
-                let src = self.series_arg(args, 0)?;
+                let src = self.series_arg(callee, args, 0)?;
                 Ok(ta::math_sum(&src, a!(1)?)[self.bar])
             }
             // ---- arrays: a variable holds a handle (heap index); the heap
@@ -4118,7 +4708,9 @@ impl<'a> Vm<'a> {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Limit,
                         span: crate::Span::new(1, 1),
-                        message: format!("more than {MAX_ARRAYS} arrays; allocate them once with `var`"),
+                        message: format!(
+                            "more than {MAX_ARRAYS} arrays; allocate them once with `var`"
+                        ),
                     });
                 }
                 self.heap.push(Vec::new());
@@ -4183,7 +4775,9 @@ impl<'a> Vm<'a> {
                 let handle = a!(0)?;
                 let needle = a!(1)?;
                 Ok(f64::from(
-                    self.array_ref(handle)?.iter().any(|v| (*v - needle).abs() < f64::EPSILON),
+                    self.array_ref(handle)?
+                        .iter()
+                        .any(|v| (*v - needle).abs() < f64::EPSILON),
                 ))
             }
             "matrix.new" => {
@@ -4191,7 +4785,9 @@ impl<'a> Vm<'a> {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Limit,
                         span: crate::Span::new(1, 1),
-                        message: format!("more than {MAX_ARRAYS} matrices; allocate them once with `var`"),
+                        message: format!(
+                            "more than {MAX_ARRAYS} matrices; allocate them once with `var`"
+                        ),
                     });
                 }
                 let rows = a!(0)?.max(1.0) as usize;
@@ -4204,7 +4800,8 @@ impl<'a> Vm<'a> {
                         message: "a matrix may hold at most 65536 cells".into(),
                     });
                 }
-                self.matrices_live.push((rows, cols, vec![init; rows * cols]));
+                self.matrices_live
+                    .push((rows, cols, vec![init; rows * cols]));
                 Ok((self.matrices_live.len() - 1) as f64)
             }
             "matrix.get" => {
@@ -4231,7 +4828,9 @@ impl<'a> Vm<'a> {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Limit,
                         span: crate::Span::new(1, 1),
-                        message: format!("more than {MAX_ARRAYS} maps; allocate them once with `var`"),
+                        message: format!(
+                            "more than {MAX_ARRAYS} maps; allocate them once with `var`"
+                        ),
                     });
                 }
                 self.maps_live.push(std::collections::HashMap::new());
@@ -4256,7 +4855,9 @@ impl<'a> Vm<'a> {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Limit,
                         span: crate::Span::new(1, 1),
-                        message: format!("more than {MAX_ARRAYS} string arrays; allocate them once with `var`"),
+                        message: format!(
+                            "more than {MAX_ARRAYS} string arrays; allocate them once with `var`"
+                        ),
                     });
                 }
                 self.str_heap.push(Vec::new());
@@ -4283,7 +4884,9 @@ impl<'a> Vm<'a> {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Limit,
                         span: crate::Span::new(1, 1),
-                        message: format!("more than {MAX_ARRAYS} arrays; allocate them once with `var`"),
+                        message: format!(
+                            "more than {MAX_ARRAYS} arrays; allocate them once with `var`"
+                        ),
                     });
                 }
                 let mut list = Vec::with_capacity(args.len());
@@ -4300,16 +4903,30 @@ impl<'a> Vm<'a> {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Limit,
                         span: crate::Span::new(1, 1),
-                        message: format!("more than {MAX_ARRAYS} arrays; allocate them once with `var`"),
+                        message: format!(
+                            "more than {MAX_ARRAYS} arrays; allocate them once with `var`"
+                        ),
                     });
                 }
                 let slice = {
                     let list = self.array_ref(handle)?;
                     let len = list.len();
-                    let lo = if from.is_finite() { from.max(0.0) as usize } else { 0 };
+                    let lo = if from.is_finite() {
+                        from.max(0.0) as usize
+                    } else {
+                        0
+                    };
                     // Pine's end index is exclusive.
-                    let hi = if to.is_finite() { (to.max(0.0) as usize).min(len) } else { len };
-                    if lo < hi { list[lo..hi].to_vec() } else { Vec::new() }
+                    let hi = if to.is_finite() {
+                        (to.max(0.0) as usize).min(len)
+                    } else {
+                        len
+                    };
+                    if lo < hi {
+                        list[lo..hi].to_vec()
+                    } else {
+                        Vec::new()
+                    }
                 };
                 self.heap.push(slice);
                 Ok((self.heap.len() - 1) as f64)
@@ -4330,7 +4947,9 @@ impl<'a> Vm<'a> {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Limit,
                         span: crate::Span::new(1, 1),
-                        message: format!("more than {MAX_ARRAYS} arrays; allocate them once with `var`"),
+                        message: format!(
+                            "more than {MAX_ARRAYS} arrays; allocate them once with `var`"
+                        ),
                     });
                 }
                 let mut joined = { self.array_ref(h1)?.clone() };
@@ -4353,14 +4972,22 @@ impl<'a> Vm<'a> {
     /// snapshot -- the body's field writes must land on the same instance)
     /// and registers its type for the body's field reads. Returns None when
     /// the callee is not a method on the base's type.
-    fn method_call(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+    fn method_call(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+    ) -> Result<Option<f64>, crate::ScriptError> {
         let Some((base, mname)) = callee.split_once('.') else {
             return Ok(None);
         };
         let Some(type_name) = self.var_udt_types.get(base).cloned() else {
             return Ok(None);
         };
-        let Some((params, body)) = self.methods.get(&(type_name.clone(), mname.to_string())).cloned() else {
+        let Some((params, body)) = self
+            .methods
+            .get(&(type_name.clone(), mname.to_string()))
+            .cloned()
+        else {
             return Ok(None);
         };
         if self.call_depth >= MAX_CALL_DEPTH {
@@ -4372,13 +4999,20 @@ impl<'a> Vm<'a> {
         }
         self.tick()?;
         let handle = self.read_name(base)?;
-        let recv = params.first().cloned().unwrap_or_else(|| "self".to_string());
+        let recv = params
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "self".to_string());
         let mut locals = std::collections::HashMap::new();
-        let mut series_args: std::collections::HashMap<String, Expr> = std::collections::HashMap::new();
+        let mut series_args: std::collections::HashMap<String, Expr> =
+            std::collections::HashMap::new();
         // The receiver binds the instance handle itself.
         locals.insert(recv.clone(), handle);
         for (i, arg) in args.iter().enumerate() {
-            let param = params.get(i + 1).cloned().unwrap_or_else(|| format!("arg{i}"));
+            let param = params
+                .get(i + 1)
+                .cloned()
+                .unwrap_or_else(|| format!("arg{i}"));
             let resolved = self.resolve_param(&arg.value);
             series_args.insert(param.clone(), resolved);
             let v = self.eval_f(&arg.value)?;
@@ -4423,8 +5057,13 @@ impl<'a> Vm<'a> {
     /// variable (ring buffer, already per-bar), or (c) a call -- in which case
     /// the call is re-evaluated for every bar against frozen buffers. (c) is
     /// the expensive path and why fuel exists.
-    fn series_arg(&mut self, args: &[Arg], index: usize) -> Result<Series, crate::ScriptError> {
-        let Some(arg) = args.get(index) else {
+    fn series_arg(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+        index: usize,
+    ) -> Result<Series, crate::ScriptError> {
+        let Some(arg) = builtin_argument(callee, args, index) else {
             return Ok(vec![NA; self.candles.len()]);
         };
         let n = self.candles.len();
@@ -4515,12 +5154,18 @@ impl<'a> Vm<'a> {
     /// ta call's series can be cached for the whole run.
     fn expr_depends_on_vars(expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Ident(name) => !matches!(
-                name.as_str(),
-                "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4"
-            ) && !name.contains('.'),
-            ExprKind::Member { .. } | ExprKind::Num(_) | ExprKind::Bool(_) | ExprKind::Str(_)
-            | ExprKind::Color(_) | ExprKind::Na => false,
+            ExprKind::Ident(name) => {
+                !matches!(
+                    name.as_str(),
+                    "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4"
+                ) && !name.contains('.')
+            }
+            ExprKind::Member { .. }
+            | ExprKind::Num(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Str(_)
+            | ExprKind::Color(_)
+            | ExprKind::Na => false,
             ExprKind::NaChecked { value } => Self::expr_depends_on_vars(value),
             ExprKind::Bin { left, right, .. } => {
                 Self::expr_depends_on_vars(left) || Self::expr_depends_on_vars(right)
@@ -4570,20 +5215,15 @@ impl<'a> Vm<'a> {
             return Err(crate::ScriptError {
                 kind: crate::ErrorKind::Limit,
                 span: crate::Span::new(1, 1),
-                message: format!(
-                    "call depth exceeds {MAX_CALL_DEPTH}; recursion is refused"
-                ),
+                message: format!("call depth exceeds {MAX_CALL_DEPTH}; recursion is refused"),
             });
         }
         self.tick()?;
-        let body = *self
-            .funcs
-            .get(callee)
-            .ok_or_else(|| crate::ScriptError {
-                kind: crate::ErrorKind::Type,
-                span: crate::Span::new(1, 1),
-                message: format!("`{callee}` is not defined"),
-            })?;
+        let body = *self.funcs.get(callee).ok_or_else(|| crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span: crate::Span::new(1, 1),
+            message: format!("`{callee}` is not defined"),
+        })?;
         // Bind arguments by the signature's parameter names -- the checker
         // already guaranteed the arity matches. PINE SEMANTICS: a parameter
         // binds the caller's EXPRESSION as a series, not its value snapshot
@@ -4594,16 +5234,23 @@ impl<'a> Vm<'a> {
         // read of a param consults that map first, so plain arithmetic
         // (`f(high - low)`) replays the expression per bar too.
         let def = self.script.items.iter().find_map(|item| match item {
-            Item::FuncDef { name: n, params, defaults, .. } if n == callee => {
-                Some((params.clone(), defaults.clone()))
-            }
+            Item::FuncDef {
+                name: n,
+                params,
+                defaults,
+                ..
+            } if n == callee => Some((params.clone(), defaults.clone())),
             _ => None,
         });
         let (def_params, def_defaults) = def.unwrap_or_else(|| (Vec::new(), Vec::new()));
         let mut locals = std::collections::HashMap::new();
-        let mut series_args: std::collections::HashMap<String, Expr> = std::collections::HashMap::new();
+        let mut series_args: std::collections::HashMap<String, Expr> =
+            std::collections::HashMap::new();
         for (i, arg) in args.iter().enumerate() {
-            let param = def_params.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
+            let param = def_params
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("arg{i}"));
             // Transitive substitution: binding `n -> Ident("n")` would make a
             // parameter read resolve against ITS OWN frame -- an eval loop
             // the depth cap can never see (no call frame is pushed). Resolve
@@ -4884,7 +5531,12 @@ impl<'a> Vm<'a> {
 
     /// The label text args, through eval_s (fallible: a bad text expression
     /// is a script error, not an empty label).
-    fn arg_text(&mut self, args: &[Arg], name: &str, pos: usize) -> Result<Option<String>, crate::ScriptError> {
+    fn arg_text(
+        &mut self,
+        args: &[Arg],
+        name: &str,
+        pos: usize,
+    ) -> Result<Option<String>, crate::ScriptError> {
         let arg = args
             .iter()
             .find(|a| a.name.as_deref() == Some(name))
@@ -4897,7 +5549,14 @@ impl<'a> Vm<'a> {
 
     fn arg_str_pos(&self, args: &[Arg], index: usize) -> Option<String> {
         match args.get(index) {
-            Some(Arg { value: Expr { kind: ExprKind::Str(s), .. }, .. }) => Some(s.clone()),
+            Some(Arg {
+                value:
+                    Expr {
+                        kind: ExprKind::Str(s),
+                        ..
+                    },
+                ..
+            }) => Some(s.clone()),
             _ => None,
         }
     }
@@ -4922,7 +5581,8 @@ impl<'a> Vm<'a> {
             _ => Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
-                message: "extend= takes one of extend.none, extend.right, extend.left, extend.both".into(),
+                message: "extend= takes one of extend.none, extend.right, extend.left, extend.both"
+                    .into(),
             }),
         }
     }
@@ -4935,12 +5595,19 @@ impl<'a> Vm<'a> {
             ExprKind::Color(c) => Some(*c),
             ExprKind::Ident(name) => named_color(name).or_else(|| {
                 if self.vars.contains_key(name) {
-                    self.eval_f(&arg.value).ok().filter(|v| v.is_finite()).map(|v| v as u32)
+                    self.eval_f(&arg.value)
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .map(|v| v as u32)
                 } else {
                     None
                 }
             }),
-            _ => self.eval_f(&arg.value).ok().filter(|v| v.is_finite()).map(|v| v as u32),
+            _ => self
+                .eval_f(&arg.value)
+                .ok()
+                .filter(|v| v.is_finite())
+                .map(|v| v as u32),
         }
     }
 
@@ -4959,7 +5626,9 @@ impl<'a> Vm<'a> {
             _ => Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
-                message: "set_extend takes one of extend.none, extend.right, extend.left, extend.both".into(),
+                message:
+                    "set_extend takes one of extend.none, extend.right, extend.left, extend.both"
+                        .into(),
             }),
         }
     }
@@ -4986,14 +5655,31 @@ impl<'a> Vm<'a> {
                 // An input.color var (or any numeric) holds the u32 as a
                 // float; read it.
                 if self.vars.contains_key(name) {
-                    self.eval_f(&arg.value).ok().filter(|v| v.is_finite()).map(|v| v as u32)
+                    self.eval_f(&arg.value)
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .map(|v| v as u32)
                 } else {
                     None
                 }
             }),
-            _ => self.eval_f(&arg.value).ok().filter(|v| v.is_finite()).map(|v| v as u32),
+            _ => self
+                .eval_f(&arg.value)
+                .ok()
+                .filter(|v| v.is_finite())
+                .map(|v| v as u32),
         }
     }
+}
+
+fn builtin_argument<'a>(callee: &str, args: &'a [Arg], index: usize) -> Option<&'a Arg> {
+    let Some(spec) = crate::builtins::lookup(callee).filter(|spec| spec.metadata_complete) else {
+        return args.get(index);
+    };
+    let parameter = spec.parameters.get(index)?;
+    args.iter()
+        .find(|arg| arg.name.as_deref() == Some(parameter.name))
+        .or_else(|| args.iter().filter(|arg| arg.name.is_none()).nth(index))
 }
 
 fn checked_array_set_index(
@@ -5045,7 +5731,7 @@ fn named_color(name: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lex, parse, typecheck, limits};
+    use crate::{lex, limits, parse, typecheck};
     use analytics_core::types::Timeframe;
 
     #[test]
@@ -5088,7 +5774,11 @@ mod tests {
         );
         let out = run_src(src, &candles);
         // high = close + 1 = 101+i; crosses 104 at bar 4 (104 <= 104, 105 > 104)
-        assert_eq!(out.shapes.len(), 1, "the crossover fires once, at the cross bar");
+        assert_eq!(
+            out.shapes.len(),
+            1,
+            "the crossover fires once, at the cross bar"
+        );
         assert_eq!(out.shapes[0].bar, 4);
     }
 
@@ -5111,8 +5801,10 @@ mod tests {
         );
         let out = run_src(src, &candles);
         let values = &out.plots[0].values;
-        assert!(values[0].is_nan() && values[1].is_nan() && values[2].is_nan(),
-            "before the first assignment the history is na: {values:?}");
+        assert!(
+            values[0].is_nan() && values[1].is_nan() && values[2].is_nan(),
+            "before the first assignment the history is na: {values:?}"
+        );
         assert_eq!(values[3], 42.0, "bar 3 reads bar 2's assignment");
         assert_eq!(values[9], 42.0, "bar 9 still reads the carried assignment");
     }
@@ -5304,13 +5996,18 @@ mod tests {
                    plot(up ? 1 : 0, title=\"u\")\n";
         let out = run_src(src, &candles);
         let values = &out.plots[0].values;
-        assert_eq!(values[0], 0.0, "close[1] on bar 0 is na; the comparison is false");
+        assert_eq!(
+            values[0], 0.0,
+            "close[1] on bar 0 is na; the comparison is false"
+        );
         assert_eq!(values[3], 1.0);
     }
 
     #[test]
     fn strategy_intents_are_recorded() {
-        let candles: Vec<Candle> = (0..30).map(|i| candle(i, 100.0 + ((i % 7) as f64))).collect();
+        let candles: Vec<Candle> = (0..30)
+            .map(|i| candle(i, 100.0 + ((i % 7) as f64)))
+            .collect();
         // Real newlines with real indentation: Rust's `\n\` continuation
         // strips the next line's leading whitespace, which would flatten the
         // if-body out of the block.
@@ -5324,12 +6021,17 @@ mod tests {
         let out = run_src(src, &candles);
         assert!(out.strategy_used);
         assert!(!out.intents.is_empty());
-        assert!(out.intents.iter().all(|(_, i)| matches!(i, Intent::Entry { long: true, .. })));
+        assert!(out
+            .intents
+            .iter()
+            .all(|(_, i)| matches!(i, Intent::Entry { long: true, .. })));
     }
 
     #[test]
     fn crossover_over_a_ta_call_works() {
-        let candles: Vec<Candle> = (0..60).map(|i| candle(i, 100.0 + ((i % 9) as f64))).collect();
+        let candles: Vec<Candle> = (0..60)
+            .map(|i| candle(i, 100.0 + ((i % 9) as f64)))
+            .collect();
         let src = "//@pine_lite version=1\n\
                    up = ta.crossover(close, ta.sma(close, 9))\n\
                    plot(up ? 1 : 0, title=\"x\")\n";
@@ -5359,7 +6061,11 @@ mod tests {
             "plot(s, title=\"s\")\n",
         );
         let out = run_src(src, &candles);
-        assert!((out.plots[0].values[0] - 10.0).abs() < 1e-9, "1+2+3+4=10, got {}", out.plots[0].values[0]);
+        assert!(
+            (out.plots[0].values[0] - 10.0).abs() < 1e-9,
+            "1+2+3+4=10, got {}",
+            out.plots[0].values[0]
+        );
     }
 
     #[test]
@@ -5374,7 +6080,11 @@ mod tests {
         );
         let out = run_src(src, &candles);
         // Bar 9: close[0..3] = 9+8+7+6 = 30.
-        assert!((out.plots[0].values[9] - 30.0).abs() < 1e-9, "got {}", out.plots[0].values[9]);
+        assert!(
+            (out.plots[0].values[9] - 30.0).abs() < 1e-9,
+            "got {}",
+            out.plots[0].values[9]
+        );
     }
 
     #[test]
@@ -5616,9 +6326,13 @@ mod tests {
             .objects
             .iter()
             .filter_map(|o| match o {
-                ScriptObject::Box { left, top, right, bottom, .. } => {
-                    Some((*left, *top, *right, *bottom))
-                }
+                ScriptObject::Box {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    ..
+                } => Some((*left, *top, *right, *bottom)),
                 _ => None,
             })
             .collect();
@@ -5628,7 +6342,10 @@ mod tests {
         assert_eq!(left, 6.0, "the box anchors at the pattern's first candle");
         assert_eq!(top, 106.5);
         assert_eq!(bottom, 103.5);
-        assert!(right >= 10_000.0, "the right edge extends into the future: {right}");
+        assert!(
+            right >= 10_000.0,
+            "the right edge extends into the future: {right}"
+        );
     }
 }
 

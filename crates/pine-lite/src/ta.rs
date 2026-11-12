@@ -1,19 +1,13 @@
-//! `ta.*` -- the technical-analysis builtins, over `analytics-core`.
+//! Pine-Lite's technical-analysis adapters and remaining formulas.
 //!
-//! The rule from `docs/23`: **pine-lite never owns indicator math.** Every
-//! function here calls the `analytics-core` implementation the chart, the
-//! scanner and the validator already use, so a script's numbers are those
-//! numbers. Where Pine's semantics differ from the crate's output shape (Pine
-//! returns `float` with `na`, the crate returns `Option<f64>` per bar), the
-//! translation is explicit below: `None` becomes `na` (`f64::NAN`), which the
-//! interpreter propagates with Pine's rules.
-//!
-//! Numeric builtins that `analytics-core` has no equivalent for (`math.*`)
-//! live here too -- arithmetic over scalars is not trading math, so it does
-//! not breach the one-implementation rule.
+//! Shared indicators delegate to `analytics-core`; `None` maps to Pine-Lite's
+//! `na` (`f64::NAN`). Formulas without a matching shared implementation, or
+//! whose series inputs differ from the shared API, remain explicit local
+//! adapters with numeric fixtures. Scalar `math.*` helpers also live here.
 
-use analytics_core::indicators::{atr, ema, rsi, sma};
+use analytics_core::indicators::{atr, ema, rsi};
 use analytics_core::types::Candle;
+use std::collections::VecDeque;
 
 /// A float series: one value per bar, `na` as `NaN`.
 pub type Series = Vec<f64>;
@@ -37,10 +31,22 @@ pub fn closes(candles: &[Candle]) -> Series {
 #[must_use]
 pub fn ta_sma(source: &[f64], length: f64) -> Series {
     let period = length.max(1.0) as usize;
-    sma(source, period)
-        .into_iter()
-        .map(|v| v.unwrap_or(NA))
-        .collect()
+    let mut out = vec![NA; source.len()];
+    let mut window = VecDeque::new();
+    let mut sum = 0.0;
+    for (i, &value) in source.iter().enumerate() {
+        if value.is_finite() {
+            window.push_back(value);
+            sum += value;
+            if window.len() > period {
+                sum -= window.pop_front().expect("window exceeds period");
+            }
+        }
+        if window.len() == period {
+            out[i] = sum / period as f64;
+        }
+    }
+    out
 }
 
 /// `ta.ema(source, length)` -- SMA-seeded, as Pine seeds it.
@@ -147,7 +153,7 @@ pub fn ta_atr(candles: &[Candle], length: f64) -> Series {
 pub fn ta_macd(source: &[f64], fast: f64, slow: f64, signal: f64) -> (Series, Series, Series) {
     let fast_line = ta_ema(source, fast);
     let slow_line = ta_ema(source, slow);
-    let macd: Series = fast_line
+    let line: Series = fast_line
         .iter()
         .zip(&slow_line)
         .map(|(f, s)| {
@@ -158,21 +164,18 @@ pub fn ta_macd(source: &[f64], fast: f64, slow: f64, signal: f64) -> (Series, Se
             }
         })
         .collect();
-    // The signal line is an EMA of the macd line, skipping leading na.
-    let first_finite = macd.iter().position(|v| v.is_finite());
-    let mut signal_line = vec![NA; macd.len()];
-    let mut hist = vec![NA; macd.len()];
-    if let Some(start) = first_finite {
-        let trimmed: Vec<f64> = macd[start..].to_vec();
-        let sig = ta_ema(&trimmed, signal.max(1.0));
-        for (i, v) in sig.into_iter().enumerate() {
-            signal_line[start + i] = v;
-            if v.is_finite() && macd[start + i].is_finite() {
-                hist[start + i] = macd[start + i] - v;
+    let mut signal_line = vec![NA; source.len()];
+    let mut hist = vec![NA; source.len()];
+    if let Some(start) = line.iter().position(|value| value.is_finite()) {
+        let signal_tail = ta_ema(&line[start..], signal.max(1.0));
+        for (i, value) in signal_tail.into_iter().enumerate() {
+            signal_line[start + i] = value;
+            if value.is_finite() {
+                hist[start + i] = line[start + i] - value;
             }
         }
     }
-    (macd, signal_line, hist)
+    (line, signal_line, hist)
 }
 
 /// `ta.highest(source, length)`.
@@ -188,7 +191,7 @@ pub fn ta_lowest(source: &[f64], length: f64) -> Series {
 }
 
 fn window_fold(source: &[f64], length: f64, init: f64, f: fn(f64, f64) -> f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         let mut acc = init;
@@ -250,6 +253,25 @@ pub fn ta_crossunder(a: &[f64], b: &[f64]) -> Series {
     cross(a, b, false)
 }
 
+/// `ta.cross(a, b)`: fires on either an upward or downward cross.
+#[must_use]
+pub fn ta_cross(a: &[f64], b: &[f64]) -> Series {
+    let up = ta_crossover(a, b);
+    let down = ta_crossunder(a, b);
+    up.iter()
+        .zip(down.iter())
+        .map(|(up, down)| {
+            if *up == 1.0 || *down == 1.0 {
+                1.0
+            } else if up.is_finite() && down.is_finite() {
+                0.0
+            } else {
+                NA
+            }
+        })
+        .collect()
+}
+
 fn cross(a: &[f64], b: &[f64], over: bool) -> Series {
     let n = a.len().min(b.len());
     let mut out = vec![NA; a.len()];
@@ -284,11 +306,17 @@ pub fn ta_vwap(candles: &[Candle]) -> Series {
 /// stochastic, this function becomes a call to it (docs/23's rule).
 #[must_use]
 pub fn ta_stoch(source: &[f64], high: &[f64], low: &[f64], length: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
-        let hh = high[i + 1 - n..=i].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let ll = low[i + 1 - n..=i].iter().cloned().fold(f64::INFINITY, f64::min);
+        let hh = high[i + 1 - n..=i]
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let ll = low[i + 1 - n..=i]
+            .iter()
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
         if hh.is_finite() && ll.is_finite() && hh != ll {
             out[i] = 100.0 * (source[i] - ll) / (hh - ll);
         } else {
@@ -301,20 +329,17 @@ pub fn ta_stoch(source: &[f64], high: &[f64], low: &[f64], length: f64) -> Serie
 /// `ta.bb(source, length, mult)` -> `(basis, upper, lower)`.
 #[must_use]
 pub fn ta_bb(source: &[f64], length: f64, mult: f64) -> (Series, Series, Series) {
-    let basis = ta_sma(source, length);
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let points =
+        analytics_core::indicators::bollinger::bollinger(source, length.max(1.0) as usize, mult);
+    let mut basis = vec![NA; source.len()];
     let mut upper = vec![NA; source.len()];
     let mut lower = vec![NA; source.len()];
-    for i in (n - 1)..source.len() {
-        if !basis[i].is_finite() {
-            continue;
+    for (i, point) in points.into_iter().enumerate() {
+        if let Some(point) = point {
+            basis[i] = point.middle;
+            upper[i] = point.upper;
+            lower[i] = point.lower;
         }
-        let window = &source[i + 1 - n..=i];
-        let mean = basis[i];
-        let var = window.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n as f64;
-        let dev = var.sqrt() * mult;
-        upper[i] = mean + dev;
-        lower[i] = mean - dev;
     }
     (basis, upper, lower)
 }
@@ -322,7 +347,7 @@ pub fn ta_bb(source: &[f64], length: f64, mult: f64) -> (Series, Series, Series)
 /// `math.sum(source, length)`.
 #[must_use]
 pub fn math_sum(source: &[f64], length: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         out[i] = source[i + 1 - n..=i].iter().sum();
@@ -330,14 +355,13 @@ pub fn math_sum(source: &[f64], length: f64) -> Series {
     out
 }
 
-
 // ---------- Tier 1 packs: oscillators, since/when, event helpers ----------
 
 /// `ta.stdev(source, length)` -- population standard deviation (Pine's
 /// default `biased = true`).
 #[must_use]
 pub fn ta_stdev(source: &[f64], length: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         let w = &source[i + 1 - n..=i];
@@ -354,7 +378,9 @@ pub fn ta_stdev(source: &[f64], length: f64) -> Series {
 #[must_use]
 pub fn ta_variance(source: &[f64], length: f64) -> Series {
     let sd = ta_stdev(source, length);
-    sd.iter().map(|v| if v.is_finite() { v * v } else { NA }).collect()
+    sd.iter()
+        .map(|v| if v.is_finite() { v * v } else { NA })
+        .collect()
 }
 
 /// `ta.hma(source, length)` -- Hull: wma(2*wma(n/2) - wma(n), sqrt(n)).
@@ -368,7 +394,13 @@ pub fn ta_hma(source: &[f64], length: f64) -> Series {
     let diff: Series = w1
         .iter()
         .zip(&w2)
-        .map(|(a, b)| if a.is_finite() && b.is_finite() { 2.0 * a - b } else { NA })
+        .map(|(a, b)| {
+            if a.is_finite() && b.is_finite() {
+                2.0 * a - b
+            } else {
+                NA
+            }
+        })
         .collect();
     // The diff leads with na until both wmas warm up; trim before the last
     // wma so it seeds on the first real value (the macd pattern).
@@ -386,45 +418,44 @@ pub fn ta_hma(source: &[f64], length: f64) -> Series {
 /// `ta.cci(length)` -- commodity channel index over the typical price.
 #[must_use]
 pub fn ta_cci(candles: &[Candle], length: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(candles.len().max(1));
-    let tp: Vec<f64> = candles.iter().map(|c| (c.high + c.low + c.close) / 3.0).collect();
-    let ma = ta_sma(&tp, length);
-    let mut out = vec![NA; candles.len()];
-    for i in (n - 1)..candles.len() {
-        if ma[i].is_finite() {
-            let dev = tp[i + 1 - n..=i].iter().map(|v| (v - ma[i]).abs()).sum::<f64>() / n as f64;
-            out[i] = if dev > 0.0 { (tp[i] - ma[i]) / (0.015 * dev) } else { 0.0 };
-        }
-    }
-    out
+    analytics_core::indicators::oscillators::cci(candles, length.max(1.0) as usize)
+        .into_iter()
+        .map(|value| value.unwrap_or(NA))
+        .collect()
 }
 
 /// `ta.mfi(length)` -- money flow index (volume-weighted rsi shape).
 #[must_use]
 pub fn ta_mfi(candles: &[Candle], length: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(candles.len().max(1));
-    let mut out = vec![NA; candles.len()];
-    for i in n..candles.len() {
-        let (mut pos, mut neg) = (0.0, 0.0);
-        for j in i + 1 - n..=i {
-            let tp = (candles[j].high + candles[j].low + candles[j].close) / 3.0;
-            let prev = (candles[j - 1].high + candles[j - 1].low + candles[j - 1].close) / 3.0;
-            let rmf = tp * candles[j].volume;
-            if tp > prev {
-                pos += rmf;
-            } else if tp < prev {
-                neg += rmf;
-            }
-        }
-        out[i] = if neg == 0.0 { 100.0 } else { 100.0 - 100.0 / (1.0 + pos / neg) };
-    }
-    out
+    analytics_core::indicators::misc::mfi(candles, length.max(1.0) as usize)
+        .into_iter()
+        .map(|value| value.unwrap_or(NA))
+        .collect()
+}
+
+/// `ta.cmf(length)` -- Chaikin Money Flow, delegated to analytics-core.
+#[must_use]
+pub fn ta_cmf(candles: &[Candle], length: f64) -> Series {
+    let period = length.max(1.0) as usize;
+    analytics_core::indicators::misc::cmf(candles, period)
+        .into_iter()
+        .map(|value| value.unwrap_or(NA))
+        .collect()
+}
+
+/// `ta.ao()` -- Awesome Oscillator with its standard 5/34 midpoint SMAs.
+#[must_use]
+pub fn ta_ao(candles: &[Candle]) -> Series {
+    analytics_core::indicators::misc::awesome(candles, 5, 34)
+        .into_iter()
+        .map(|value| value.unwrap_or(NA))
+        .collect()
 }
 
 /// `ta.willr(length)` -- Williams %R, -100..0.
 #[must_use]
 pub fn ta_willr(candles: &[Candle], length: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(candles.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; candles.len()];
     for i in (n - 1)..candles.len() {
         let w = &candles[i + 1 - n..=i];
@@ -437,93 +468,39 @@ pub fn ta_willr(candles: &[Candle], length: f64) -> Series {
     out
 }
 
-/// Wilder smoothing over a dense (no-na) series; leads with na until the
-/// first full window, seeded with that window's mean, then the classic
-/// recursion.
-fn wilder(source: &[f64], length: usize) -> Series {
-    let n = source.len();
-    let mut out = vec![NA; n];
-    if n < length || length == 0 {
-        return out;
-    }
-    let mut acc: f64 = source[..length].iter().sum();
-    out[length - 1] = acc / length as f64;
-    for i in length..n {
-        acc = acc - acc / length as f64 + source[i];
-        out[i] = acc / length as f64;
-    }
-    out
-}
-
 /// `ta.dmi(length)` -> `(+DI, -DI, ADX)`, Wilder's definitions.
 #[must_use]
 pub fn ta_dmi(candles: &[Candle], length: f64) -> (Series, Series, Series) {
-    let len = length.max(1.0) as usize;
-    let n = candles.len();
-    let mut plus_dm = vec![0.0; n];
-    let mut minus_dm = vec![0.0; n];
-    let mut tr = vec![0.0; n];
-    for i in 1..n {
-        let up = candles[i].high - candles[i - 1].high;
-        let down = candles[i - 1].low - candles[i].low;
-        if up > down && up > 0.0 {
-            plus_dm[i] = up;
-        }
-        if down > up && down > 0.0 {
-            minus_dm[i] = down;
-        }
-        tr[i] = (candles[i].high - candles[i].low)
-            .max((candles[i].high - candles[i - 1].close).abs())
-            .max((candles[i].low - candles[i - 1].close).abs());
-    }
-    let sm_plus = wilder(&plus_dm, len);
-    let sm_minus = wilder(&minus_dm, len);
-    let sm_tr = wilder(&tr, len);
-    let mut plus_di = vec![NA; n];
-    let mut minus_di = vec![NA; n];
-    let mut dx = vec![0.0; n];
-    let mut dx_first = None;
-    for i in 0..n {
-        if sm_tr[i].is_finite() && sm_tr[i] > 0.0 {
-            plus_di[i] = 100.0 * sm_plus[i] / sm_tr[i];
-            minus_di[i] = 100.0 * sm_minus[i] / sm_tr[i];
-            let sum = plus_di[i] + minus_di[i];
-            dx[i] = if sum > 0.0 { 100.0 * (plus_di[i] - minus_di[i]).abs() / sum } else { 0.0 };
-            if dx_first.is_none() {
-                dx_first = Some(i);
-            }
-        }
-    }
-    let mut adx = vec![NA; n];
-    if let Some(s) = dx_first {
-        if s + len <= n {
-            let tail = wilder(&dx[s..s + (n - s).min(n)], len);
-            for (i, v) in tail.into_iter().enumerate() {
-                if s + i < n {
-                    adx[s + i] = v;
-                }
-            }
-        }
-    }
-    (plus_di, minus_di, adx)
+    let (plus, minus, adx) =
+        analytics_core::indicators::trend::adx(candles, length.max(1.0) as usize);
+    let map = |series: Vec<Option<f64>>| {
+        series
+            .into_iter()
+            .map(|value| value.unwrap_or(NA))
+            .collect()
+    };
+    (map(plus), map(minus), map(adx))
 }
 
 /// `ta.kc(length, mult)` -> `(basis, upper, lower)` -- ema +- mult*atr.
 #[must_use]
 pub fn ta_kc(candles: &[Candle], length: f64, mult: f64) -> (Series, Series, Series) {
-    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-    let basis = ta_ema(&closes, length);
-    let rng = ta_atr(candles, length);
-    let upper: Series = basis
-        .iter()
-        .zip(&rng)
-        .map(|(b, a)| if b.is_finite() && a.is_finite() { b + mult * a } else { NA })
-        .collect();
-    let lower: Series = basis
-        .iter()
-        .zip(&rng)
-        .map(|(b, a)| if b.is_finite() && a.is_finite() { b - mult * a } else { NA })
-        .collect();
+    let channels = analytics_core::indicators::trend::keltner(
+        candles,
+        length.max(1.0) as usize,
+        length.max(1.0) as usize,
+        mult,
+    );
+    let mut basis = vec![NA; candles.len()];
+    let mut upper = vec![NA; candles.len()];
+    let mut lower = vec![NA; candles.len()];
+    for (i, channel) in channels.into_iter().enumerate() {
+        if let Some((up, center, down)) = channel {
+            basis[i] = center;
+            upper[i] = up;
+            lower[i] = down;
+        }
+    }
     (basis, upper, lower)
 }
 
@@ -553,19 +530,33 @@ pub fn ta_supertrend(candles: &[Candle], mult: f64, atr_length: f64) -> (Series,
             continue;
         }
         let prev_close = candles[i - 1].close;
-        final_up[i] =
-            if up_basic < final_up[i - 1] || prev_close > final_up[i - 1] { up_basic } else { final_up[i - 1] };
-        final_lo[i] =
-            if lo_basic > final_lo[i - 1] || prev_close < final_lo[i - 1] { lo_basic } else { final_lo[i - 1] };
+        final_up[i] = if up_basic < final_up[i - 1] || prev_close > final_up[i - 1] {
+            up_basic
+        } else {
+            final_up[i - 1]
+        };
+        final_lo[i] = if lo_basic > final_lo[i - 1] || prev_close < final_lo[i - 1] {
+            lo_basic
+        } else {
+            final_lo[i - 1]
+        };
         let was_down = (line[i - 1] - final_up[i - 1]).abs() < 1e-9;
         dir[i] = if was_down {
-            if candles[i].close > final_up[i] { -1.0 } else { 1.0 }
+            if candles[i].close > final_up[i] {
+                -1.0
+            } else {
+                1.0
+            }
         } else if candles[i].close < final_lo[i] {
             1.0
         } else {
             -1.0
         };
-        line[i] = if dir[i] < 0.0 { final_lo[i] } else { final_up[i] };
+        line[i] = if dir[i] < 0.0 {
+            final_lo[i]
+        } else {
+            final_up[i]
+        };
     }
     (line, dir)
 }
@@ -620,7 +611,7 @@ pub fn ta_lowestbars(candles: &[Candle], length: f64) -> Series {
 }
 
 fn offsetbars(candles: &[Candle], length: f64, want_high: bool) -> Series {
-    let n = (length.max(1.0) as usize).min(candles.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; candles.len()];
     for i in (n - 1)..candles.len() {
         let w = &candles[i + 1 - n..=i];
@@ -685,9 +676,7 @@ fn pivot(source: &[f64], left: f64, right: f64, want_high: bool) -> Series {
             continue;
         }
         let ok = source[i - l - r..=i].iter().enumerate().all(|(k, o)| {
-            k + i - l - r == c
-                || !o.is_finite()
-                || if want_high { v > *o } else { v < *o }
+            k + i - l - r == c || !o.is_finite() || if want_high { v > *o } else { v < *o }
         });
         if ok {
             out[i] = v;
@@ -696,27 +685,34 @@ fn pivot(source: &[f64], left: f64, right: f64, want_high: bool) -> Series {
     out
 }
 
-/// `ta.rising(source, length)` -- strictly growing for length bars back.
+/// `ta.rising(source, length)` -- greater than every value in the prior window.
 #[must_use]
 pub fn ta_rising(source: &[f64], length: f64) -> Series {
     monotone(source, length, true)
 }
 
-/// `ta.falling(source, length)` -- mirror.
+/// `ta.falling(source, length)` -- less than every value in the prior window.
 #[must_use]
 pub fn ta_falling(source: &[f64], length: f64) -> Series {
     monotone(source, length, false)
 }
 
 fn monotone(source: &[f64], length: f64, up: bool) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in n..source.len() {
-        let ok = (0..n).all(|k| {
-            let (a, b) = (source[i - k], source[i - k - 1]);
-            a.is_finite() && b.is_finite() && if up { a > b } else { a < b }
-        });
-        out[i] = if ok { 1.0 } else { 0.0 };
+        let current = source[i];
+        let previous = &source[i - n..i];
+        let valid = current.is_finite() && previous.iter().all(|value| value.is_finite());
+        let holds = valid
+            && previous.iter().all(|value| {
+                if up {
+                    current > *value
+                } else {
+                    current < *value
+                }
+            });
+        out[i] = f64::from(holds);
     }
     out
 }
@@ -751,21 +747,34 @@ mod tests {
             mk(9.0, 9.5, 8.5, 5.0, 3),     // flat
         ];
         let obv = ta_obv(&cs);
-        assert_eq!(obv[3], 10.0 - 20.0, "obv adds up-volume, subtracts down (bar 0 carries nothing)");
+        assert_eq!(
+            obv[3],
+            10.0 - 20.0,
+            "obv adds up-volume, subtracts down (bar 0 carries nothing)"
+        );
         let pvt = ta_pvt(&cs);
         let want = 10.0 * (11.0 - 10.0) / 10.0 + 20.0 * (9.0 - 11.0) / 11.0;
-        assert!((pvt[3] - want).abs() < 1e-9, "pvt weights by the fractional move");
+        assert!(
+            (pvt[3] - want).abs() < 1e-9,
+            "pvt weights by the fractional move"
+        );
         let nvi = ta_nvi(&cs);
         // Bar 2's volume (20) > bar 1's (10): no adjustment. Bar 3's (5) <
         // bar 2's (20): adjust by (9 - 9) / 9 * 100 = 0.
         assert_eq!(nvi[3], 1000.0, "nvi only moves on falling volume");
         let wad = ta_wad(&cs);
         // bar1 up: 11 - min(low 10, prev 10) = 1; bar2 down: -(max(11.5, 11) - 9) = -2.5.
-        assert!((wad[3] - (1.0 - 2.5)).abs() < 1e-9, "wad uses the true range edges");
+        assert!(
+            (wad[3] - (1.0 - 2.5)).abs() < 1e-9,
+            "wad uses the true range edges"
+        );
         let ad = ta_ad(&cs);
         // bar0: ((10-9)-(11-10))/2 * 10 = 0; bar1: ((11-10)-(12-11))/2*10 = 0;
         // bar2: ((9-8.5)-(11.5-9))/3 * 20 = (0.5-2.5)/3*20 = -13.33; bar3 flat close mid.
-        assert!((ad[2] - (-40.0 / 3.0)).abs() < 1e-6, "chaikin money-flow volume");
+        assert!(
+            (ad[2] - (-40.0 / 3.0)).abs() < 1e-6,
+            "chaikin money-flow volume"
+        );
     }
 
     #[test]
@@ -833,14 +842,22 @@ mod tests {
     fn alma_of_a_constant_is_the_constant_and_linreg_hits_the_line() {
         let flat = vec![42.0; 12];
         let al = ta_alma(&flat, 9.0, 0.85, 6.0);
-        assert!((al[11] - 42.0).abs() < 1e-9, "normalized weights keep a constant");
+        assert!(
+            (al[11] - 42.0).abs() < 1e-9,
+            "normalized weights keep a constant"
+        );
         // y = 2x + 1: the regression line at the window's last bar IS y.
         let line: Vec<f64> = (0..10).map(|i| 2.0 * i as f64 + 1.0).collect();
         let lr = ta_linreg(&line, 5.0, 0.0);
         assert!((lr[9] - line[9]).abs() < 1e-9, "offset 0 tracks the line");
         // offset 2 projects two bars of slope forward: y + 2 * slope.
         let lp = ta_linreg(&line, 5.0, 2.0);
-        assert!((lp[9] - (line[9] + 4.0)).abs() < 1e-9, "offset projects the slope");
+        assert!(
+            (lp[9] - (line[9] + 4.0)).abs() < 1e-9,
+            "offset projects the slope"
+        );
+        assert_eq!(ta_lsma(&line, 5.0, 0.0)[9], lr[9]);
+        assert_eq!(ta_linreg(&[4.0], 1.0, 10.0)[0], 4.0);
     }
 
     #[test]
@@ -849,7 +866,10 @@ mod tests {
         let te = ta_tema(&flat, 5.0);
         // Triple warmup: ema seeds at 4, the second at 8, the third at 12.
         assert!(te[11].is_nan(), "the third nesting is still warming");
-        assert!((te[12] - 7.0).abs() < 1e-9, "constant survives three nestings");
+        assert!(
+            (te[12] - 7.0).abs() < 1e-9,
+            "constant survives three nestings"
+        );
         // On a rising series TEMA lags less than the plain EMA.
         let up = rising(60);
         let te = ta_tema(&up, 10.0);
@@ -871,7 +891,10 @@ mod tests {
         assert!((out[9] - 1.0).abs() < 1e-9, "y = 3x+2 correlates perfectly");
         let neg: Vec<f64> = x.iter().map(|v| -2.0 * v).collect();
         let out = ta_correlation(&x, &neg, 5.0);
-        assert!((out[9] + 1.0).abs() < 1e-9, "y = -2x anti-correlates perfectly");
+        assert!(
+            (out[9] + 1.0).abs() < 1e-9,
+            "y = -2x anti-correlates perfectly"
+        );
         // A constant leg has zero variance: undefined -> na.
         let flat = vec![7.0; 10];
         let out = ta_correlation(&x, &flat, 5.0);
@@ -883,7 +906,10 @@ mod tests {
         let x = rising(5);
         let out = ta_covariance(&x, &x, 5.0);
         // cov(x, x) = var(x) = mean of squared deviations of 0..5 = 2.0.
-        assert!((out[4] - 2.0).abs() < 1e-9, "self-covariance is the variance");
+        assert!(
+            (out[4] - 2.0).abs() < 1e-9,
+            "self-covariance is the variance"
+        );
     }
 
     #[test]
@@ -903,16 +929,151 @@ mod tests {
     fn percentiles_and_percentrank_rank_the_window() {
         let src = rising(6); // 0,1,2,3,4,5 -- window of five at tail: 1..5
         let li = ta_percentile_linear_interpolation(&src, 5.0, 50.0);
-        assert!((li[5] - 3.0).abs() < 1e-9, "50th pct of 1,2,3,4,5 by interpolation");
+        assert!(
+            (li[5] - 3.0).abs() < 1e-9,
+            "50th pct of 1,2,3,4,5 by interpolation"
+        );
         let nr = ta_percentile_nearest_rank(&src, 5.0, 50.0);
-        assert!((nr[5] - 3.0).abs() < 1e-9, "nearest rank of the same window");
+        assert!(
+            (nr[5] - 3.0).abs() < 1e-9,
+            "nearest rank of the same window"
+        );
         let pr = ta_percentrank(&src, 5.0);
-        assert!((pr[5] - 100.0).abs() < 1e-9, "the max ranks 100 (4 of 4 below)");
+        assert!(
+            (pr[5] - 100.0).abs() < 1e-9,
+            "the max ranks 100 (4 of 4 below)"
+        );
         let flat = vec![3.0; 6];
         let prf = ta_percentrank(&flat, 5.0);
         assert!((prf[5] - 0.0).abs() < 1e-9, "a flat window ranks 0");
         let rng = ta_range(&src, 5.0);
         assert!((rng[5] - 4.0).abs() < 1e-9, "5 - 1");
+    }
+
+    #[test]
+    fn rolling_functions_wait_for_the_requested_window() {
+        let src = vec![2.0, 1.0, 3.0];
+        let candles: Vec<Candle> = src
+            .iter()
+            .enumerate()
+            .map(|(i, close)| Candle {
+                symbol: "T".into(),
+                timeframe: analytics_core::types::Timeframe::M1,
+                open_time: i as i64,
+                open: *close,
+                high: close + 1.0,
+                low: close - 1.0,
+                close: *close,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            })
+            .collect();
+        let tr = ta_tr(&candles);
+        assert!(tr[0].is_nan());
+        assert_eq!(tr[1], 2.0);
+        let high = vec![4.0, 3.0, 5.0];
+        let low = vec![0.0, -1.0, 1.0];
+        let windows = [
+            ta_highest(&src, 5.0),
+            ta_lowest(&src, 5.0),
+            ta_stoch(&src, &high, &low, 5.0),
+            ta_stdev(&src, 5.0),
+            ta_median(&src, 5.0),
+            ta_mode(&src, 5.0),
+            ta_percentile_linear_interpolation(&src, 5.0, 50.0),
+            ta_percentile_nearest_rank(&src, 5.0, 50.0),
+            ta_percentrank(&src, 5.0),
+            ta_highestbars(&candles, 5.0),
+            ta_lowestbars(&candles, 5.0),
+            ta_willr(&candles, 5.0),
+            math_sum(&src, 5.0),
+            ta_correlation(&src, &src, 5.0),
+            ta_covariance(&src, &src, 5.0),
+            ta_deviation(&src, 5.0),
+            ta_alma(&src, 5.0, 0.85, 6.0),
+            ta_linreg(&src, 5.0, 0.0),
+        ];
+        assert!(windows
+            .iter()
+            .all(|series| series.iter().all(|v| v.is_nan())));
+    }
+
+    #[test]
+    fn rising_and_falling_compare_the_current_value_to_the_full_prior_window() {
+        let src = vec![3.0, 0.0, 4.0, 1.0];
+        let rising = ta_rising(&src, 2.0);
+        let falling = ta_falling(&src, 2.0);
+        assert_eq!(
+            rising[2], 1.0,
+            "4 exceeds both prior values, despite their decline"
+        );
+        assert_eq!(falling[2], 0.0);
+        assert_eq!(rising[3], 0.0);
+        assert_eq!(falling[3], 0.0);
+    }
+
+    #[test]
+    fn rolling_and_momentum_formulas_have_hand_computed_values() {
+        let src = rising(8);
+        assert_eq!(ta_change(&src)[4], 1.0);
+        assert_eq!(ta_mom(&src, 3.0)[4], 3.0);
+        assert_eq!(ta_roc(&src, 3.0)[4], 300.0);
+        assert_eq!(math_sum(&src, 3.0)[4], 9.0);
+        assert_eq!(ta_highest(&src, 3.0)[4], 4.0);
+        assert_eq!(ta_lowest(&src, 3.0)[4], 2.0);
+        assert!((ta_rma(&src, 3.0)[3] - 5.0 / 3.0).abs() < 1e-9);
+        assert!((ta_stdev(&src, 3.0)[4] - (2.0_f64 / 3.0).sqrt()).abs() < 1e-9);
+        assert!((ta_variance(&src, 3.0)[4] - 2.0 / 3.0).abs() < 1e-9);
+        let (basis, upper, lower) = ta_bb(&src, 3.0, 2.0);
+        assert_eq!(basis[4], 3.0);
+        assert!(upper[4] > basis[4] && lower[4] < basis[4]);
+        assert!(ta_hma(&src, 4.0)[7].is_finite());
+    }
+
+    #[test]
+    fn event_helpers_and_ohlcv_oscillators_return_expected_values() {
+        let src = vec![1.0, 3.0, 2.0, 1.0, 2.0];
+        let high: Vec<_> = src.iter().map(|value| value + 1.0).collect();
+        let low: Vec<_> = src.iter().map(|value| value - 1.0).collect();
+        let candles: Vec<Candle> = src
+            .iter()
+            .enumerate()
+            .map(|(i, close)| Candle {
+                symbol: "T".into(),
+                timeframe: analytics_core::types::Timeframe::M1,
+                open_time: i as i64,
+                open: *close,
+                high: high[i],
+                low: low[i],
+                close: *close,
+                volume: 10.0,
+                buy_volume: 5.0,
+                sell_volume: 5.0,
+            })
+            .collect();
+        let since = ta_barssince(&[0.0, 1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(since[4], 3.0);
+        let when = ta_valuewhen(&[0.0, 1.0, 0.0, 1.0, 0.0], &src, 0.0);
+        assert_eq!(when[4], 1.0);
+        assert_eq!(ta_cum(&[1.0, NA, 2.0])[2], 3.0);
+        assert_eq!(ta_pivothigh(&src, 1.0, 1.0)[2], 3.0);
+        assert_eq!(ta_pivotlow(&src, 1.0, 1.0)[4], 1.0);
+        assert_eq!(ta_highestbars(&candles, 3.0)[2], -1.0);
+        assert_eq!(ta_lowestbars(&candles, 3.0)[4], -1.0);
+        assert!((ta_willr(&candles, 3.0)[2] + 50.0).abs() < 1e-9);
+        assert_eq!(ta_cci(&candles, 3.0)[2], 0.0);
+        assert_eq!(ta_mfi(&candles, 2.0)[2], 60.0);
+        let (plus, minus, adx) = ta_dmi(&candles, 2.0);
+        assert!(plus[3].is_finite() && minus[3].is_finite() && adx[4].is_finite());
+        let (basis, upper, lower) = ta_kc(&candles, 2.0, 2.0);
+        assert!(basis[4].is_finite() && upper[4] > basis[4] && lower[4] < basis[4]);
+        let (line, direction) = ta_supertrend(&candles, 3.0, 2.0);
+        assert!(line[4].is_finite() && direction[4] == -1.0);
+        assert!(
+            line[4] < candles[4].close,
+            "uptrend direction keeps the line below price"
+        );
     }
 
     #[test]
@@ -922,6 +1083,20 @@ mod tests {
         assert!((out[2] - 1.0).abs() < 1e-9);
         assert!((out[9] - 8.0).abs() < 1e-9);
         assert!(out[1].is_nan());
+    }
+
+    #[test]
+    fn sma_ignores_missing_samples_and_recovers_after_warmup() {
+        let src = vec![NA, NA, 10.0, 20.0, NA, 30.0];
+        let out = ta_sma(&src, 2.0);
+        assert!(out[..3].iter().all(|value| value.is_nan()));
+        assert_eq!(&out[3..], &[15.0, 15.0, 25.0]);
+    }
+
+    #[test]
+    fn sma_with_oversized_length_returns_missing_without_large_allocation() {
+        let out = ta_sma(&[1.0, 2.0], f64::MAX);
+        assert!(out.iter().all(|value| value.is_nan()));
     }
 
     #[test]
@@ -955,9 +1130,15 @@ mod tests {
         let a = vec![1.0, 1.0, 3.0, 3.0];
         let b = vec![2.0, 2.0, 2.0, 2.0];
         let out = ta_crossover(&a, &b);
+        let under = ta_crossunder(&a, &b);
+        let either = ta_cross(&a, &b);
         assert!(out[1].is_nan() || out[1] == 0.0);
         assert_eq!(out[2], 1.0);
         assert_eq!(out[3], 0.0);
+        assert_eq!(under[2], 0.0);
+        assert_eq!(either[2], out[2]);
+        assert_eq!(either[1], 0.0);
+        assert_eq!(ta_crossunder(&b, &a)[2], 1.0);
     }
 
     #[test]
@@ -1006,7 +1187,7 @@ mod tests {
 #[must_use]
 pub fn ta_correlation(x: &[f64], y: &[f64], length: f64) -> Series {
     let n = x.len().min(y.len());
-    let len = (length.max(1.0) as usize).min(n.max(1));
+    let len = length.max(1.0) as usize;
     let mut out = vec![NA; n];
     for i in (len - 1)..n {
         let xs = &x[i + 1 - len..=i];
@@ -1036,7 +1217,7 @@ pub fn ta_correlation(x: &[f64], y: &[f64], length: f64) -> Series {
 #[must_use]
 pub fn ta_covariance(x: &[f64], y: &[f64], length: f64) -> Series {
     let n = x.len().min(y.len());
-    let len = (length.max(1.0) as usize).min(n.max(1));
+    let len = length.max(1.0) as usize;
     let mut out = vec![NA; n];
     for i in (len - 1)..n {
         let xs = &x[i + 1 - len..=i];
@@ -1060,7 +1241,7 @@ pub fn ta_covariance(x: &[f64], y: &[f64], length: f64) -> Series {
 /// window's mean.
 #[must_use]
 pub fn ta_deviation(source: &[f64], length: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         let w = &source[i + 1 - n..=i];
@@ -1089,7 +1270,7 @@ fn sorted_window(source: &[f64], i: usize, n: usize) -> Option<Vec<f64>> {
 /// the two middles when the length is even).
 #[must_use]
 pub fn ta_median(source: &[f64], length: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         if let Some(s) = sorted_window(source, i, n) {
@@ -1108,7 +1289,7 @@ pub fn ta_median(source: &[f64], length: f64) -> Series {
 /// float ties on market data are rare anyway).
 #[must_use]
 pub fn ta_mode(source: &[f64], length: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         if let Some(s) = sorted_window(source, i, n) {
@@ -1135,7 +1316,7 @@ pub fn ta_mode(source: &[f64], length: f64) -> Series {
 /// percentile with linear interpolation between the bracketing ranks.
 #[must_use]
 pub fn ta_percentile_linear_interpolation(source: &[f64], length: f64, pct: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         if let Some(s) = sorted_window(source, i, n) {
@@ -1153,7 +1334,7 @@ pub fn ta_percentile_linear_interpolation(source: &[f64], length: f64, pct: f64)
 /// percentile by the nearest-rank method.
 #[must_use]
 pub fn ta_percentile_nearest_rank(source: &[f64], length: f64, pct: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         if let Some(s) = sorted_window(source, i, n) {
@@ -1169,7 +1350,7 @@ pub fn ta_percentile_nearest_rank(source: &[f64], length: f64, pct: f64) -> Seri
 /// 0; the first bar of a series is na.
 #[must_use]
 pub fn ta_percentrank(source: &[f64], length: f64) -> Series {
-    let n = (length.max(2.0) as usize).min(source.len().max(1));
+    let n = length.max(2.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         let w = &source[i + 1 - n..=i];
@@ -1189,7 +1370,13 @@ pub fn ta_range(source: &[f64], length: f64) -> Series {
     let lo = ta_lowest(source, length);
     hi.iter()
         .zip(lo.iter())
-        .map(|(a, b)| if a.is_finite() && b.is_finite() { a - b } else { NA })
+        .map(|(a, b)| {
+            if a.is_finite() && b.is_finite() {
+                a - b
+            } else {
+                NA
+            }
+        })
         .collect()
 }
 
@@ -1197,7 +1384,7 @@ pub fn ta_range(source: &[f64], length: f64) -> Series {
 /// sum(volume) over the window; na when the window's volume sums to zero.
 #[must_use]
 pub fn ta_vwma(source: &[f64], candles: &[Candle], length: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         let mut num = 0.0;
@@ -1240,7 +1427,7 @@ pub fn ta_swma(source: &[f64]) -> Series {
 /// length / sigma, so offset > 0.5 skews the weight toward recent bars.
 #[must_use]
 pub fn ta_alma(source: &[f64], length: f64, offset: f64, sigma: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let m = (offset.clamp(0.0, 1.0) * (n as f64 - 1.0)).floor();
     let s = (n as f64 / sigma.max(0.01)).max(0.01);
     let mut out = vec![NA; source.len()];
@@ -1269,12 +1456,16 @@ pub fn ta_alma(source: &[f64], length: f64, offset: f64, sigma: f64) -> Series {
 /// idiom). `ta.lsma` is Pine's legacy name for the same function.
 #[must_use]
 pub fn ta_linreg(source: &[f64], length: f64, offset: f64) -> Series {
-    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let n = length.max(1.0) as usize;
     let off = if offset.is_finite() { offset } else { 0.0 };
     let mut out = vec![NA; source.len()];
     for i in (n - 1)..source.len() {
         let w = &source[i + 1 - n..=i];
         if w.iter().all(|v| v.is_finite()) {
+            if n == 1 {
+                out[i] = source[i];
+                continue;
+            }
             let nf = n as f64;
             let sx = nf * (nf - 1.0) / 2.0;
             let sxx = nf * (nf - 1.0) * (2.0 * nf - 1.0) / 6.0;
@@ -1420,15 +1611,8 @@ pub fn ta_wad(candles: &[Candle]) -> Series {
 /// whole bar; a close at the low counts it negatively).
 #[must_use]
 pub fn ta_ad(candles: &[Candle]) -> Series {
-    let mut out = vec![NA; candles.len()];
-    let mut acc = 0.0;
-    for (i, c) in candles.iter().enumerate() {
-        let range = c.high - c.low;
-        if range > 0.0 {
-            let mfm = ((c.close - c.low) - (c.high - c.close)) / range;
-            acc += mfm * c.volume;
-        }
-        out[i] = acc;
-    }
-    out
+    analytics_core::indicators::misc::ad_line(candles)
+        .into_iter()
+        .map(|value| value.unwrap_or(NA))
+        .collect()
 }

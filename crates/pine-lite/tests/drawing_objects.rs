@@ -2,8 +2,8 @@
 //! drawing objects on a capped heap, positioned by the engine from bar/price
 //! coordinates the script chose.
 
-use pine_lite::{run, vet, Inputs};
 use analytics_core::types::{Candle, Timeframe};
+use pine_lite::{run, vet, Inputs};
 
 fn candles(n: usize) -> Vec<Candle> {
     (0..n)
@@ -39,20 +39,39 @@ fn drawing_objects_collect_in_order() {
     let output = run(&parsed, &candles(30), &Inputs::default()).expect("run");
     assert_eq!(output.objects.len(), 3, "{:?}", output.objects);
     match &output.objects[0] {
-        pine_lite::interp::ScriptObject::Line { bar1, price1, bar2, price2, style, width, .. } => {
+        pine_lite::interp::ScriptObject::Line {
+            bar1,
+            price1,
+            bar2,
+            price2,
+            style,
+            width,
+            ..
+        } => {
             assert_eq!(*bar1, 0.0);
-            assert!((*price1 - 99.0).abs() < 1e-9, "low at bar 0 is 99: {price1}");
+            assert!(
+                (*price1 - 99.0).abs() < 1e-9,
+                "low at bar 0 is 99: {price1}"
+            );
             assert_eq!(*bar2, 20.0);
-            assert!((*price2 - 111.0).abs() < 1e-9, "high at bar 20 is 111: {price2}");
+            assert!(
+                (*price2 - 111.0).abs() < 1e-9,
+                "high at bar 20 is 111: {price2}"
+            );
             assert_eq!(style, "dashed");
             assert_eq!(*width, 2.0);
         }
         other => panic!("expected a line: {other:?}"),
     }
     match &output.objects[1] {
-        pine_lite::interp::ScriptObject::Label { bar, price, text, .. } => {
+        pine_lite::interp::ScriptObject::Label {
+            bar, price, text, ..
+        } => {
             assert_eq!(*bar, 10.0);
-            assert!((*price - 106.0).abs() < 1e-9, "high at bar 10 is 106: {price}");
+            assert!(
+                (*price - 106.0).abs() < 1e-9,
+                "high at bar 10 is 106: {price}"
+            );
             assert_eq!(text, "pivot");
         }
         other => panic!("expected a label: {other:?}"),
@@ -87,7 +106,11 @@ fn the_object_heap_stops_at_the_cap_without_failing() {
     // the run SUCCEEDS with the truncation flagged (TradingView's
     // stop-drawing behavior).
     let output = run(&parsed, &candles(300), &Inputs::default()).expect("run");
-    assert_eq!(output.objects.len(), pine_lite::interp::MAX_OBJECTS, "exactly the cap");
+    assert_eq!(
+        output.objects.len(),
+        pine_lite::interp::MAX_OBJECTS,
+        "exactly the cap"
+    );
     assert!(output.objects_truncated, "the scene must learn it was cut");
 }
 
@@ -106,7 +129,12 @@ fn a_box_border_is_distinct_from_the_fill_and_optional() {
     let output = run(&parsed, &candles(30), &Inputs::default()).expect("run");
     assert_eq!(output.objects.len(), 2, "{:?}", output.objects);
     match &output.objects[0] {
-        pine_lite::interp::ScriptObject::Box { border_color, border_width, border_style, .. } => {
+        pine_lite::interp::ScriptObject::Box {
+            border_color,
+            border_width,
+            border_style,
+            ..
+        } => {
             assert_eq!(*border_color, Some(0xFF_84_CC_16), "color.lime packed");
             assert_eq!(*border_width, 2.0);
             assert_eq!(border_style, "dashed");
@@ -114,7 +142,12 @@ fn a_box_border_is_distinct_from_the_fill_and_optional() {
         other => panic!("expected a box: {other:?}"),
     }
     match &output.objects[1] {
-        pine_lite::interp::ScriptObject::BoxTime { border_color, border_width, border_style, .. } => {
+        pine_lite::interp::ScriptObject::BoxTime {
+            border_color,
+            border_width,
+            border_style,
+            ..
+        } => {
             assert_eq!(*border_color, None, "no border asked, none drawn");
             assert_eq!(*border_width, 1.0, "the default width");
             assert_eq!(border_style, "solid");
@@ -137,7 +170,13 @@ fn a_fib_is_one_object_with_four_anchors() {
     let output = run(&parsed, &candles(30), &Inputs::default()).expect("run");
     assert_eq!(output.objects.len(), 1, "{:?}", output.objects);
     match &output.objects[0] {
-        pine_lite::interp::ScriptObject::Fib { bar1, price1, bar2, price2, color } => {
+        pine_lite::interp::ScriptObject::Fib {
+            bar1,
+            price1,
+            bar2,
+            price2,
+            color,
+        } => {
             assert_eq!((*bar1, *price1, *bar2, *price2), (5.0, 100.0, 25.0, 140.0));
             assert_eq!(*color, 0xFF_D4_A0_17_u32, "gold when unset");
         }
@@ -158,5 +197,8 @@ fn a_fib_respects_the_heap_cap_and_arity() {
     let output = run(&parsed, &candles(10), &Inputs::default()).expect("run");
     assert_eq!(output.objects.len(), pine_lite::interp::MAX_OBJECTS);
     assert!(output.objects_truncated, "the cap reported itself");
-    assert!(vet("//@pine_lite version=1\nfib.new(5, 100.0, 25)\n").is_err(), "three args is too few");
+    assert!(
+        vet("//@pine_lite version=1\nfib.new(5, 100.0, 25)\n").is_err(),
+        "three args is too few"
+    );
 }

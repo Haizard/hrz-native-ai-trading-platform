@@ -31,7 +31,7 @@ use crate::AppState;
 use analytics_core::concepts::{self, detect};
 use analytics_core::regions::Region;
 use analytics_core::types::{self, Timeframe};
-use backtester::replay::{ReplayConfig, ReplayInput, ReplaySignal, replay};
+use backtester::replay::{replay, ReplayConfig, ReplayInput, ReplaySignal};
 use chart_engine::{
     self, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind, ReplayExit, ReplaySetup,
     SetupDirection,
@@ -551,11 +551,7 @@ pub(crate) async fn fetch_long_short_ratio(
 }
 
 /// Fetch public USDⓈ-M perpetual basis observations (maximum 30-day history).
-pub(crate) async fn fetch_basis_series(
-    pair: &str,
-    from_ns: i64,
-    to_ns: i64,
-) -> Vec<(i64, f64)> {
+pub(crate) async fn fetch_basis_series(pair: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, f64)> {
     let minutes = ((to_ns - from_ns) / 60_000_000_000).max(1);
     let period = if minutes / 5 <= 480 {
         "5m"
@@ -675,7 +671,15 @@ fn compose_synthetic(a: &[types::Candle], op: char, b: &[types::Candle]) -> Vec<
 mod data_feed_tests {
     use super::*;
 
-    fn candle(timeframe: Timeframe, open_time: i64, open: f64, high: f64, low: f64, close: f64, volume: f64) -> types::Candle {
+    fn candle(
+        timeframe: Timeframe,
+        open_time: i64,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
+        volume: f64,
+    ) -> types::Candle {
         types::Candle {
             symbol: "T".to_string(),
             timeframe,
@@ -733,21 +737,34 @@ mod data_feed_tests {
 
         assert_eq!(aligned.len(), primary.len());
         assert_eq!(
-            (aligned[0].open, aligned[0].high, aligned[0].low, aligned[0].close),
+            (
+                aligned[0].open,
+                aligned[0].high,
+                aligned[0].low,
+                aligned[0].close
+            ),
             (21.0, 21.0, 21.0, 21.0),
             "before the first secondary bar, carry its first close flat"
         );
         assert_eq!(aligned[1].high, 22.0, "an exact-time bar keeps its OHLC");
         assert_eq!(aligned[1].volume, 7.0);
         assert_eq!(
-            (aligned[2].open, aligned[2].high, aligned[2].low, aligned[2].close),
+            (
+                aligned[2].open,
+                aligned[2].high,
+                aligned[2].low,
+                aligned[2].close
+            ),
             (21.0, 21.0, 21.0, 21.0),
             "a missing secondary bar carries only the previous close"
         );
         assert_eq!(aligned[2].volume, 0.0);
         assert_eq!(aligned[2].buy_volume, 0.0);
         assert_eq!(aligned[2].sell_volume, 0.0);
-        assert_eq!(aligned[3].high, 24.0, "the next exact-time bar replaces the carry");
+        assert_eq!(
+            aligned[3].high, 24.0,
+            "the next exact-time bar replaces the carry"
+        );
         assert_eq!(aligned[3].volume, 9.0);
     }
 }
@@ -1424,14 +1441,12 @@ mod tests {
 
     #[test]
     fn public_futures_metric_payloads_preserve_source_timestamps() {
-        let ratio: LongShortPoint = serde_json::from_str(
-            r#"{"longShortRatio":"1.5","timestamp":1730000000000}"#,
-        )
-        .expect("ratio payload");
-        let basis: BasisPoint = serde_json::from_str(
-            r#"{"basisRate":"0.0004","timestamp":1730000000000}"#,
-        )
-        .expect("basis payload");
+        let ratio: LongShortPoint =
+            serde_json::from_str(r#"{"longShortRatio":"1.5","timestamp":1730000000000}"#)
+                .expect("ratio payload");
+        let basis: BasisPoint =
+            serde_json::from_str(r#"{"basisRate":"0.0004","timestamp":1730000000000}"#)
+                .expect("basis payload");
         assert_eq!(ratio.long_short_ratio, "1.5");
         assert_eq!(ratio.timestamp, 1_730_000_000_000);
         assert_eq!(basis.basis_rate, "0.0004");
@@ -1440,24 +1455,30 @@ mod tests {
 
     #[test]
     fn aligned_secondary_series_preserve_source_candle_timestamps() {
-        let candle = |symbol: &str, timeframe: types::Timeframe, open_time: i64| {
-            types::Candle {
-                symbol: symbol.into(),
-                timeframe,
-                open_time,
-                open: 10.0,
-                high: 11.0,
-                low: 9.0,
-                close: 10.0,
-                volume: 1.0,
-                buy_volume: 0.5,
-                sell_volume: 0.5,
-            }
+        let candle = |symbol: &str, timeframe: types::Timeframe, open_time: i64| types::Candle {
+            symbol: symbol.into(),
+            timeframe,
+            open_time,
+            open: 10.0,
+            high: 11.0,
+            low: 9.0,
+            close: 10.0,
+            volume: 1.0,
+            buy_volume: 0.5,
+            sell_volume: 0.5,
         };
         let chart = vec![
             candle("BTCUSDT", types::Timeframe::M1, 0),
-            candle("BTCUSDT", types::Timeframe::M1, types::Timeframe::M1.nanos()),
-            candle("BTCUSDT", types::Timeframe::M1, 2 * types::Timeframe::M1.nanos()),
+            candle(
+                "BTCUSDT",
+                types::Timeframe::M1,
+                types::Timeframe::M1.nanos(),
+            ),
+            candle(
+                "BTCUSDT",
+                types::Timeframe::M1,
+                2 * types::Timeframe::M1.nanos(),
+            ),
         ];
         let pair = [candle("ETHUSDT", types::Timeframe::M1, 0)];
         let aligned_pair = align_security(&chart, &pair);

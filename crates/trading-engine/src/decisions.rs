@@ -244,7 +244,10 @@ impl ComposerStrategy {
     pub fn new(document: market_data::composer::Composition, symbol: &str) -> Self {
         Self {
             plan: market_data::composer::DetectionPlan::for_catalog(&document.parameters),
-            decision_tf: document.timeframe.parse().unwrap_or(analytics_core::types::Timeframe::M5),
+            decision_tf: document
+                .timeframe
+                .parse()
+                .unwrap_or(analytics_core::types::Timeframe::M5),
             composer: market_data::composer::Composer::new(document),
             symbol: symbol.to_string(),
             bar: 0,
@@ -307,7 +310,12 @@ impl ComposerStrategy {
                     let extra_events: Vec<_> =
                         self.plan.detect(&resampled[..=completed_idx], &self.symbol);
                     let tf_name = extra.to_string();
-                    let _ = self.composer.on_bar(self.bar as usize, &extra_events, Some(&tf_name), None);
+                    let _ = self.composer.on_bar(
+                        self.bar as usize,
+                        &extra_events,
+                        Some(&tf_name),
+                        None,
+                    );
                     self.extra_fed.insert(extra, completed_time);
                 }
             }
@@ -341,11 +349,17 @@ impl ComposerStrategy {
             // the order's quantity for contract adapters.
             market_data::composer::SizeKind::Fixed { .. } => 1.0,
             // Volatility-adjusted risks its fraction; Kelly bets its cap.
-            market_data::composer::SizeKind::VolatilityAdjusted { risk_fraction } => risk_fraction * 100.0,
+            market_data::composer::SizeKind::VolatilityAdjusted { risk_fraction } => {
+                risk_fraction * 100.0
+            }
             market_data::composer::SizeKind::Kelly { cap } => cap * 100.0,
         };
         Some(Signal::Enter(EnterSignal {
-            direction: if fired.long { Direction::Long } else { Direction::Short },
+            direction: if fired.long {
+                Direction::Long
+            } else {
+                Direction::Short
+            },
             reference_price: view.candle.close,
             stop_price,
             take_profit_price: None,

@@ -69,7 +69,8 @@ const MAX_ATTEMPTS: usize = 5;
 /// VM's actual surface (its builtin table is copied from the dispatchers in
 /// `interp.rs`), never the doc's wishlist, so the model is never baited into
 /// calls that can only fail at run time.
-const REFERENCE_SCRIPT: &str = "//@pine_lite version=1 overlay=true title=\"Bands + MACD signals\"\n\
+const REFERENCE_SCRIPT: &str =
+    "//@pine_lite version=1 overlay=true title=\"Bands + MACD signals\"\n\
     length = input.int(defval=20, title=\"Band length\")\n\
     mult = input.float(defval=2.0, title=\"Band mult\")\n\
     basis, upper, lower = ta.bb(close, length, mult)\n\
@@ -183,11 +184,11 @@ Do not treat every later candle as an order block, rejection, or "engineering" e
 `open`, `high`, `low`, `close`, `volume`, `hl2`, `hlc3`, `ohlc4`, `bar_index`, `last_bar_index` (the window's final bar; the draw pass keys on it), `time`
 
 ## Functions (these are ALL of them; a function not listed here does not exist)
-Averages and oscillators: `ta.sma(source, length)`, `ta.ema(source, length)`, `ta.rma(source, length)`, `ta.wma(source, length)`, `ta.hma(source, length)`, `ta.vwma(source, length)` (volume-weighted), `ta.swma(source)` (fixed 4-bar), `ta.alma(source, length[, offset=0.85, sigma=6])` (Gaussian), `ta.linreg(source, length, offset)` / `ta.lsma(...)` (regression-line value; offset projects forward), `ta.tema(source, length)` (triple EMA), `ta.rsi(source, length)`, `ta.highest(source, length)`, `ta.lowest(source, length)`, `ta.mom(source, length)`, `ta.roc(source, length)`, `ta.change(source)`, `ta.atr(length)`, `ta.tr()`, `ta.vwap()` (per-bar cumulative, resets at the UTC day boundary), `ta.stoch(source, length)` (returns 0..100), `ta.cci(length)`, `ta.mfi(length)`, `ta.willr(length)`, `ta.stdev(source, length)`, `ta.variance(source, length)`, `ta.cum(source)`.
+Averages and oscillators: `ta.sma(source, length)`, `ta.ema(source, length)`, `ta.rma(source, length)`, `ta.wma(source, length)`, `ta.hma(source, length)`, `ta.vwma(source, length)` (volume-weighted), `ta.swma(source)` (fixed 4-bar), `ta.alma(source, length[, offset=0.85, sigma=6])` (Gaussian), `ta.linreg(source, length[, offset=0])` / `ta.lsma(...)` (regression-line value; offset projects forward), `ta.tema(source, length)` (triple EMA), `ta.rsi(source, length)`, `ta.highest(source, length)`, `ta.lowest(source, length)`, `ta.mom(source, length)`, `ta.roc(source, length)`, `ta.change(source)`, `ta.atr(length)`, `ta.tr()`, `ta.vwap()` (per-bar cumulative, resets at the UTC day boundary), `ta.cmf(length)` (OHLCV volume), `ta.ao()` (standard 5/34 midpoint oscillator), `ta.stoch(source[, length=14])` (returns 0..100), `ta.cci(length)`, `ta.mfi(length)`, `ta.willr(length)`, `ta.stdev(source, length)`, `ta.variance(source, length)`, `ta.cum(source)`.
 Volume classics (no arguments): `ta.obv()` (+/- volume by direction), `ta.pvt()` (volume weighted by the fractional move), `ta.nvi()` (moves only on falling-volume bars, starts 1000), `ta.wad()` (Williams true-edge accumulation), `ta.ad()` (Chaikin money-flow volume).
 Statistics: `ta.correlation(x, y, len)` (Pearson; na when either leg is flat), `ta.covariance(x, y, len)` (population), `ta.deviation(source, len)` (mean absolute deviation), `ta.median(source, len)`, `ta.mode(source, len)` (ties -> smallest), `ta.percentile_linear_interpolation(source, len, pct)` and `ta.percentile_nearest_rank(source, len, pct)` (percentile price channels, e.g. `p90 = ta.percentile_linear_interpolation(close, 50, 90)`), `ta.percentrank(close, len)` (0-100; strictly-below count over len-1), `ta.range(source, len)` (highest - lowest).
-Event helpers: `ta.pivothigh(source, left, right)` / `ta.pivotlow(source, left, right)` (the pivot's price on the bar that CONFIRMS it, else na), `ta.rising(source, length)` / `ta.falling(source, length)` (bool: strict monotone), `ta.barssince(cond)` (bars since cond held, na before it ever did), `ta.valuewhen(cond, source, occurrence)` (the source's value at the (occurrence+1)-th most recent true bar), `ta.highestbars(length)` / `ta.lowestbars(length)` (Pine's NEGATIVE offset to the window extreme: 0 is this bar, -3 is three back).
-Multi-value (destructure them): `macd_line, signal_line, hist = ta.macd(source, fast, slow, signal)`, `basis, upper, lower = ta.bb(source, length, mult)`, `k, d = ta.stoch(source, length)`, `dip, dim, adx = ta.dmi(length)`, `kb, ku, kl = ta.kc(length, mult)`, `st, dirn = ta.supertrend(mult, atr_length)` (Pine's convention: dirn -1 = uptrend with the line UNDER price, 1 = downtrend with the line over it).
+Event helpers: `ta.pivothigh(source, left, right)` / `ta.pivotlow(source, left, right)` (the pivot's price on the bar that CONFIRMS it, else na), `ta.rising(source, length)` / `ta.falling(source, length)` (bool: current value strictly above/below every value in the prior window), `ta.barssince(cond)` (bars since cond held, na before it ever did), `ta.valuewhen(cond, source, occurrence)` (the source's value at the (occurrence+1)-th most recent true bar), `ta.highestbars(length)` / `ta.lowestbars(length)` (Pine's NEGATIVE offset to the window extreme: 0 is this bar, -3 is three back).
+Multi-value (destructure them): `macd_line, signal_line, hist = ta.macd(source[, fast=12, slow=26, signal=9])`, `basis, upper, lower = ta.bb(source[, length=20, mult=2])`, `k, d = ta.stoch(source[, length=14])`, `dip, dim, adx = ta.dmi(length=14)`, `kb, ku, kl = ta.kc(length=20, mult=2)`, `st, dirn = ta.supertrend(mult=3, atr_length=10)` (Pine's convention: dirn -1 = uptrend with the line UNDER price, 1 = downtrend with the line over it). TA calls accept named parameters using these catalog names.
 Crosses (return bool): `ta.crossover(a, b)`, `ta.crossunder(a, b)`, `ta.cross(a, b)`.
 Math: `math.abs(x)`, `math.floor(x)`, `math.ceil(x)`, `math.round(x)`, `math.sqrt(x)`, `math.log(x)`, `math.exp(x)`, `math.sign(x)`, `math.pow(a, b)`, `math.min(a, b, ...)`, `math.max(a, b, ...)`, `math.avg(a, b, ...)`, `math.sum(source, length)`, `math.round_to_mintick(x)` (round to the instrument's tick grid). Timeframes: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w -- quote any of them in request.security / input.timeframe / timeframe.change. Timeframe words: `timeframe.period` (the chart's timeframe as a string, for label text: `"tf=" + timeframe.period`), `timeframe.multiplier` (its numeric prefix), `timeframe.isintraday` / `timeframe.isdaily` / `timeframe.isweekly` / `timeframe.isdwm` (its shape), and `timeframe.change("4h")` (true on the chart bars that open a new 4H period -- the MTF "fresh higher bar" pulse; the classic higher-timeframe line is `htf = request.security(sym, "4h", close)` then read htf, and `timeframe.change("4h")` marks where it stepped). Bar state: `barstate.isfirst` (bar 0), `barstate.islast` (the last bar -- the guard for end-of-run draws), `barstate.isnew` and `barstate.isconfirmed` (both always true here: the host replays closed bars once each). Instrument words: `syminfo.mintick` (the tick size), `syminfo.pointvalue` (PnL per point per unit; 1.0 on spot -- size positions with `qty = risk_usd / (stop_distance * syminfo.pointvalue)`), `syminfo.ticker` (the chart symbol, for label text: `"Levels: " + syminfo.ticker`). Trig: `math.sin(x)` / `math.cos(x)` / `math.tan(x)` (radians), `math.asin(x)` / `math.acos(x)` (na outside [-1, 1]), `math.atan(x)`, `math.atan2(y, x)`, `math.toradians(deg)`, `math.todegrees(rad)`, and the constant `math.pi` -- e.g. a cyclic wave `math.sin((bar_index % 40) / 40 * 2 * math.pi)`.
 Checks: `na(x)`, `nz(x)`, `nz(x, fallback)`, `fixnan(x)`.
@@ -745,8 +746,8 @@ A sweep reversal is a STATE machine with three latched stages; each stage's `var
 {REFERENCE_SCRIPT}
 ```
 "##,
-        REFERENCE_STRATEGY = REFERENCE_STRATEGY,
-    )
+            REFERENCE_STRATEGY = REFERENCE_STRATEGY,
+        )
 }
 
 /// Pull the script out of the model's reply.
@@ -762,11 +763,11 @@ pub(crate) fn extract_script(reply: &str) -> Option<String> {
     // First pass: a block explicitly tagged pine_lite (or pine/pinescript,
     // which models reach for out of habit and which is still code).
     for opening in ["```pine_lite", "```pine", "```pinescript"] {
-        if let Some(start) = lines.iter().position(|l| l.trim().eq_ignore_ascii_case(opening)) {
-            if let Some(end_rel) = lines[start + 1..]
-                .iter()
-                .position(|l| l.trim() == "```")
-            {
+        if let Some(start) = lines
+            .iter()
+            .position(|l| l.trim().eq_ignore_ascii_case(opening))
+        {
+            if let Some(end_rel) = lines[start + 1..].iter().position(|l| l.trim() == "```") {
                 let end = start + 1 + end_rel;
                 return Some(lines[start + 1..end].join("\n"));
             }
@@ -813,14 +814,16 @@ fn vet_report(source: &str) -> String {
         Ok(_) => String::new(),
         Err(errs) => errs
             .iter()
-            .map(|e| format!(
-                "line {} col {} [{} {}]: {}",
-                e.span.line,
-                e.span.col,
-                e.diagnostic_code().as_str(),
-                pine_lite::kind_name(e.kind),
-                e.message
-            ))
+            .map(|e| {
+                format!(
+                    "line {} col {} [{} {}]: {}",
+                    e.span.line,
+                    e.span.col,
+                    e.diagnostic_code().as_str(),
+                    pine_lite::kind_name(e.kind),
+                    e.message
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n"),
     }
@@ -847,7 +850,12 @@ fn wanted_sec_symbol(source: &str, user_request: &str) -> Option<String> {
         if t.starts_with("//@") && !t.contains("@pine_lite") {
             if let Some(pos) = t.to_uppercase().find("SEC=") {
                 let rest = t[pos + 4..].trim().trim_start_matches('"');
-                let sym: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == ':' || *c == '.').collect();
+                let sym: String = rest
+                    .chars()
+                    .take_while(|c| {
+                        c.is_ascii_alphanumeric() || *c == '-' || *c == ':' || *c == '.'
+                    })
+                    .collect();
                 if !sym.is_empty() {
                     return Some(sym.to_uppercase());
                 }
@@ -858,9 +866,11 @@ fn wanted_sec_symbol(source: &str, user_request: &str) -> Option<String> {
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
         .find(|w| {
             let b = w.as_bytes();
-            b.len() >= 6 && b[b.len() - 4..] == *b"USDT" && b.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-        })
-    ?;
+            b.len() >= 6
+                && b[b.len() - 4..] == *b"USDT"
+                && b.iter()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        })?;
     Some(m.to_string())
 }
 
@@ -932,8 +942,7 @@ pub(crate) async fn generate_script(
     }];
     let tool = ToolSpec {
         name: "submit_script".to_string(),
-        description: "Submit the pine-lite script for validation and chart attachment."
-            .to_string(),
+        description: "Submit the pine-lite script for validation and chart attachment.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -949,7 +958,13 @@ pub(crate) async fn generate_script(
     let mut last_report = String::from("no script was submitted");
 
     for attempt in 1..=MAX_ATTEMPTS {
-        report(&progress, GenerationEvent::Drafting { attempt, max: MAX_ATTEMPTS });
+        report(
+            &progress,
+            GenerationEvent::Drafting {
+                attempt,
+                max: MAX_ATTEMPTS,
+            },
+        );
         let response = llm
             .complete(LlmRequest {
                 system: Some(system.clone()),
@@ -965,7 +980,10 @@ pub(crate) async fn generate_script(
             last_report = "the reply did not call submit_script".to_string();
             report(
                 &progress,
-                GenerationEvent::Repairing { attempt, errors: vec![last_report.clone()] },
+                GenerationEvent::Repairing {
+                    attempt,
+                    errors: vec![last_report.clone()],
+                },
             );
             messages.push(response.message.clone());
             messages.push(Message::user(
@@ -988,7 +1006,10 @@ pub(crate) async fn generate_script(
             last_report = "`script` must be a string".to_string();
             report(
                 &progress,
-                GenerationEvent::Repairing { attempt, errors: vec![last_report.clone()] },
+                GenerationEvent::Repairing {
+                    attempt,
+                    errors: vec![last_report.clone()],
+                },
             );
             messages.push(response.message.clone());
             messages.push(Message::user(
@@ -1003,14 +1024,19 @@ pub(crate) async fn generate_script(
                     last_report = "the script compiled but contains no chart-visible output; include at least one plot, marker, level, or drawing".to_string();
                     report(
                         &progress,
-                        GenerationEvent::Repairing { attempt, errors: vec![last_report.clone()] },
+                        GenerationEvent::Repairing {
+                            attempt,
+                            errors: vec![last_report.clone()],
+                        },
                     );
                     messages.push(response.message.clone());
-                    messages.push(Message::tool_results(vec![ai_agent::llm_client::ToolResult {
-                        tool_use_id: call.id.clone(),
-                        content: serde_json::Value::String(last_report.clone()),
-                        is_error: true,
-                    }]));
+                    messages.push(Message::tool_results(vec![
+                        ai_agent::llm_client::ToolResult {
+                            tool_use_id: call.id.clone(),
+                            content: serde_json::Value::String(last_report.clone()),
+                            is_error: true,
+                        },
+                    ]));
                     continue;
                 }
                 return Ok(GeneratedScript {
@@ -1032,13 +1058,17 @@ pub(crate) async fn generate_script(
                     .all(|e| e.message.contains("needs a second instrument"))
                 {
                     if let Some(fixed) = autofix_sec(&source, user_request) {
-                        let (header, _script) =
-                            pine_lite::vet(&fixed).expect("autofix re-vet");
+                        let (header, _script) = pine_lite::vet(&fixed).expect("autofix re-vet");
                         let detail = format!(
                             "appended sec=\"{}\" to the header",
                             header.sec.clone().unwrap_or_default()
                         );
-                        report(&progress, GenerationEvent::Autofix { detail: detail.clone() });
+                        report(
+                            &progress,
+                            GenerationEvent::Autofix {
+                                detail: detail.clone(),
+                            },
+                        );
                         repaired_errors.push(format!("autofix: {detail}"));
                         return Ok(GeneratedScript {
                             source: fixed,
@@ -1059,17 +1089,19 @@ pub(crate) async fn generate_script(
                     },
                 );
                 messages.push(response.message.clone());
-                messages.push(Message::tool_results(vec![ai_agent::llm_client::ToolResult {
-                    tool_use_id: call.id.clone(),
-                    // Errors name what broke and where; the cheat sheet riding
-                    // next to them names what the compiler accepts instead, so
-                    // the model repairs from the language's real surface
-                    // rather than re-deriving it from the system prompt.
-                    content: crate::pine_cheatsheet::repair_content(
-                        errs.iter().map(repair_error_json).collect(),
-                    ),
-                    is_error: true,
-                }]));
+                messages.push(Message::tool_results(vec![
+                    ai_agent::llm_client::ToolResult {
+                        tool_use_id: call.id.clone(),
+                        // Errors name what broke and where; the cheat sheet riding
+                        // next to them names what the compiler accepts instead, so
+                        // the model repairs from the language's real surface
+                        // rather than re-deriving it from the system prompt.
+                        content: crate::pine_cheatsheet::repair_content(
+                            errs.iter().map(repair_error_json).collect(),
+                        ),
+                        is_error: true,
+                    },
+                ]));
             }
         }
     }
@@ -1087,9 +1119,20 @@ fn script_has_chart_output(items: &[pine_lite::parse::Item]) -> bool {
             ExprKind::Call { callee, args } => {
                 matches!(
                     callee.as_str(),
-                    "plot" | "plotshape" | "plotchar" | "plotarrow" | "plotcandle"
-                        | "plotbar" | "hline" | "barcolor" | "bgcolor" | "fill"
-                        | "line.new" | "linefill.new" | "box.new" | "label.new"
+                    "plot"
+                        | "plotshape"
+                        | "plotchar"
+                        | "plotarrow"
+                        | "plotcandle"
+                        | "plotbar"
+                        | "hline"
+                        | "barcolor"
+                        | "bgcolor"
+                        | "fill"
+                        | "line.new"
+                        | "linefill.new"
+                        | "box.new"
+                        | "label.new"
                         | "polyline.new"
                 ) || args.iter().any(|arg| expr_has_output(&arg.value))
             }
@@ -1102,15 +1145,11 @@ fn script_has_chart_output(items: &[pine_lite::parse::Item]) -> bool {
             ExprKind::NaChecked { value } | ExprKind::Un { expr: value, .. } => {
                 expr_has_output(value)
             }
-            ExprKind::Bin { left, right, .. } => {
-                expr_has_output(left) || expr_has_output(right)
-            }
+            ExprKind::Bin { left, right, .. } => expr_has_output(left) || expr_has_output(right),
             ExprKind::Ternary { cond, then, els } => {
                 expr_has_output(cond) || expr_has_output(then) || expr_has_output(els)
             }
-            ExprKind::History { base, offset } => {
-                expr_has_output(base) || expr_has_output(offset)
-            }
+            ExprKind::History { base, offset } => expr_has_output(base) || expr_has_output(offset),
             _ => false,
         }
     }
@@ -1120,7 +1159,9 @@ fn script_has_chart_output(items: &[pine_lite::parse::Item]) -> bool {
             Item::TypeDef { .. } => false,
             Item::Assign { expr, .. } | Item::Expr { expr, .. } => expr_has_output(expr),
             Item::Destructure { call, .. } => expr_has_output(call),
-            Item::Block { exprs, body, els, .. } => {
+            Item::Block {
+                exprs, body, els, ..
+            } => {
                 exprs.iter().any(expr_has_output)
                     || items_have_output(body)
                     || els.as_deref().is_some_and(items_have_output)
@@ -1141,7 +1182,8 @@ mod tests {
     #[test]
     fn a_comment_only_script_is_not_a_successful_indicator() {
         let source = "//@pine_lite version=1 overlay=true title=\"Empty\"\n// plot(close)\n";
-        let (_, script) = pine_lite::vet(source).expect("comments-only source is syntactically valid");
+        let (_, script) =
+            pine_lite::vet(source).expect("comments-only source is syntactically valid");
         assert!(!script_has_chart_output(&script.items));
     }
 
@@ -1192,7 +1234,10 @@ mod tests {
             assert!(p.contains(marker), "the prompt is missing: {marker}");
         }
         // The reference and the cheatsheet share one source now.
-        assert_eq!(language_reference(), crate::pine_cheatsheet::language_reference());
+        assert_eq!(
+            language_reference(),
+            crate::pine_cheatsheet::language_reference()
+        );
     }
 
     #[test]
@@ -1210,8 +1255,12 @@ mod tests {
             "AI language reference omits registered builtins: {missing:?}"
         );
         assert!(reference
-            .contains("`ta.dmi`: 1 argument(s); result `number`; destructures to 3 values"));
-        assert!(script_system_prompt("BTCUSDT", "1h").contains(&reference));
+            .contains("`ta.dmi`: 0..=1 argument(s); result `number`; destructures to 3 values"));
+        let prompt = script_system_prompt("BTCUSDT", "1h");
+        assert!(prompt.contains(&reference));
+        assert!(prompt.contains("`ta.cmf(length)`"));
+        assert!(prompt.contains("`ta.ao()`"));
+        assert!(prompt.contains("signal=9"));
     }
 
     #[test]
@@ -1249,7 +1298,15 @@ mod tests {
             "plotshape(flat and show, shape=\"triangledown\", color=color.red, location_value=high)\n",
         );
         let errs = pine_lite::vet(src);
-        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        assert!(
+            errs.is_ok(),
+            "{}",
+            errs.expect_err("vet")
+                .iter()
+                .map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 
     #[test]
@@ -1317,7 +1374,48 @@ mod tests {
     fn the_reference_script_vets_clean() {
         // The prompt quotes this script as the shape to imitate; if it ever
         // stops vetting, the prompt is teaching failure.
-        assert!(pine_lite::vet(REFERENCE_SCRIPT).is_ok(), "{}", vet_report(REFERENCE_SCRIPT));
+        assert!(
+            pine_lite::vet(REFERENCE_SCRIPT).is_ok(),
+            "{}",
+            vet_report(REFERENCE_SCRIPT)
+        );
+    }
+
+    #[test]
+    fn the_reference_script_runs_on_the_conformance_candle_fixture() {
+        let candles: Vec<_> = (0..64)
+            .map(|index| {
+                let close = 100.0 + index as f64 * 0.25;
+                analytics_core::types::Candle {
+                    symbol: "BTCUSDT".into(),
+                    timeframe: analytics_core::types::Timeframe::M1,
+                    open_time: index as i64 * 60_000_000_000,
+                    open: close - 0.1,
+                    high: close + 1.0,
+                    low: close - 1.0,
+                    close,
+                    volume: 100.0,
+                    buy_volume: 55.0,
+                    sell_volume: 45.0,
+                }
+            })
+            .collect();
+        let (_, script) = pine_lite::vet(REFERENCE_SCRIPT).expect("reference script vets");
+        let output = pine_lite::run(&script, &candles, &pine_lite::Inputs::default())
+            .expect("reference script executes");
+
+        assert_eq!(output.plots.len(), 5);
+        assert_eq!(
+            output.plots[..3]
+                .iter()
+                .map(|plot| plot.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Basis", "Upper", "Lower"]
+        );
+        assert!(output
+            .plots
+            .iter()
+            .all(|plot| plot.values.len() == candles.len()));
     }
 
     #[test]
@@ -1412,7 +1510,15 @@ mod tests {
     #[test]
     fn the_taught_idioms_vet_and_run() {
         let errs = pine_lite::vet(IDIOM_SCRIPT);
-        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        assert!(
+            errs.is_ok(),
+            "{}",
+            errs.expect_err("vet")
+                .iter()
+                .map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         let (_, parsed) = pine_lite::vet(IDIOM_SCRIPT).ok().unwrap();
         let candles: Vec<analytics_core::types::Candle> = (0..60)
             .map(|i| {
@@ -1471,7 +1577,15 @@ mod tests {
     #[test]
     fn the_taught_smt_idiom_vets_and_runs() {
         let errs = pine_lite::vet(SMT_IDIOM_SCRIPT);
-        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        assert!(
+            errs.is_ok(),
+            "{}",
+            errs.expect_err("vet")
+                .iter()
+                .map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         let (_, parsed) = pine_lite::vet(SMT_IDIOM_SCRIPT).ok().unwrap();
         // Ours rises while the pair falls -- the divergence genuinely fires.
         let candles: Vec<analytics_core::types::Candle> = (0..60)
@@ -1507,7 +1621,10 @@ mod tests {
                 sell_volume: 0.5,
             })
             .collect();
-        let inputs = pine_lite::Inputs { security, ..pine_lite::Inputs::default() };
+        let inputs = pine_lite::Inputs {
+            security,
+            ..pine_lite::Inputs::default()
+        };
         let output = pine_lite::run(&parsed, &candles, &inputs).expect("the SMT idiom runs");
         assert_eq!(output.plots.len(), 3, "two histograms + the spread");
     }
@@ -1568,7 +1685,15 @@ mod tests {
     #[test]
     fn the_taught_array_idioms_vet_and_run() {
         let errs = pine_lite::vet(ARRAY_IDIOM_SCRIPT);
-        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        assert!(
+            errs.is_ok(),
+            "{}",
+            errs.expect_err("vet")
+                .iter()
+                .map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         let (_, parsed) = pine_lite::vet(ARRAY_IDIOM_SCRIPT).ok().unwrap();
         let candles: Vec<analytics_core::types::Candle> = (0..80)
             .map(|i| {
@@ -1650,7 +1775,15 @@ mod tests {
     #[test]
     fn the_taught_smc_idiom_vets_runs_and_draws_boxes() {
         let errs = pine_lite::vet(SMC_IDIOM_SCRIPT);
-        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        assert!(
+            errs.is_ok(),
+            "{}",
+            errs.expect_err("vet")
+                .iter()
+                .map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         let (_, parsed) = pine_lite::vet(SMC_IDIOM_SCRIPT).ok().unwrap();
         // A bullish gap at bars 0..2 (mitigated at bar 4), another at bars
         // 6..8 left live: exactly one box survives to the last bar.
@@ -1684,13 +1817,18 @@ mod tests {
                 sell_volume: 0.5,
             })
             .collect();
-        let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default()).expect("the SMC idiom runs");
+        let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default())
+            .expect("the SMC idiom runs");
         let boxes = output
             .objects
             .iter()
             .filter(|o| matches!(o, pine_lite::interp::ScriptObject::Box { .. }))
             .count();
-        assert_eq!(boxes, 1, "the live gap draws exactly one box: {:?}", output.objects);
+        assert_eq!(
+            boxes, 1,
+            "the live gap draws exactly one box: {:?}",
+            output.objects
+        );
     }
 
     const SWEEP_STATE_IDIOM_SCRIPT: &str = concat!(
@@ -1812,7 +1950,11 @@ mod tests {
         let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default())
             .expect("the sweep-state example runs");
         let bars: Vec<usize> = output.shapes.iter().map(|shape| shape.bar).collect();
-        assert_eq!(bars, [3], "an expired sweep cannot confirm outside its window");
+        assert_eq!(
+            bars,
+            [3],
+            "an expired sweep cannot confirm outside its window"
+        );
     }
 
     /// The strategy idiom the prompt teaches, verbatim (docs/24 S3): the
@@ -1855,13 +1997,25 @@ mod tests {
     fn the_taught_strategy_idiom_vets_and_runs() {
         // docs/24 S3: the reference strategy must VET...
         let errs = pine_lite::vet(STRATEGY_IDIOM_SCRIPT);
-        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        assert!(
+            errs.is_ok(),
+            "{}",
+            errs.expect_err("vet")
+                .iter()
+                .map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         let (_, parsed) = pine_lite::vet(STRATEGY_IDIOM_SCRIPT).ok().unwrap();
         let candles = strategy_candles();
-        let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default()).expect("the strategy runs");
+        let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default())
+            .expect("the strategy runs");
         // ...and SIMULATE: a strategy that draws but trades nothing has no
         // business being the prompt's model answer.
-        let sim = output.simulation.as_ref().expect("the reference strategy simulates");
+        let sim = output
+            .simulation
+            .as_ref()
+            .expect("the reference strategy simulates");
         assert!(
             sim.report.total_trades >= 1.0,
             "the taught idiom must close at least one trade: {:?}",
@@ -1917,9 +2071,14 @@ mod tests {
             );
             let src = format!("{head}{body}plot(trail, title=\"Trail\")\n");
             let (_, parsed) = pine_lite::vet(&src).ok().expect("the ratchet fixture vets");
-            let output =
-                pine_lite::run(&parsed, &trail_candles(), &pine_lite::Inputs::default()).expect("the ratchet fixture runs");
-            output.plots[0].values.iter().copied().filter(|v| v.is_finite()).collect()
+            let output = pine_lite::run(&parsed, &trail_candles(), &pine_lite::Inputs::default())
+                .expect("the ratchet fixture runs");
+            output.plots[0]
+                .values
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite())
+                .collect()
         }
         let taught = trail_of(concat!(
             "var float trail = 0.0\n",
@@ -1975,9 +2134,16 @@ mod tests {
                 }
             })
             .collect();
-        let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default()).expect("runs");
-        let sim = output.simulation.as_ref().expect("a strategy run simulates");
-        assert_eq!(sim.report.total_trades as usize, 0, "the entry condition never fires");
+        let output =
+            pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default()).expect("runs");
+        let sim = output
+            .simulation
+            .as_ref()
+            .expect("a strategy run simulates");
+        assert_eq!(
+            sim.report.total_trades as usize, 0,
+            "the entry condition never fires"
+        );
         assert!(
             output.notes.iter().any(|n| n.contains("0 fills")),
             "the zero-fill note must ride the output: {:?}",
@@ -1989,10 +2155,22 @@ mod tests {
     fn the_strategy_header_teaches_only_real_knobs() {
         // The header the prompt teaches must vet as-is: every knob named,
         // every quoted value in the language's accepted spelling.
-        let header = REFERENCE_STRATEGY.lines().next().expect("header").to_string();
+        let header = REFERENCE_STRATEGY
+            .lines()
+            .next()
+            .expect("header")
+            .to_string();
         let src = format!("{header}\nplot(close)\n");
         let errs = pine_lite::vet(&src);
-        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line 1 col {}: {}", e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        assert!(
+            errs.is_ok(),
+            "{}",
+            errs.expect_err("vet")
+                .iter()
+                .map(|e| format!("line 1 col {}: {}", e.span.col, e.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 
     #[test]
@@ -2000,9 +2178,18 @@ mod tests {
         // The system prompt embeds both references verbatim; a formatting
         // regression that drops one is exactly what this catches.
         let prompt = script_system_prompt("BTCUSDT", "15m");
-        assert!(prompt.contains(REFERENCE_SCRIPT), "the indicator reference rides the prompt");
-        assert!(prompt.contains(REFERENCE_STRATEGY), "the strategy reference rides the prompt");
-        assert!(prompt.contains("## Strategies"), "the strategy section exists");
+        assert!(
+            prompt.contains(REFERENCE_SCRIPT),
+            "the indicator reference rides the prompt"
+        );
+        assert!(
+            prompt.contains(REFERENCE_STRATEGY),
+            "the strategy reference rides the prompt"
+        );
+        assert!(
+            prompt.contains("## Strategies"),
+            "the strategy section exists"
+        );
     }
 
     /// The MTF idiom the prompt teaches (docs/28), assembled as the complete
@@ -2027,7 +2214,15 @@ mod tests {
     #[test]
     fn the_taught_mtf_idiom_vets_runs_and_draws_the_gap() {
         let errs = pine_lite::vet(MTF_IDIOM_SCRIPT);
-        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        assert!(
+            errs.is_ok(),
+            "{}",
+            errs.expect_err("vet")
+                .iter()
+                .map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         let (_, parsed) = pine_lite::vet(MTF_IDIOM_SCRIPT).ok().unwrap();
         // The fixture mirrors the pine-lite integration test: 1h bars of 10
         // chart bars each; B2's low (105) gaps above B0's high (100).
@@ -2044,7 +2239,8 @@ mod tests {
             sell_volume: 0.5,
         };
         let candles: Vec<_> = (0..40).map(mk).collect();
-        let pool_levels: [(f64, f64); 4] = [(100.0, 90.0), (110.0, 95.0), (115.0, 105.0), (120.0, 110.0)];
+        let pool_levels: [(f64, f64); 4] =
+            [(100.0, 90.0), (110.0, 95.0), (115.0, 105.0), (120.0, 110.0)];
         let pool: Vec<_> = (0..40)
             .map(|i| {
                 let b = (i / 10) as usize;
@@ -2057,23 +2253,42 @@ mod tests {
             .collect();
         let mut series_pool = std::collections::HashMap::new();
         series_pool.insert("BTCUSDT@1H".to_string(), pool);
-        let inputs = pine_lite::Inputs { series_pool, ..pine_lite::Inputs::default() };
+        let inputs = pine_lite::Inputs {
+            series_pool,
+            ..pine_lite::Inputs::default()
+        };
         let output = pine_lite::run(&parsed, &candles, &inputs).expect("the MTF idiom runs");
         let boxes = output
             .objects
             .iter()
             .filter(|o| matches!(o, pine_lite::interp::ScriptObject::BoxTime { .. }))
             .count();
-        assert_eq!(boxes, 1, "one HTF gap, one time-anchored box: {:?}", output.objects);
+        assert_eq!(
+            boxes, 1,
+            "one HTF gap, one time-anchored box: {:?}",
+            output.objects
+        );
     }
 
     #[test]
     fn the_prompt_teaches_the_mtf_section_and_time_anchored_drawing() {
         let prompt = script_system_prompt("BTCUSDT", "15m");
-        assert!(prompt.contains("## A higher timeframe"), "the MTF section rides the prompt");
-        assert!(prompt.contains("box.new_time"), "the time-anchored twins ride the prompt");
-        assert!(prompt.contains("request.security"), "pooled reads ride the prompt");
-        assert!(prompt.contains("request.time()"), "the aligned-time read rides the prompt");
+        assert!(
+            prompt.contains("## A higher timeframe"),
+            "the MTF section rides the prompt"
+        );
+        assert!(
+            prompt.contains("box.new_time"),
+            "the time-anchored twins ride the prompt"
+        );
+        assert!(
+            prompt.contains("request.security"),
+            "pooled reads ride the prompt"
+        );
+        assert!(
+            prompt.contains("request.time()"),
+            "the aligned-time read rides the prompt"
+        );
     }
 
     /// The multi-timeframe idiom the prompt teaches (docs/28), assembled as
@@ -2090,7 +2305,15 @@ mod tests {
     #[test]
     fn the_taught_multi_timeframe_idiom_vets_and_runs_over_two_pools() {
         let errs = pine_lite::vet(MTF_SYNTHESIS_SCRIPT);
-        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        assert!(
+            errs.is_ok(),
+            "{}",
+            errs.expect_err("vet")
+                .iter()
+                .map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         let (_, parsed) = pine_lite::vet(MTF_SYNTHESIS_SCRIPT).ok().unwrap();
         // The same fixture as the pine-lite integration test: 15m bars 4
         // chart bars wide, 1h bars 10 wide, one qualifying gap each.
@@ -2108,8 +2331,16 @@ mod tests {
         };
         let candles: Vec<_> = (0..40).map(mk).collect();
         let p15: [(f64, f64); 10] = [
-            (100.0, 90.0), (108.0, 94.0), (112.0, 104.0), (110.0, 103.0), (111.0, 102.0),
-            (112.0, 103.0), (113.0, 104.0), (114.0, 105.0), (115.0, 106.0), (116.0, 107.0),
+            (100.0, 90.0),
+            (108.0, 94.0),
+            (112.0, 104.0),
+            (110.0, 103.0),
+            (111.0, 102.0),
+            (112.0, 103.0),
+            (113.0, 104.0),
+            (114.0, 105.0),
+            (115.0, 106.0),
+            (116.0, 107.0),
         ];
         let pool15: Vec<_> = (0..40)
             .map(|i| {
@@ -2135,7 +2366,10 @@ mod tests {
         let mut series_pool = std::collections::HashMap::new();
         series_pool.insert("BTCUSDT@15M".to_string(), pool15);
         series_pool.insert("BTCUSDT@1H".to_string(), pool1h);
-        let inputs = pine_lite::Inputs { series_pool, ..pine_lite::Inputs::default() };
+        let inputs = pine_lite::Inputs {
+            series_pool,
+            ..pine_lite::Inputs::default()
+        };
         let output = pine_lite::run(&parsed, &candles, &inputs).expect("the multi-TF idiom runs");
         let boxes = output
             .objects
@@ -2151,14 +2385,24 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(labels, ["15m FVG", "1h FVG"], "each zone names its timeframe");
+        assert_eq!(
+            labels,
+            ["15m FVG", "1h FVG"],
+            "each zone names its timeframe"
+        );
     }
 
     #[test]
     fn the_prompt_teaches_multi_timeframe_synthesis() {
         let prompt = script_system_prompt("BTCUSDT", "5m");
-        assert!(prompt.contains("## Multi-timeframe synthesis"), "the synthesis section rides the prompt");
-        assert!(prompt.contains("15m FVG"), "the tf-tagged zone labels ride the prompt");
+        assert!(
+            prompt.contains("## Multi-timeframe synthesis"),
+            "the synthesis section rides the prompt"
+        );
+        assert!(
+            prompt.contains("15m FVG"),
+            "the tf-tagged zone labels ride the prompt"
+        );
     }
 
     #[tokio::test]
@@ -2289,12 +2533,7 @@ mod tests {
             "BTCUSDT@1H".to_string(),
             aligned_pool(
                 12,
-                &[
-                    (100.0, 90.0),
-                    (110.0, 95.0),
-                    (115.0, 105.0),
-                    (120.0, 110.0),
-                ],
+                &[(100.0, 90.0), (110.0, 95.0), (115.0, 105.0), (120.0, 110.0)],
             ),
         );
         pine_lite::Inputs {
@@ -2382,9 +2621,18 @@ mod tests {
             scripts: std::sync::Mutex::new(vec![bad.to_string(), good.to_string()]),
         };
         let (tx, rx) = futures::channel::mpsc::unbounded::<GenerationEvent>();
-        let generated = generate_script(&llm, "system".into(), "a plot", None, 4096, 0.2, Some(&tx), &[])
-            .await
-            .expect("the second attempt passes");
+        let generated = generate_script(
+            &llm,
+            "system".into(),
+            "a plot",
+            None,
+            4096,
+            0.2,
+            Some(&tx),
+            &[],
+        )
+        .await
+        .expect("the second attempt passes");
         assert_eq!(generated.attempts, 2);
         assert!(
             generated
@@ -2423,9 +2671,10 @@ mod tests {
         let llm = ScriptedLlm {
             scripts: std::sync::Mutex::new(vec![good.to_string()]),
         };
-        let generated = generate_script(&llm, "system".into(), "a plot", None, 4096, 0.2, None, &[])
-            .await
-            .expect("one attempt");
+        let generated =
+            generate_script(&llm, "system".into(), "a plot", None, 4096, 0.2, None, &[])
+                .await
+                .expect("one attempt");
         assert_eq!(generated.attempts, 1);
     }
 }

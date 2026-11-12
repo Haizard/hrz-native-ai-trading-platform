@@ -89,8 +89,10 @@ pub struct CapabilityDescriptor {
 const CANDLES: &[KindNeed] = &[KindNeed::of(DataKind::Candles)];
 const CANDLES_REAL_SPLIT: &[KindNeed] =
     &[KindNeed::with_split(DataKind::Candles, SplitQuality::Real)];
-const CANDLES_ATTRIBUTED_SPLIT: &[KindNeed] =
-    &[KindNeed::with_split(DataKind::Candles, SplitQuality::Attributed)];
+const CANDLES_ATTRIBUTED_SPLIT: &[KindNeed] = &[KindNeed::with_split(
+    DataKind::Candles,
+    SplitQuality::Attributed,
+)];
 const TRADES: &[KindNeed] = &[KindNeed::of(DataKind::Trades)];
 
 /// True from trades, true from candles with a real split, derived from
@@ -461,7 +463,10 @@ pub fn find(id: &str) -> Option<&'static CapabilityDescriptor> {
 /// Look up a capability by id in an arbitrary catalog — the resolver's entry
 /// point, so tests can resolve against fixture catalogs.
 #[must_use]
-pub fn find_in<'a>(catalog: &'a [CapabilityDescriptor], id: &str) -> Option<&'a CapabilityDescriptor> {
+pub fn find_in<'a>(
+    catalog: &'a [CapabilityDescriptor],
+    id: &str,
+) -> Option<&'a CapabilityDescriptor> {
     catalog.iter().find(|descriptor| descriptor.id == id)
 }
 
@@ -473,11 +478,19 @@ mod tests {
     fn every_row_is_self_consistent() {
         for descriptor in STANDARD {
             assert!(
-                !descriptor.id.is_empty() && descriptor.id.chars().all(|c| c == '_' || c.is_ascii_lowercase() || c.is_ascii_digit()),
+                !descriptor.id.is_empty()
+                    && descriptor
+                        .id
+                        .chars()
+                        .all(|c| c == '_' || c.is_ascii_lowercase() || c.is_ascii_digit()),
                 "ids are snake_case wire names: {}",
                 descriptor.id
             );
-            assert!(!descriptor.summary.is_empty(), "{}: no summary", descriptor.id);
+            assert!(
+                !descriptor.summary.is_empty(),
+                "{}: no summary",
+                descriptor.id
+            );
             match descriptor.implemented_by {
                 Some(_) => assert!(
                     !descriptor.rules.is_empty(),

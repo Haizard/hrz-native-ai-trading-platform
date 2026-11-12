@@ -309,10 +309,18 @@ impl ChartContext {
         // highest-first means the longer resolution is always tried before the
         // shorter one it contains. Reorder this list and the 15m picture starts
         // claiming the 5m slot in the review order.
-        const ORDER: [&str; 11] = ["1w", "1d", "12h", "8h", "4h", "2h", "1h", "30m", "15m", "5m", "1m"];
+        const ORDER: [&str; 11] = [
+            "1w", "1d", "12h", "8h", "4h", "2h", "1h", "30m", "15m", "5m", "1m",
+        ];
         out.sort_by_key(|shot| {
-            let label = shot.label.as_deref().unwrap_or_default().to_ascii_lowercase();
-            ORDER.iter().position(|timeframe| label.contains(&format!("{timeframe} chart")))
+            let label = shot
+                .label
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            ORDER
+                .iter()
+                .position(|timeframe| label.contains(&format!("{timeframe} chart")))
                 .unwrap_or(ORDER.len())
         });
         out
@@ -888,8 +896,12 @@ mod tests {
             rendered.contains("Images of the user's charts are attached"),
             "{rendered}"
         );
-        let extra1_at = rendered.find("1. 1d chart").expect("highest timeframe first");
-        let primary_at = rendered.find("2. 4h chart").expect("next lower timeframe follows");
+        let extra1_at = rendered
+            .find("1. 1d chart")
+            .expect("highest timeframe first");
+        let primary_at = rendered
+            .find("2. 4h chart")
+            .expect("next lower timeframe follows");
         let extra2_at = rendered.find("3. ").expect("unlabelled image still listed");
         assert!(
             extra1_at < primary_at && primary_at < extra2_at,

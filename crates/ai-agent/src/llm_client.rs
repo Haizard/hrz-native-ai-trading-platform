@@ -342,10 +342,14 @@ pub trait LlmClient: Send + Sync {
 
     /// Whether this configured model can read image blocks. The agent uses
     /// this before sending chart captures or user attachments.
-    fn supports_image_input(&self) -> bool { false }
+    fn supports_image_input(&self) -> bool {
+        false
+    }
 
     /// Whether this provider can generate image output.
-    fn supports_image_generation(&self) -> bool { false }
+    fn supports_image_generation(&self) -> bool {
+        false
+    }
 
     /// Generate one image. Text-only clients leave the default unavailable.
     async fn generate_image(
@@ -353,7 +357,9 @@ pub trait LlmClient: Send + Sync {
         _prompt: &str,
         _reference_images: &[(String, String)],
     ) -> Result<GeneratedImage, AgentError> {
-        Err(AgentError::Llm("the configured provider does not generate images".into()))
+        Err(AgentError::Llm(
+            "the configured provider does not generate images".into(),
+        ))
     }
 
     /// A short name for logging, e.g. `"bedrock(qwen.qwen3-coder-next)"`.

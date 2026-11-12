@@ -2730,16 +2730,14 @@ mod tests {
             timeframe: None,
         });
         let mut composer = Composer::new(document.clone());
-        assert!(
-            composer
-                .on_bar(
-                    0,
-                    &[event("smc.bos", Direction::Bullish, 100.0)],
-                    None,
-                    None
-                )
-                .is_some()
-        );
+        assert!(composer
+            .on_bar(
+                0,
+                &[event("smc.bos", Direction::Bullish, 100.0)],
+                None,
+                None
+            )
+            .is_some());
         // Edge-triggered: the same bar must not fire twice.
         assert!(composer.on_bar(0, &[], None, None).is_none());
         assert!(
@@ -2751,16 +2749,14 @@ mod tests {
             assert!(composer.on_bar(bar, &[], None, None).is_none());
         }
         // A fresh event re-arms it.
-        assert!(
-            composer
-                .on_bar(
-                    5,
-                    &[event("smc.bos", Direction::Bullish, 105.0)],
-                    None,
-                    None
-                )
-                .is_some()
-        );
+        assert!(composer
+            .on_bar(
+                5,
+                &[event("smc.bos", Direction::Bullish, 105.0)],
+                None,
+                None
+            )
+            .is_some());
     }
 
     #[test]
@@ -2801,16 +2797,14 @@ mod tests {
             None,
             None,
         );
-        assert!(
-            composer
-                .on_bar(
-                    1,
-                    &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)],
-                    None,
-                    None
-                )
-                .is_none()
-        );
+        assert!(composer
+            .on_bar(
+                1,
+                &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)],
+                None,
+                None
+            )
+            .is_none());
         // Right order inside the window: sweep at 0, bos at 2 (gap 2 <= 3).
         let mut composer = Composer::new(document.clone());
         composer.on_bar(
@@ -2819,16 +2813,14 @@ mod tests {
             None,
             None,
         );
-        assert!(
-            composer
-                .on_bar(
-                    2,
-                    &[event("smc.bos", Direction::Bullish, 100.0)],
-                    None,
-                    None
-                )
-                .is_some()
-        );
+        assert!(composer
+            .on_bar(
+                2,
+                &[event("smc.bos", Direction::Bullish, 100.0)],
+                None,
+                None
+            )
+            .is_some());
         // Right order but too wide: gap 4 > 3.
         let mut composer = Composer::new(document.clone());
         composer.on_bar(
@@ -2837,16 +2829,14 @@ mod tests {
             None,
             None,
         );
-        assert!(
-            composer
-                .on_bar(
-                    4,
-                    &[event("smc.bos", Direction::Bullish, 100.0)],
-                    None,
-                    None
-                )
-                .is_none()
-        );
+        assert!(composer
+            .on_bar(
+                4,
+                &[event("smc.bos", Direction::Bullish, 100.0)],
+                None,
+                None
+            )
+            .is_none());
     }
 
     #[test]
@@ -2881,16 +2871,14 @@ mod tests {
             None,
         );
         // The spike vetoes within its lookback.
-        assert!(
-            composer
-                .on_bar(
-                    1,
-                    &[event("smc.bos", Direction::Bullish, 100.0)],
-                    None,
-                    None
-                )
-                .is_none()
-        );
+        assert!(composer
+            .on_bar(
+                1,
+                &[event("smc.bos", Direction::Bullish, 100.0)],
+                None,
+                None
+            )
+            .is_none());
         // The spike's lookback (2 bars) lapses at bar 4 while the bos's (5)
         // still holds -- so the veto lifts and the group fires here.
         assert!(

@@ -146,12 +146,19 @@ pub fn hmm_regime(closes: &[f64], window: usize) -> Vec<Option<f64>> {
                 .filter(|r| (r.abs() <= median) == (state == 0))
                 .copied()
                 .collect();
-            let g = if group.is_empty() { sample.to_vec() } else { group };
+            let g = if group.is_empty() {
+                sample.to_vec()
+            } else {
+                group
+            };
             mu[state] = g.iter().sum::<f64>() / g.len() as f64;
-            var[state] = (g.iter().map(|r| (r - mu[state]).powi(2)).sum::<f64>() / g.len() as f64).max(1e-12);
+            var[state] = (g.iter().map(|r| (r - mu[state]).powi(2)).sum::<f64>() / g.len() as f64)
+                .max(1e-12);
         }
         let mut trans = [[0.9, 0.1], [0.1, 0.9]]; // sticky states to start
-        let gauss = |r: f64, m: f64, v: f64| ((r - m).powi(2) / (-2.0 * v)).exp() / (2.0 * std::f64::consts::PI * v).sqrt();
+        let gauss = |r: f64, m: f64, v: f64| {
+            ((r - m).powi(2) / (-2.0 * v)).exp() / (2.0 * std::f64::consts::PI * v).sqrt()
+        };
         // A few EM rounds: responsibilities from the current params, then
         // re-estimate. (The forward-backward in its scalar form: the
         // filtered posterior drives both steps.)
@@ -185,8 +192,14 @@ pub fn hmm_regime(closes: &[f64], window: usize) -> Vec<Option<f64>> {
             }
             // Transition from the posterior flows (sticky-prior regularized).
             trans = [
-                [0.85 + 0.05 * (weight[0] / sample.len() as f64), 0.15 - 0.05 * (weight[0] / sample.len() as f64)],
-                [0.15 - 0.05 * (weight[1] / sample.len() as f64), 0.85 + 0.05 * (weight[1] / sample.len() as f64)],
+                [
+                    0.85 + 0.05 * (weight[0] / sample.len() as f64),
+                    0.15 - 0.05 * (weight[0] / sample.len() as f64),
+                ],
+                [
+                    0.15 - 0.05 * (weight[1] / sample.len() as f64),
+                    0.85 + 0.05 * (weight[1] / sample.len() as f64),
+                ],
             ];
         }
         // The filtered posterior of the volatile state at the newest bar.
@@ -211,8 +224,14 @@ mod tests {
         let (means, sds) = bayesian_drift(&closes, 0.01);
         let early = sds[5].expect("sd");
         let late = sds[59].expect("sd");
-        assert!(late < early, "the posterior narrows with evidence: {late} < {early}");
-        assert!(means[59].unwrap() > 0.0, "a steady rise reads a positive drift");
+        assert!(
+            late < early,
+            "the posterior narrows with evidence: {late} < {early}"
+        );
+        assert!(
+            means[59].unwrap() > 0.0,
+            "a steady rise reads a positive drift"
+        );
     }
 
     #[test]
@@ -226,7 +245,11 @@ mod tests {
         let mut price = 100.0;
         for i in 0..80 {
             let jitter = ((i * 7919) % 10) as f64 * 0.0001;
-            price *= if i % 2 == 0 { 1.004 + jitter } else { 0.996 - jitter };
+            price *= if i % 2 == 0 {
+                1.004 + jitter
+            } else {
+                0.996 - jitter
+            };
             closes.push(price);
         }
         let v = ar2_forecast(&closes, 60);
@@ -255,13 +278,18 @@ mod tests {
     fn the_hmm_separates_the_regimes() {
         // 80 calm bars then 40 violent: the window (60) can sit FULLY
         // inside each stretch -- the honest way to compare the two reads.
-        let mut closes: Vec<f64> = (0..80).map(|i| 100.0 + (i as f64 / 9.0).sin() * 0.05).collect();
+        let mut closes: Vec<f64> = (0..80)
+            .map(|i| 100.0 + (i as f64 / 9.0).sin() * 0.05)
+            .collect();
         for i in 0..40 {
             closes.push(100.0 + if i % 2 == 0 { 2.0 } else { -2.0 });
         }
         let v = hmm_regime(&closes, 60);
         let calm_post = v[70].expect("calm posterior");
         let wild_post = v[119].expect("wild posterior");
-        assert!(wild_post > calm_post, "the volatile state reads higher in the violent stretch: {wild_post} vs {calm_post}");
+        assert!(
+            wild_post > calm_post,
+            "the volatile state reads higher in the violent stretch: {wild_post} vs {calm_post}"
+        );
     }
 }

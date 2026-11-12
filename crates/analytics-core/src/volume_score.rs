@@ -198,7 +198,9 @@ mod tests {
 
     #[test]
     fn the_noise_floor_silences_a_one_lot_in_a_dead_market() {
-        let mut candles: Vec<Candle> = (0..20).map(|i| candle(i64::from(i), 1000.0, 500.0)).collect();
+        let mut candles: Vec<Candle> = (0..20)
+            .map(|i| candle(i64::from(i), 1000.0, 500.0))
+            .collect();
         // One-tenth of the baseline, entirely buy-aggressed.
         candles.push(candle(20, 100.0, 100.0));
         let config = VolumeScoreConfig::default();
@@ -211,7 +213,11 @@ mod tests {
 
     #[test]
     fn warm_up_is_none_not_a_number_from_a_short_window() {
-        let candles = vec![candle(0, 10.0, 6.0), candle(1, 12.0, 8.0), candle(2, 8.0, 4.0)];
+        let candles = vec![
+            candle(0, 10.0, 6.0),
+            candle(1, 12.0, 8.0),
+            candle(2, 8.0, 4.0),
+        ];
         let scores = volume_scores(&candles, &VolumeScoreConfig::default());
         assert_eq!(scores, vec![None, None, None]);
     }

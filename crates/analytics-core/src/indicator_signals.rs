@@ -16,18 +16,38 @@ const OVERSOLD: f64 = 30.0;
 /// Detect every indicator signal completing on the window's LAST bar.
 pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
     let mut out = Vec::new();
-    let Some(last) = candles.last() else { return out };
+    let Some(last) = candles.last() else {
+        return out;
+    };
     let n = candles.len();
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
     // -- Divergences on an oscillator line (OBV, the MACD line, the A/D
     // line): the shared machinery lives in `oscillator_divergence` below.
     {
         let obv_series = crate::indicators::oscillators::obv(candles);
-        out.extend(oscillator_divergence(candles, &obv_series, EventKind::ObvDivergence, symbol));
-        let macd_line: Vec<Option<f64>> = macd(&closes, 12, 26, 9).iter().map(|p| p.map(|m| m.line)).collect();
-        out.extend(oscillator_divergence(candles, &macd_line, EventKind::MacdDivergenceSignal, symbol));
+        out.extend(oscillator_divergence(
+            candles,
+            &obv_series,
+            EventKind::ObvDivergence,
+            symbol,
+        ));
+        let macd_line: Vec<Option<f64>> = macd(&closes, 12, 26, 9)
+            .iter()
+            .map(|p| p.map(|m| m.line))
+            .collect();
+        out.extend(oscillator_divergence(
+            candles,
+            &macd_line,
+            EventKind::MacdDivergenceSignal,
+            symbol,
+        ));
         let ad_series = crate::indicators::misc::ad_line(candles);
-        out.extend(oscillator_divergence(candles, &ad_series, EventKind::AdDivergence, symbol));
+        out.extend(oscillator_divergence(
+            candles,
+            &ad_series,
+            EventKind::AdDivergence,
+            symbol,
+        ));
     }
 
     let mut push = |kind: EventKind, side: Option<Side>, magnitude: Option<f64>| {
@@ -75,9 +95,17 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         let (long_stop, short_stop) = crate::indicators::misc::chandelier(candles, 22, 3.0);
         if let (Some(l), Some(s)) = (long_stop[n - 1], short_stop[n - 1]) {
             if closes[n - 2] >= long_stop[n - 2].unwrap_or(l) && closes[n - 1] < l {
-                push(EventKind::ChandelierFlip, Some(Side::Sell), Some(l - closes[n - 1]));
+                push(
+                    EventKind::ChandelierFlip,
+                    Some(Side::Sell),
+                    Some(l - closes[n - 1]),
+                );
             } else if closes[n - 2] <= short_stop[n - 2].unwrap_or(s) && closes[n - 1] > s {
-                push(EventKind::ChandelierFlip, Some(Side::Buy), Some(closes[n - 1] - s));
+                push(
+                    EventKind::ChandelierFlip,
+                    Some(Side::Buy),
+                    Some(closes[n - 1] - s),
+                );
             }
         }
     }
@@ -85,7 +113,11 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     // -- The anchored VWAP cross (against the newest swing-low anchor).
     if n > 30 {
         let swings = crate::market_structure::find_swings(candles, 3);
-        if let Some(anchor) = swings.iter().rev().find(|sp| sp.kind == crate::market_structure::SwingKind::Low) {
+        if let Some(anchor) = swings
+            .iter()
+            .rev()
+            .find(|sp| sp.kind == crate::market_structure::SwingKind::Low)
+        {
             let v = crate::indicators::misc::anchored_vwap(candles, anchor.index);
             if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
                 if closes[n - 2] <= p && closes[n - 1] > c {
@@ -110,9 +142,6 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         }
     }
 
-
-
-
     // -- RSI zone crossings (14): entering oversold is the buy-side signal,
     // entering overbought the sell-side.
     if n > RSI_PERIOD + 1 {
@@ -132,7 +161,8 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     if n > 26 {
         let consensus = |i: usize, above: bool| {
             crate::rsi_pca::RSI_PERIODS.iter().all(|p| {
-                rsi(&closes, *p)[i].map_or(false, |v| if above { v > OVERBOUGHT } else { v < OVERSOLD })
+                rsi(&closes, *p)[i]
+                    .map_or(false, |v| if above { v > OVERBOUGHT } else { v < OVERSOLD })
             })
         };
         let buy_now = consensus(n - 1, false);
@@ -154,7 +184,10 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     // -- RSI/price divergences confirmed exactly at the tail (the second
     // swing plus the detector's strength bars lands on the last bar).
     if n > 40 {
-        let config = RsiDivergenceConfig { lookback: n, ..RsiDivergenceConfig::default() };
+        let config = RsiDivergenceConfig {
+            lookback: n,
+            ..RsiDivergenceConfig::default()
+        };
         for div in rsi_divergences(candles, &config) {
             if div.rsi_index + config.strength == n - 1 {
                 push(
@@ -175,9 +208,17 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         let points = macd(&closes, 12, 26, 9);
         if let (Some(prev), Some(curr)) = (points[n - 2], points[n - 1]) {
             if prev.line <= prev.signal && curr.line > curr.signal {
-                push(EventKind::MacdSignalCross, Some(Side::Buy), Some(curr.histogram));
+                push(
+                    EventKind::MacdSignalCross,
+                    Some(Side::Buy),
+                    Some(curr.histogram),
+                );
             } else if prev.line >= prev.signal && curr.line < curr.signal {
-                push(EventKind::MacdSignalCross, Some(Side::Sell), Some(curr.histogram));
+                push(
+                    EventKind::MacdSignalCross,
+                    Some(Side::Sell),
+                    Some(curr.histogram),
+                );
             }
             if prev.line <= 0.0 && curr.line > 0.0 {
                 push(EventKind::MacdZeroCross, Some(Side::Buy), Some(curr.line));
@@ -190,10 +231,18 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     // -- The golden/death cross: the 50 crossing the 200, EMA and SMA as
     // their own concepts.
     if n > 201 {
-        for (kind, average) in [(EventKind::EmaCross, ema as fn(&[f64], usize) -> Vec<Option<f64>>), (EventKind::SmaCross, sma)] {
+        for (kind, average) in [
+            (
+                EventKind::EmaCross,
+                ema as fn(&[f64], usize) -> Vec<Option<f64>>,
+            ),
+            (EventKind::SmaCross, sma),
+        ] {
             let fast = average(&closes, 50);
             let slow = average(&closes, 200);
-            if let (Some(fp), Some(sp), Some(fc), Some(sc)) = (fast[n - 2], slow[n - 2], fast[n - 1], slow[n - 1]) {
+            if let (Some(fp), Some(sp), Some(fc), Some(sc)) =
+                (fast[n - 2], slow[n - 2], fast[n - 1], slow[n - 1])
+            {
                 if fp <= sp && fc > sc {
                     push(kind, Some(Side::Buy), Some(fc - sc));
                 } else if fp >= sp && fc < sc {
@@ -221,7 +270,9 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     // cross.
     if n > 18 {
         let (k_line, d_line) = crate::indicators::oscillators::stochastic(candles, 14, 3);
-        if let (Some(kp), Some(kc), Some(dp), Some(dc)) = (k_line[n - 2], k_line[n - 1], d_line[n - 2], d_line[n - 1]) {
+        if let (Some(kp), Some(kc), Some(dp), Some(dc)) =
+            (k_line[n - 2], k_line[n - 1], d_line[n - 2], d_line[n - 1])
+        {
             if kp >= 20.0 && kc < 20.0 {
                 push(EventKind::StochasticZoneEntry, Some(Side::Buy), Some(kc));
             } else if kp <= 80.0 && kc > 80.0 {
@@ -278,9 +329,14 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     // dominant DI naming the side.
     if n > 30 {
         let (plus, minus, adx_line) = crate::indicators::trend::adx(candles, 14);
-        if let (Some(ap), Some(ac), Some(pp), Some(pc), Some(mp), Some(mc)) =
-            (adx_line[n - 2], adx_line[n - 1], plus[n - 2], plus[n - 1], minus[n - 2], minus[n - 1])
-        {
+        if let (Some(ap), Some(ac), Some(pp), Some(pc), Some(mp), Some(mc)) = (
+            adx_line[n - 2],
+            adx_line[n - 1],
+            plus[n - 2],
+            plus[n - 1],
+            minus[n - 2],
+            minus[n - 1],
+        ) {
             if ap <= 25.0 && ac > 25.0 {
                 let side = if pc >= mc { Side::Buy } else { Side::Sell };
                 push(EventKind::AdxTrendCross, Some(side), Some(ac));
@@ -300,7 +356,9 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         let bands = bollinger(&closes, 20, 2.0);
         let bw = |i: usize| bands[i].map(|b| b.bandwidth);
         if let Some(curr) = bw(n - 1) {
-            let window_min = (n - 121..n - 1).filter_map(bw).fold(f64::INFINITY, f64::min);
+            let window_min = (n - 121..n - 1)
+                .filter_map(bw)
+                .fold(f64::INFINITY, f64::min);
             let prev = bw(n - 2);
             if curr <= window_min && prev.map_or(true, |p| p > window_min) {
                 push(EventKind::BollingerSqueeze, None, Some(curr));
@@ -314,17 +372,33 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         let kel = crate::indicators::trend::keltner(candles, 20, 10, 2.0);
         if let (Some((up, _, lo)), Some((pup, _, plo))) = (kel[n - 1], kel[n - 2]) {
             if closes[n - 2] <= pup && closes[n - 1] > up {
-                push(EventKind::KeltnerBreakout, Some(Side::Buy), Some(closes[n - 1] - up));
+                push(
+                    EventKind::KeltnerBreakout,
+                    Some(Side::Buy),
+                    Some(closes[n - 1] - up),
+                );
             } else if closes[n - 2] >= plo && closes[n - 1] < lo {
-                push(EventKind::KeltnerBreakout, Some(Side::Sell), Some(lo - closes[n - 1]));
+                push(
+                    EventKind::KeltnerBreakout,
+                    Some(Side::Sell),
+                    Some(lo - closes[n - 1]),
+                );
             }
         }
         let don = crate::indicators::trend::donchian(candles, 20);
         if let (Some((up, _, lo)), Some((pup, _, plo))) = (don[n - 1], don[n - 2]) {
             if closes[n - 2] <= pup && closes[n - 1] > up {
-                push(EventKind::DonchianBreakout, Some(Side::Buy), Some(closes[n - 1] - up));
+                push(
+                    EventKind::DonchianBreakout,
+                    Some(Side::Buy),
+                    Some(closes[n - 1] - up),
+                );
             } else if closes[n - 2] >= plo && closes[n - 1] < lo {
-                push(EventKind::DonchianBreakout, Some(Side::Sell), Some(lo - closes[n - 1]));
+                push(
+                    EventKind::DonchianBreakout,
+                    Some(Side::Sell),
+                    Some(lo - closes[n - 1]),
+                );
             }
         }
     }
@@ -351,16 +425,28 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         }
     }
 
-
     // -- The Ichimoku set: the tenkan/kijun cross, price crossing the
     // kijun, a close OUT of the cloud, and the kumo twist (span A x B).
     if n > 80 {
         let ic = crate::indicators::ichimoku::ichimoku(candles, 9, 26, 52, 26);
-        if let (Some(tp), Some(tc), Some(kp), Some(kc)) = (ic.tenkan[n - 2], ic.tenkan[n - 1], ic.kijun[n - 2], ic.kijun[n - 1]) {
+        if let (Some(tp), Some(tc), Some(kp), Some(kc)) = (
+            ic.tenkan[n - 2],
+            ic.tenkan[n - 1],
+            ic.kijun[n - 2],
+            ic.kijun[n - 1],
+        ) {
             if tp <= kp && tc > kc {
-                push(EventKind::IchimokuTenkanKijunCross, Some(Side::Buy), Some(tc - kc));
+                push(
+                    EventKind::IchimokuTenkanKijunCross,
+                    Some(Side::Buy),
+                    Some(tc - kc),
+                );
             } else if tp >= kp && tc < kc {
-                push(EventKind::IchimokuTenkanKijunCross, Some(Side::Sell), Some(tc - kc));
+                push(
+                    EventKind::IchimokuTenkanKijunCross,
+                    Some(Side::Sell),
+                    Some(tc - kc),
+                );
             }
             if closes[n - 2] <= kp && closes[n - 1] > kc {
                 push(EventKind::IchimokuKijunCross, Some(Side::Buy), None);
@@ -368,17 +454,34 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
                 push(EventKind::IchimokuKijunCross, Some(Side::Sell), None);
             }
         }
-        if let (Some(ap), Some(ac), Some(bp), Some(bc)) = (ic.senkou_a[n - 2], ic.senkou_a[n - 1], ic.senkou_b[n - 2], ic.senkou_b[n - 1]) {
+        if let (Some(ap), Some(ac), Some(bp), Some(bc)) = (
+            ic.senkou_a[n - 2],
+            ic.senkou_a[n - 1],
+            ic.senkou_b[n - 2],
+            ic.senkou_b[n - 1],
+        ) {
             if ap <= bp && ac > bc {
                 push(EventKind::IchimokuKumoTwist, Some(Side::Buy), Some(ac - bc));
             } else if ap >= bp && ac < bc {
-                push(EventKind::IchimokuKumoTwist, Some(Side::Sell), Some(ac - bc));
+                push(
+                    EventKind::IchimokuKumoTwist,
+                    Some(Side::Sell),
+                    Some(ac - bc),
+                );
             }
             let was_inside = closes[n - 2] >= ap.min(bp) && closes[n - 2] <= ap.max(bp);
             if was_inside && closes[n - 1] > ac.max(bc) {
-                push(EventKind::IchimokuCloudBreakout, Some(Side::Buy), Some(closes[n - 1] - ac.max(bc)));
+                push(
+                    EventKind::IchimokuCloudBreakout,
+                    Some(Side::Buy),
+                    Some(closes[n - 1] - ac.max(bc)),
+                );
             } else if was_inside && closes[n - 1] < ac.min(bc) {
-                push(EventKind::IchimokuCloudBreakout, Some(Side::Sell), Some(ac.min(bc) - closes[n - 1]));
+                push(
+                    EventKind::IchimokuCloudBreakout,
+                    Some(Side::Sell),
+                    Some(ac.min(bc) - closes[n - 1]),
+                );
             }
         }
     }
@@ -386,7 +489,9 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     // -- TSI x its signal.
     if n > 40 {
         let (line, signal) = crate::indicators::misc::tsi(&closes, 13, 25, 7);
-        if let (Some(lp), Some(lc), Some(sp), Some(sc)) = (line[n - 2], line[n - 1], signal[n - 2], signal[n - 1]) {
+        if let (Some(lp), Some(lc), Some(sp), Some(sc)) =
+            (line[n - 2], line[n - 1], signal[n - 2], signal[n - 1])
+        {
             if lp <= sp && lc > sc {
                 push(EventKind::TsiCross, Some(Side::Buy), Some(lc - sc));
             } else if lp >= sp && lc < sc {
@@ -460,7 +565,9 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     if n > 30 {
         let (means, sds) = crate::indicators::quant2::bayesian_drift(&closes, 0.01);
         if let (Some(m), Some(sd)) = (means[n - 1], sds[n - 1]) {
-            let (Some(pm), Some(psd)) = (means[n - 2], sds[n - 2]) else { unreachable!() };
+            let (Some(pm), Some(psd)) = (means[n - 2], sds[n - 2]) else {
+                unreachable!()
+            };
             let now_bull = m - 2.0 * sd > 0.0;
             let now_bear = m + 2.0 * sd < 0.0;
             let was_bull = pm - 2.0 * psd > 0.0;
@@ -490,11 +597,18 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         let closes2: Vec<f64> = candles.iter().map(|c| c.close).collect();
         let v = crate::indicators::quant2::garch(&closes2, 60, 0.1, 0.85);
         if let Some(curr) = v[n - 1] {
-            let window: Vec<f64> = v[n.saturating_sub(120)..n].iter().flatten().copied().collect();
+            let window: Vec<f64> = v[n.saturating_sub(120)..n]
+                .iter()
+                .flatten()
+                .copied()
+                .collect();
             if window.len() >= 60 {
                 let below = window.iter().filter(|w| **w <= curr).count();
                 let rank = below as f64 / window.len() as f64;
-                let prev_rank_below = window[..window.len() - 1].iter().filter(|w| **w <= v[n - 2].unwrap_or(curr)).count();
+                let prev_rank_below = window[..window.len() - 1]
+                    .iter()
+                    .filter(|w| **w <= v[n - 2].unwrap_or(curr))
+                    .count();
                 let prev_rank = prev_rank_below as f64 / (window.len() - 1).max(1) as f64;
                 if rank >= 0.9 && prev_rank < 0.9 {
                     push(EventKind::GarchRegimeShift, None, Some(rank));
@@ -525,9 +639,17 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
             let prev_inside = closes[n - 2] <= bands[n - 2].map(|b| b.upper).unwrap_or(f64::MAX)
                 && closes[n - 2] >= bands[n - 2].map(|b| b.lower).unwrap_or(f64::MIN);
             if touched_up && prev_inside {
-                push(EventKind::BollingerReversion, Some(Side::Sell), Some(curr.upper));
+                push(
+                    EventKind::BollingerReversion,
+                    Some(Side::Sell),
+                    Some(curr.upper),
+                );
             } else if touched_lo && prev_inside {
-                push(EventKind::BollingerReversion, Some(Side::Buy), Some(curr.lower));
+                push(
+                    EventKind::BollingerReversion,
+                    Some(Side::Buy),
+                    Some(curr.lower),
+                );
             }
         }
     }
@@ -539,8 +661,13 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     if n > 47 {
         let consensus = |i: usize, above: bool| {
             crate::rsi_pca::RSI_PERIODS.iter().all(|fast| {
-                macd(&closes, *fast, fast * 2, 1)[i]
-                    .map_or(false, |m| if above { m.line > 0.0 } else { m.line < 0.0 })
+                macd(&closes, *fast, fast * 2, 1)[i].map_or(false, |m| {
+                    if above {
+                        m.line > 0.0
+                    } else {
+                        m.line < 0.0
+                    }
+                })
             })
         };
         let buy_now = consensus(n - 1, true);
@@ -579,7 +706,11 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
             if let (Some(curr), Some(prev)) = (family_mean(n - 1), family_mean(n - 2)) {
                 let mean = base.iter().sum::<f64>() / base.len() as f64;
                 if curr > 1.5 * mean && prev <= 1.5 * mean {
-                    push(EventKind::AtrFamilyExpansion, None, Some(curr / mean.max(f64::EPSILON)));
+                    push(
+                        EventKind::AtrFamilyExpansion,
+                        None,
+                        Some(curr / mean.max(f64::EPSILON)),
+                    );
                 }
             }
         }
@@ -597,7 +728,12 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
             }
             Some(sum / periods.len() as f64)
         };
-        if let (Some(sp), Some(lp), Some(sc), Some(lc)) = (group(&SHORT, n - 2), group(&LONG, n - 2), group(&SHORT, n - 1), group(&LONG, n - 1)) {
+        if let (Some(sp), Some(lp), Some(sc), Some(lc)) = (
+            group(&SHORT, n - 2),
+            group(&LONG, n - 2),
+            group(&SHORT, n - 1),
+            group(&LONG, n - 1),
+        ) {
             if sp <= lp && sc > lc {
                 push(EventKind::GmmaCross, Some(Side::Buy), Some(sc - lc));
             } else if sp >= lp && sc < lc {
@@ -616,7 +752,11 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
                 let mean = base.iter().sum::<f64>() / base.len() as f64;
                 let was = values[n - 2].map_or(false, |p| p > 1.5 * mean);
                 if curr > 1.5 * mean && !was {
-                    push(EventKind::AtrExpansion, None, Some(curr / mean.max(f64::EPSILON)));
+                    push(
+                        EventKind::AtrExpansion,
+                        None,
+                        Some(curr / mean.max(f64::EPSILON)),
+                    );
                 }
             }
         }
@@ -628,23 +768,46 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
 /// Price makes the new extreme; the oscillator refuses it. Confirmed when
 /// the second swing's `strength` bars complete -- i.e. exactly at the tail.
 /// Shared by every oscillator's divergence (OBV, MACD, A/D, RSI's cousin).
-fn oscillator_divergence(candles: &[Candle], series: &[Option<f64>], kind: EventKind, symbol: &str) -> Vec<MarketEvent> {
+fn oscillator_divergence(
+    candles: &[Candle],
+    series: &[Option<f64>],
+    kind: EventKind,
+    symbol: &str,
+) -> Vec<MarketEvent> {
     let mut out = Vec::new();
     let n = candles.len();
     let strength = 2;
     if n < 40 {
         return out;
     }
-    let Some(last) = candles.last() else { return out };
+    let Some(last) = candles.last() else {
+        return out;
+    };
     let swing = |highs: bool| -> Option<(usize, usize)> {
         let start = n - 31;
         let mut found: Vec<usize> = Vec::new();
         for i in (start + strength)..(n - strength) {
-            let price = if highs { candles[i].high } else { candles[i].low };
+            let price = if highs {
+                candles[i].high
+            } else {
+                candles[i].low
+            };
             let is_swing = (1..=strength).all(|d| {
-                let l = if highs { candles[i - d].high } else { candles[i - d].low };
-                let r = if highs { candles[i + d].high } else { candles[i + d].low };
-                if highs { price > l && price >= r } else { price < l && price <= r }
+                let l = if highs {
+                    candles[i - d].high
+                } else {
+                    candles[i - d].low
+                };
+                let r = if highs {
+                    candles[i + d].high
+                } else {
+                    candles[i + d].low
+                };
+                if highs {
+                    price > l && price >= r
+                } else {
+                    price < l && price <= r
+                }
             });
             if is_swing {
                 found.push(i);
@@ -714,7 +877,11 @@ mod tests {
     }
 
     fn series_from(closes: &[f64]) -> Vec<Candle> {
-        closes.iter().enumerate().map(|(i, c)| k(i as i64 * 3_600_000_000_000, *c)).collect()
+        closes
+            .iter()
+            .enumerate()
+            .map(|(i, c)| k(i as i64 * 3_600_000_000_000, *c))
+            .collect()
     }
 
     #[test]
@@ -736,14 +903,22 @@ mod tests {
         let cross = events.iter().find(|e| e.kind == EventKind::RsiZoneCross);
         if let Some(cross) = cross {
             assert_eq!(cross.side, Some(Side::Buy));
-            assert_eq!(cross.bar_time, candles.last().expect("last").open_time, "stamped on its own bar");
+            assert_eq!(
+                cross.bar_time,
+                candles.last().expect("last").open_time,
+                "stamped on its own bar"
+            );
             assert!(cross.magnitude.expect("rsi") < OVERSOLD + 1.0);
         }
         // A flat tail fires nothing.
-        let flat: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64 / 5.0).sin() * 0.5).collect();
+        let flat: Vec<f64> = (0..60)
+            .map(|i| 100.0 + (i as f64 / 5.0).sin() * 0.5)
+            .collect();
         let flat_candles = series_from(&flat);
         assert!(
-            !detect_indicator_signals(&flat_candles, "T").iter().any(|e| e.kind == EventKind::RsiZoneCross),
+            !detect_indicator_signals(&flat_candles, "T")
+                .iter()
+                .any(|e| e.kind == EventKind::RsiZoneCross),
             "no cross without a zone entry"
         );
     }
@@ -783,7 +958,11 @@ mod tests {
                 }
             }
         }
-        assert_eq!(fire_bars.len(), 1, "one bullish cross in the shape: {fire_bars:?}");
+        assert_eq!(
+            fire_bars.len(),
+            1,
+            "one bullish cross in the shape: {fire_bars:?}"
+        );
     }
 
     #[test]
@@ -796,7 +975,9 @@ mod tests {
         closes.push(closes.last().expect("last") * 1.06);
         let candles = series_from(&closes);
         let events = detect_indicator_signals(&candles, "T");
-        let breakout = events.iter().find(|e| e.kind == EventKind::BollingerBreakout);
+        let breakout = events
+            .iter()
+            .find(|e| e.kind == EventKind::BollingerBreakout);
         if let Some(b) = breakout {
             assert_eq!(b.side, Some(Side::Buy), "an upper break is buy-side");
             assert!(b.magnitude.expect("%b") > 1.0, "above the band is %B > 1");
@@ -876,7 +1057,10 @@ mod tests {
                 choppy_fired = true;
             }
         }
-        assert!(!choppy_fired, "fast and slow straddle a sharp turn -- no consensus");
+        assert!(
+            !choppy_fired,
+            "fast and slow straddle a sharp turn -- no consensus"
+        );
     }
 
     #[test]
@@ -922,21 +1106,23 @@ mod tests {
 
     #[test]
     fn the_supertrend_flip_marks_the_reversal() {
-        let mut candles: Vec<Candle> = (0..25).map(|i| {
-            let c = 100.0 + i as f64 * 0.6;
-            Candle {
-                symbol: "T".to_string(),
-                timeframe: Timeframe::H1,
-                open_time: i as i64 * 3_600_000_000_000,
-                open: c,
-                high: c + 0.5,
-                low: c - 0.3,
-                close: c,
-                volume: 1.0,
-                buy_volume: 0.5,
-                sell_volume: 0.5,
-            }
-        }).collect();
+        let mut candles: Vec<Candle> = (0..25)
+            .map(|i| {
+                let c = 100.0 + i as f64 * 0.6;
+                Candle {
+                    symbol: "T".to_string(),
+                    timeframe: Timeframe::H1,
+                    open_time: i as i64 * 3_600_000_000_000,
+                    open: c,
+                    high: c + 0.5,
+                    low: c - 0.3,
+                    close: c,
+                    volume: 1.0,
+                    buy_volume: 0.5,
+                    sell_volume: 0.5,
+                }
+            })
+            .collect();
         for i in 0..8 {
             let c = 115.0 - i as f64 * 2.5;
             candles.push(Candle {
@@ -987,13 +1173,27 @@ mod tests {
         };
         // Lead-in decline.
         for i in 0..10 {
-            push_bar(&mut candles, i, 101.0, 99.0, 100.0 - (10 - i) as f64 * 0.2, 10.0);
+            push_bar(
+                &mut candles,
+                i,
+                101.0,
+                99.0,
+                100.0 - (10 - i) as f64 * 0.2,
+                10.0,
+            );
         }
         // First low at 10.
         push_bar(&mut candles, 10, 99.0, 96.0, 97.0, 10.0);
         // Recovery with RISING volume (OBV climbs).
         for i in 11..25 {
-            push_bar(&mut candles, i, 99.5, 97.5, 98.0 + (i - 11) as f64 * 0.15, 100.0);
+            push_bar(
+                &mut candles,
+                i,
+                99.5,
+                97.5,
+                98.0 + (i - 11) as f64 * 0.15,
+                100.0,
+            );
         }
         // Second low at 25: LOWER than the first, on small volume.
         push_bar(&mut candles, 25, 97.5, 95.5, 96.5, 8.0);
@@ -1004,7 +1204,11 @@ mod tests {
         let events = detect_indicator_signals(&candles, "T");
         let div = events.iter().find(|e| e.kind == EventKind::ObvDivergence);
         if let Some(d) = div {
-            assert_eq!(d.side, Some(Side::Buy), "a lower price low on rising OBV is bullish");
+            assert_eq!(
+                d.side,
+                Some(Side::Buy),
+                "a lower price low on rising OBV is bullish"
+            );
         }
     }
 

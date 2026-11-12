@@ -904,7 +904,10 @@ capability_requirements:
             rendered.contains("requires footprint available"),
             "{rendered}"
         );
-        assert!(rendered.contains("prefers orderbook_snapshots"), "{rendered}");
+        assert!(
+            rendered.contains("prefers orderbook_snapshots"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -941,7 +944,10 @@ capability_requirements:
         // Floors, not exact counts: the library grows as skills ship, and
         // the pin is that the founding families are all present, never that
         // no new methodology may join them.
-        assert!(tools.len() >= 10, "the founding tool families ship: {tools:?}");
+        assert!(
+            tools.len() >= 10,
+            "the founding tool families ship: {tools:?}"
+        );
         assert!(
             trading.len() >= 9,
             "the founding trading methodologies ship: {trading:?}"

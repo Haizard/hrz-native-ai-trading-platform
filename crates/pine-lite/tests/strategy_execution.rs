@@ -2,8 +2,8 @@
 //! the two-pass account reads. The contract the preview JSON and the chart
 //! will consume.
 
-use pine_lite::{run, vet, Inputs};
 use analytics_core::types::{Candle, Timeframe};
+use pine_lite::{run, vet, Inputs};
 
 fn candles(n: usize) -> Vec<Candle> {
     (0..n)
@@ -61,13 +61,21 @@ fn a_strategy_script_simulates_orders_equity_and_report() {
         })
         .collect();
     let output = run(&parsed, &fixture, &Inputs::default()).expect("run");
-    let sim = output.simulation.expect("a strategy run carries its simulation");
-    assert!(!sim.orders.is_empty(), "the crossover fires in a cycling fixture: {sim:?}");
+    let sim = output
+        .simulation
+        .expect("a strategy run carries its simulation");
+    assert!(
+        !sim.orders.is_empty(),
+        "the crossover fires in a cycling fixture: {sim:?}"
+    );
     // Every fill is the next open after its decision bar (fixture: open == close).
     for (i, order) in sim.orders.iter().enumerate() {
         assert!(order.bar >= 1, "the first decision cannot fill on bar 0");
         if i > 0 {
-            assert!(order.bar > sim.orders[i - 1].bar, "orders are chronological");
+            assert!(
+                order.bar > sim.orders[i - 1].bar,
+                "orders are chronological"
+            );
         }
     }
     assert_eq!(sim.equity.len(), 60, "one equity mark per bar");
@@ -75,7 +83,10 @@ fn a_strategy_script_simulates_orders_equity_and_report() {
     assert!(sim.report.total_trades >= 1.0);
     assert!(sim.report.net_profit.is_finite());
     // The alternating crossover strategy trades both ways in a cycling fixture.
-    assert!(sim.orders.iter().any(|o| o.pnl.is_some()), "closed trades carry pnl");
+    assert!(
+        sim.orders.iter().any(|o| o.pnl.is_some()),
+        "closed trades carry pnl"
+    );
 }
 
 #[test]
@@ -99,7 +110,11 @@ fn strategy_entry_orders_can_carry_explicit_qty() {
     let (_, parsed) = vet(src).expect("vet");
     let output = run(&parsed, &candles(15), &Inputs::default()).expect("run");
     let sim = output.simulation.expect("sim");
-    let entry = sim.orders.iter().find(|o| o.bar == 4).expect("entry fills on bar 4");
+    let entry = sim
+        .orders
+        .iter()
+        .find(|o| o.bar == 4)
+        .expect("entry fills on bar 4");
     assert_eq!(entry.qty, 5.0, "explicit qty wins over the header knobs");
 }
 
@@ -119,7 +134,10 @@ fn reading_strategy_state_runs_two_passes_and_sees_the_account() {
     let (_, parsed) = vet(src).expect("the state read vets with the header block");
     let output = run(&parsed, &candles(10), &Inputs::default()).expect("run");
     let ps = &output.plots[0].values;
-    assert_eq!(ps[3], 0.0, "pass-2 state is one decision late: fills on bar 4");
+    assert_eq!(
+        ps[3], 0.0,
+        "pass-2 state is one decision late: fills on bar 4"
+    );
     assert_eq!(ps[4], 2.0, "position_size reads the simulated account");
     assert_eq!(ps[9], 2.0);
     // The simulation is pass 1's; intents must be unchanged by the rerun.
@@ -134,7 +152,8 @@ fn a_strategy_state_read_without_the_header_block_is_refused() {
     let src = "//@pine_lite version=1 overlay=false title=\"t\"\nplot(strategy.equity)\n";
     let errs = vet(src).expect_err("state read without the block");
     assert!(
-        errs.iter().any(|e| e.message.contains("needs a strategy(...) header block")),
+        errs.iter()
+            .any(|e| e.message.contains("needs a strategy(...) header block")),
         "{errs:?}"
     );
 }
@@ -147,7 +166,11 @@ fn pyramiding_above_zero_is_refused_with_the_reason() {
         "plot(close)\n",
     );
     let errs = vet(src).expect_err("pyramiding");
-    assert!(errs.iter().any(|e| e.message.contains("pyramiding > 0 is not supported")), "{errs:?}");
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("pyramiding > 0 is not supported")),
+        "{errs:?}"
+    );
 }
 
 #[test]
@@ -159,7 +182,9 @@ fn unknown_strategy_knobs_are_refused_with_the_known_list() {
     );
     let errs = vet(src).expect_err("unknown knob");
     assert!(
-        errs.iter().any(|e| e.message.contains("unknown strategy(...) knob `martingale`")),
+        errs.iter().any(|e| e
+            .message
+            .contains("unknown strategy(...) knob `martingale`")),
         "{errs:?}"
     );
 }
@@ -193,8 +218,8 @@ fn commission_and_slippage_arrive_from_the_header() {
     );
     let (_, parsed) = vet(src).expect("vet");
     // Flat at 100 so the slippage math reads cleanly.
-    let fixture: Vec<Candle> = (0..8).map(|i| {
-        Candle {
+    let fixture: Vec<Candle> = (0..8)
+        .map(|i| Candle {
             symbol: "T".into(),
             timeframe: Timeframe::M1,
             open_time: i as i64 * 60_000_000_000,
@@ -205,8 +230,8 @@ fn commission_and_slippage_arrive_from_the_header() {
             volume: 10.0,
             buy_volume: 5.0,
             sell_volume: 5.0,
-        }
-    }).collect();
+        })
+        .collect();
     let output = run(&parsed, &fixture, &Inputs::default()).expect("run");
     let sim = output.simulation.expect("sim");
     // Entry fills bar 1's open at 101 (buy + 1% slippage), exit fills bar

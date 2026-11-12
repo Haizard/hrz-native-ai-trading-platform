@@ -65,12 +65,15 @@ fn validate(state: &serde_json::Value) -> Result<(), ApiError> {
             format!("the workspace state is version {STATE_VERSION}"),
         ));
     }
-    let panes = object.get("panes").and_then(|v| v.as_array()).ok_or_else(|| {
-        ApiError::bad_request(
-            "WORKSPACE_STATE_INVALID",
-            "the workspace state carries a `panes` list",
-        )
-    })?;
+    let panes = object
+        .get("panes")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "WORKSPACE_STATE_INVALID",
+                "the workspace state carries a `panes` list",
+            )
+        })?;
     if panes.is_empty() || panes.len() > MAX_PANES {
         return Err(ApiError::bad_request(
             "WORKSPACE_STATE_INVALID",

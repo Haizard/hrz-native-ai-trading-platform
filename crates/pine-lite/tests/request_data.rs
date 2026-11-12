@@ -3,8 +3,8 @@
 //! values aligned onto the chart's bars. An unknown name is a runtime
 //! report naming the key, never a silent zero.
 
-use pine_lite::{run, vet, Inputs};
 use analytics_core::types::{Candle, Timeframe};
+use pine_lite::{run, vet, Inputs};
 
 fn candles(n: usize) -> Vec<Candle> {
     (0..n)
@@ -36,7 +36,10 @@ fn request_data_reads_the_host_series() {
     let (_, parsed) = vet(src).expect("vet");
     let mut data_series = std::collections::HashMap::new();
     data_series.insert("BTCUSDT.change_pct".to_string(), vec![1.5; 30]);
-    let inputs = Inputs { data_series, ..Inputs::default() };
+    let inputs = Inputs {
+        data_series,
+        ..Inputs::default()
+    };
     let output = run(&parsed, &candles(30), &inputs).expect("run");
     assert_eq!(output.plots.len(), 1);
     assert!((output.plots[0].values[10] - 1.5).abs() < 1e-9);
@@ -66,7 +69,8 @@ fn a_non_literal_name_is_refused_at_vet_time() {
     );
     let errs = vet(src).expect_err("computed name");
     assert!(
-        errs.iter().any(|e| e.message.contains("quoted series name")),
+        errs.iter()
+            .any(|e| e.message.contains("quoted series name")),
         "{errs:?}"
     );
 }
@@ -83,7 +87,10 @@ fn data_composes_with_math() {
     let (_, parsed) = vet(src).expect("vet");
     let mut data_series = std::collections::HashMap::new();
     data_series.insert("BTCUSDT.change_pct".to_string(), vec![2.0; 20]);
-    let inputs = Inputs { data_series, ..Inputs::default() };
+    let inputs = Inputs {
+        data_series,
+        ..Inputs::default()
+    };
     let output = run(&parsed, &candles(20), &inputs).expect("run");
     // Bar 10: close 105 - 2*0.1 = 104.8
     assert!((output.plots[0].values[10] - 104.8).abs() < 1e-9);

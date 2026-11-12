@@ -83,8 +83,17 @@ pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
         }
     }
     // Spinning top: a small body (but NOT a doji) with shadows both sides.
-    if s.range > 0.0 && s.body > 0.1 * s.range && s.body <= 0.3 * s.range && s.upper > 0.0 && s.lower > 0.0 {
-        push(EventKind::SpinningTop, if s.bullish { Side::Buy } else { Side::Sell }, &last);
+    if s.range > 0.0
+        && s.body > 0.1 * s.range
+        && s.body <= 0.3 * s.range
+        && s.upper > 0.0
+        && s.lower > 0.0
+    {
+        push(
+            EventKind::SpinningTop,
+            if s.bullish { Side::Buy } else { Side::Sell },
+            &last,
+        );
     }
     // Belt-hold: a long body opening at the extreme (within a small shadow tolerance).
     if s.range > 0.0 && s.body >= 0.5 * s.range {
@@ -138,7 +147,9 @@ pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
     // Three inside: harami (small opposite bar inside a bigger one) with the
     // third bar closing through in the reversal direction.
     if q.body > p.body && q.body > 0.0 && p.body > 0.0 {
-        let inside = p.body <= q.body && pp.open.min(pp.close) <= prev.open.max(prev.close) && pp.open.max(pp.close) >= prev.open.min(prev.close);
+        let inside = p.body <= q.body
+            && pp.open.min(pp.close) <= prev.open.max(prev.close)
+            && pp.open.max(pp.close) >= prev.open.min(prev.close);
         if inside && q.bullish != p.bullish {
             if !q.bullish && s.bullish && last.close > prev.open.max(prev.close) {
                 push(EventKind::ThreeInside, Side::Buy, &last);
@@ -149,7 +160,8 @@ pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
     }
     // Three outside: engulfing with the third bar continuing the takeover.
     if p.body > q.body && q.body > 0.0 {
-        let engulfs = prev.open.min(prev.close) <= pp.open.min(pp.close) && prev.open.max(prev.close) >= pp.open.max(pp.close);
+        let engulfs = prev.open.min(prev.close) <= pp.open.min(pp.close)
+            && prev.open.max(prev.close) >= pp.open.max(pp.close);
         if engulfs && p.bullish != q.bullish {
             if p.bullish && s.bullish && last.close > prev.close {
                 push(EventKind::ThreeOutside, Side::Buy, &last);
@@ -188,11 +200,21 @@ pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
     // Tasuki gap: two same-direction bars with a body gap, the third opens
     // inside the second body and closes inside the gap without filling it.
     if q.bullish && p.bullish && prev.open > pp.close {
-        if !s.bullish && last.open > prev.open && last.open < prev.close && last.close < prev.open && last.close > pp.close {
+        if !s.bullish
+            && last.open > prev.open
+            && last.open < prev.close
+            && last.close < prev.open
+            && last.close > pp.close
+        {
             push(EventKind::TasukiGap, Side::Buy, &last);
         }
     } else if !q.bullish && !p.bullish && prev.open < pp.close {
-        if s.bullish && last.open < prev.open && last.open > prev.close && last.close > prev.open && last.close < pp.close {
+        if s.bullish
+            && last.open < prev.open
+            && last.open > prev.close
+            && last.close > prev.open
+            && last.close < pp.close
+        {
             push(EventKind::TasukiGap, Side::Sell, &last);
         }
     }
@@ -215,7 +237,8 @@ pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
                 && m.high <= b1.high
         });
         if s1.bullish && s1.body >= 0.5 * s1.range && mids_are_small_reds_inside {
-            let descending = candles[n - 2].close < candles[n - 3].close && candles[n - 1].close < candles[n - 2].close;
+            let descending = candles[n - 2].close < candles[n - 3].close
+                && candles[n - 1].close < candles[n - 2].close;
             if descending && s.bullish && last.close > b1.close {
                 push(EventKind::ThreeMethods, Side::Buy, &last);
             }
@@ -291,7 +314,11 @@ pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
         let reclaimed = last.close > prev.low && last.close < prev.high;
         if reclaimed && (swept_low ^ swept_high) {
             let bullish = swept_low;
-            let kind = if bullish { EventKind::CrtBullish } else { EventKind::CrtBearish };
+            let kind = if bullish {
+                EventKind::CrtBullish
+            } else {
+                EventKind::CrtBearish
+            };
             let sweep = if bullish { last.low } else { last.high };
             let equilibrium = (prev.high + prev.low) / 2.0;
             out.push(MarketEvent {
@@ -336,7 +363,11 @@ pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
             || (bearish_sweep && last.close < manipulation.low);
         if distribution {
             let bullish = bullish_sweep;
-            let sweep = if bullish { manipulation.low } else { manipulation.high };
+            let sweep = if bullish {
+                manipulation.low
+            } else {
+                manipulation.high
+            };
             out.push(MarketEvent {
                 kind: EventKind::CrtDistribution,
                 symbol: symbol.to_string(),
@@ -394,7 +425,10 @@ mod tests {
             k(h, 100.2, 100.3, 96.0, 100.1),
         ];
         let events = detect_candlesticks(&candles, "T");
-        let d = events.iter().find(|e| e.kind == EventKind::DragonflyDoji).expect("dragonfly");
+        let d = events
+            .iter()
+            .find(|e| e.kind == EventKind::DragonflyDoji)
+            .expect("dragonfly");
         assert_eq!(d.side, Some(Side::Buy));
         assert!(!kinds(&events).contains(&EventKind::GravestoneDoji));
         // Gravestone mirror.
@@ -414,7 +448,10 @@ mod tests {
             k(h, 101.5, 102.95, 101.5, 102.9), // white marubozu, gap above
         ];
         let events = detect_candlesticks(&candles, "T");
-        let kick = events.iter().find(|e| e.kind == EventKind::Kicker).expect("kicker");
+        let kick = events
+            .iter()
+            .find(|e| e.kind == EventKind::Kicker)
+            .expect("kicker");
         assert_eq!(kick.side, Some(Side::Buy));
         // No gap: no kicker.
         let candles = vec![
@@ -428,14 +465,18 @@ mod tests {
     fn three_methods_and_mat_hold_need_the_continuation() {
         let h = 3_600_000_000_000_i64;
         let candles = vec![
-            k(0, 100.0, 103.0, 99.9, 102.9),  // long white
-            k(h, 102.5, 102.8, 101.8, 102.0), // small red inside
+            k(0, 100.0, 103.0, 99.9, 102.9),      // long white
+            k(h, 102.5, 102.8, 101.8, 102.0),     // small red inside
             k(2 * h, 102.0, 102.3, 101.2, 101.5), // small red, lower
             k(3 * h, 101.5, 101.8, 100.8, 101.1), // small red, lower
             k(4 * h, 101.2, 103.5, 101.1, 103.2), // resume above the first close
         ];
         let events = detect_candlesticks(&candles, "T");
-        assert!(kinds(&events).contains(&EventKind::ThreeMethods), "rising three methods: {:?}", kinds(&events));
+        assert!(
+            kinds(&events).contains(&EventKind::ThreeMethods),
+            "rising three methods: {:?}",
+            kinds(&events)
+        );
         // The resumption missing (a close below the first bar's): no pattern.
         let candles = vec![
             k(0, 100.0, 103.0, 99.9, 102.9),
@@ -451,12 +492,15 @@ mod tests {
     fn abandoned_baby_needs_the_island() {
         let h = 3_600_000_000_000_i64;
         let candles = vec![
-            k(0, 101.0, 101.2, 99.0, 99.3),  // red
-            k(h, 98.5, 98.6, 98.2, 98.5),    // doji gapped below
+            k(0, 101.0, 101.2, 99.0, 99.3),     // red
+            k(h, 98.5, 98.6, 98.2, 98.5),       // doji gapped below
             k(2 * h, 99.2, 100.5, 99.1, 100.3), // green gapped above
         ];
         let events = detect_candlesticks(&candles, "T");
-        let baby = events.iter().find(|e| e.kind == EventKind::AbandonedBaby).expect("baby");
+        let baby = events
+            .iter()
+            .find(|e| e.kind == EventKind::AbandonedBaby)
+            .expect("baby");
         assert_eq!(baby.side, Some(Side::Buy));
         // The doji touching the first bar (no gap): not abandoned.
         let candles = vec![
@@ -478,7 +522,12 @@ mod tests {
             k(2, 104.6, 104.8, 103.5, 104.1),
         ];
         let events = detect_candlesticks(&ks, "T");
-        assert!(events.iter().any(|e| e.kind == EventKind::UpsideGapTwoCrows), "the textbook shape fires");
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == EventKind::UpsideGapTwoCrows),
+            "the textbook shape fires"
+        );
         // The gap closed: no pattern.
         let closed = vec![
             k(0, 100.0, 104.0, 99.5, 104.0),
@@ -486,7 +535,9 @@ mod tests {
             k(2, 104.6, 104.8, 102.5, 103.0),
         ];
         assert!(
-            !detect_candlesticks(&closed, "T").iter().any(|e| e.kind == EventKind::UpsideGapTwoCrows),
+            !detect_candlesticks(&closed, "T")
+                .iter()
+                .any(|e| e.kind == EventKind::UpsideGapTwoCrows),
             "a closed gap kills it"
         );
     }
@@ -500,10 +551,20 @@ mod tests {
                 // Body at 50% of range (no doji, no marubozu), open off the
                 // low (no belt-hold), lows stepping down (no tweezer match).
                 let base = 100.0 + i as f64 * 0.5;
-                k(i as i64 * h, base + 0.2, base + 1.0, base - i as f64 * 0.02, base + 0.7)
+                k(
+                    i as i64 * h,
+                    base + 0.2,
+                    base + 1.0,
+                    base - i as f64 * 0.02,
+                    base + 0.7,
+                )
             })
             .collect();
         let events = detect_candlesticks(&candles, "T");
-        assert!(events.is_empty(), "quiet bars are not patterns: {:?}", kinds(&events));
+        assert!(
+            events.is_empty(),
+            "quiet bars are not patterns: {:?}",
+            kinds(&events)
+        );
     }
 }

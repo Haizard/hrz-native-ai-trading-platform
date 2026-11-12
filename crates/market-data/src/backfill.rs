@@ -188,8 +188,7 @@ impl BackfillClient {
         // the caller's original id outside this function so history rows can
         // still be associated with the chart that requested them.
         let parsed_symbol = crate::broker::VenueSymbol::parse(symbol);
-        let request_symbol = if parsed_symbol.broker == "binance"
-            && parsed_symbol.product == "spot"
+        let request_symbol = if parsed_symbol.broker == "binance" && parsed_symbol.product == "spot"
         {
             parsed_symbol.symbol
         } else if parsed_symbol.broker == "binance" {
@@ -318,23 +317,31 @@ impl BackfillClient {
         let interval = self.venue.interval(timeframe).ok_or_else(|| {
             MarketDataError::Normalization(format!(
                 "{} does not serve {} klines",
-                self.venue.name(), timeframe
+                self.venue.name(),
+                timeframe
             ))
         })?;
         let end_ms = (to_ns / 1_000_000).saturating_sub(1);
-        let body: serde_json::Value = self.client
-            .get(format!("{}{}", self.venue.rest_url(), self.venue.klines_path()))
+        let body: serde_json::Value = self
+            .client
+            .get(format!(
+                "{}{}",
+                self.venue.rest_url(),
+                self.venue.klines_path()
+            ))
             .query(&[
                 ("symbol", request_symbol.to_uppercase()),
                 ("interval", interval.to_string()),
                 (self.venue.end_param(), end_ms.to_string()),
                 ("limit", limit.clamp(1, self.venue.page_limit()).to_string()),
             ])
-            .send().await
+            .send()
+            .await
             .map_err(|e| MarketDataError::Transport(format!("latest klines request failed: {e}")))?
             .error_for_status()
             .map_err(|e| MarketDataError::Transport(format!("latest klines HTTP error: {e}")))?
-            .json().await
+            .json()
+            .await
             .map_err(|e| MarketDataError::Normalization(format!("latest klines decode: {e}")))?;
         self.venue.parse_klines(&body)
     }

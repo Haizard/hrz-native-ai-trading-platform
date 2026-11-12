@@ -13,8 +13,8 @@
 use std::collections::BTreeMap;
 
 use analytics_core::types::{Candle, Timeframe};
-use strategy_runtime::signal::{EnterSignal, ExitSignal, ExitTrigger, Signal};
 use strategy_dsl::Direction;
+use strategy_runtime::signal::{EnterSignal, ExitSignal, ExitTrigger, Signal};
 use strategy_runtime::Strategy;
 
 use pine_lite::{run as run_script, Inputs, Output};
@@ -81,11 +81,8 @@ pub fn intents_to_signal(
     in_position: bool,
     last_stop: &mut Option<f64>,
 ) -> Option<Signal> {
-    let intents: Vec<&(usize, pine_lite::interp::Intent)> = output
-        .intents
-        .iter()
-        .filter(|(b, _)| *b == bar)
-        .collect();
+    let intents: Vec<&(usize, pine_lite::interp::Intent)> =
+        output.intents.iter().filter(|(b, _)| *b == bar).collect();
     // Empty means "no decision this bar" -- the overwhelmingly common case.
     if intents.is_empty() {
         return None;
@@ -133,7 +130,11 @@ pub fn intents_to_signal(
     // pyramiding is a v2 axis (docs/23).
     if !in_position {
         if let Some(long) = entry_long {
-            let direction = if long { Direction::Long } else { Direction::Short };
+            let direction = if long {
+                Direction::Long
+            } else {
+                Direction::Short
+            };
             // The stop: the script's own `strategy.exit(stop=)` recorded on
             // this bar, or a default of `2 ATR(14)` below/above the reference
             // -- which is what the DSL's `atr` stop kind resolves to.
@@ -217,7 +218,10 @@ impl Strategy for ScriptStrategy {
 /// own window, named `entry` -- the name the engine's single-timeframe
 /// documents declare.
 #[must_use]
-pub fn script_replay_input(candles: &[Candle], timeframe: Timeframe) -> BTreeMap<String, Vec<Candle>> {
+pub fn script_replay_input(
+    candles: &[Candle],
+    timeframe: Timeframe,
+) -> BTreeMap<String, Vec<Candle>> {
     let mut map = BTreeMap::new();
     map.insert("entry".to_string(), candles.to_vec());
     let _ = timeframe;
@@ -245,7 +249,9 @@ mod tests {
 
     #[test]
     fn an_entry_intent_becomes_an_enter_signal() {
-        let candles: Vec<Candle> = (0..30).map(|i| candle(i, 100.0 + ((i % 9) as f64))).collect();
+        let candles: Vec<Candle> = (0..30)
+            .map(|i| candle(i, 100.0 + ((i % 9) as f64)))
+            .collect();
         let src = concat!(
             "//@pine_lite version=1\n",
             "up = ta.crossover(close, ta.sma(close, 5))\n",
@@ -264,11 +270,10 @@ mod tests {
 
     #[test]
     fn a_bars_signal_never_becomes_a_trade() {
-        let candles: Vec<Candle> = (0..30).map(|i| candle(i, 100.0 + ((i % 9) as f64))).collect();
-        let src = concat!(
-            "//@pine_lite version=1\n",
-            "plot(ta.rsi(close, 14))\n",
-        );
+        let candles: Vec<Candle> = (0..30)
+            .map(|i| candle(i, 100.0 + ((i % 9) as f64)))
+            .collect();
+        let src = concat!("//@pine_lite version=1\n", "plot(ta.rsi(close, 14))\n",);
         let (_, parsed) = pine_lite::vet(src).expect("vet");
         let output = run_script(&parsed, &candles, &Inputs::default()).expect("run");
         let mut last_stop = None;

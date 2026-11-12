@@ -62,13 +62,23 @@ fn request_time_reads_the_aligned_instruments_open_time() {
             c
         })
         .collect();
-    let inputs = Inputs { security, ..Inputs::default() };
+    let inputs = Inputs {
+        security,
+        ..Inputs::default()
+    };
     let output = run(&parsed, &candles, &inputs).expect("run");
     let t5 = output.plots[0].values[5];
     let t6 = output.plots[0].values[6];
-    assert_eq!(t5, 5.0 * 60_000_000_000.0, "bar 5 sits in the aligned bar that starts at 5");
+    assert_eq!(
+        t5,
+        5.0 * 60_000_000_000.0,
+        "bar 5 sits in the aligned bar that starts at 5"
+    );
     assert_eq!(t6, t5, "bar 6 is the same aligned bar");
-    assert_ne!(output.plots[0].values[4], t5, "bar 4 is the previous aligned bar");
+    assert_ne!(
+        output.plots[0].values[4], t5,
+        "bar 4 is the previous aligned bar"
+    );
 }
 
 #[test]
@@ -104,7 +114,8 @@ fn the_htf_fvg_idiom_draws_one_time_anchored_box() {
     );
     let (_, parsed) = vet(src).expect("vet");
     let candles: Vec<Candle> = (0..40).map(chart_candle).collect();
-    let pool_levels: [(f64, f64); 4] = [(100.0, 90.0), (110.0, 95.0), (115.0, 105.0), (120.0, 110.0)];
+    let pool_levels: [(f64, f64); 4] =
+        [(100.0, 90.0), (110.0, 95.0), (115.0, 105.0), (120.0, 110.0)];
     let pool: Vec<Candle> = (0..40)
         .map(|i| {
             let b = i / 10;
@@ -118,15 +129,22 @@ fn the_htf_fvg_idiom_draws_one_time_anchored_box() {
         .collect();
     let mut series_pool = std::collections::HashMap::new();
     series_pool.insert("BTCUSDT@1H".to_string(), pool);
-    let inputs = Inputs { series_pool, ..Inputs::default() };
+    let inputs = Inputs {
+        series_pool,
+        ..Inputs::default()
+    };
     let output = run(&parsed, &candles, &inputs).expect("run");
     let boxes: Vec<_> = output
         .objects
         .iter()
         .filter_map(|o| match o {
-            pine_lite::interp::ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, .. } => {
-                Some((*left_nanos, *top, *right_nanos, *bottom))
-            }
+            pine_lite::interp::ScriptObject::BoxTime {
+                left_nanos,
+                top,
+                right_nanos,
+                bottom,
+                ..
+            } => Some((*left_nanos, *top, *right_nanos, *bottom)),
             _ => None,
         })
         .collect();
@@ -134,10 +152,20 @@ fn the_htf_fvg_idiom_draws_one_time_anchored_box() {
     let (left, top, right, bottom) = boxes[0];
     // The zone spans B2's birth (chart bar 20's 1h bar open = 20 chart bars
     // of nanos) to a far-future edge, at [B0.high, B2.low].
-    assert_eq!(left, 20.0 * 60_000_000_000.0, "the zone is born with the gapping 1h bar");
+    assert_eq!(
+        left,
+        20.0 * 60_000_000_000.0,
+        "the zone is born with the gapping 1h bar"
+    );
     assert_eq!(top, 105.0, "the gap's top is the closing bar's low");
-    assert_eq!(bottom, 100.0, "the gap's bottom is the high two closed bars back");
-    assert!(right > 1e16, "the right edge extends into the future: {right}");
+    assert_eq!(
+        bottom, 100.0,
+        "the gap's bottom is the high two closed bars back"
+    );
+    assert!(
+        right > 1e16,
+        "the right edge extends into the future: {right}"
+    );
 }
 
 #[test]
@@ -188,8 +216,16 @@ fn two_pooled_timeframes_synthesize_onto_one_chart() {
     // 15m levels: one gap at the P0..P2 triple; afterwards highs rise faster
     // than lows so nothing else qualifies.
     let p15: [(f64, f64); 10] = [
-        (100.0, 90.0), (108.0, 94.0), (112.0, 104.0), (110.0, 103.0), (111.0, 102.0),
-        (112.0, 103.0), (113.0, 104.0), (114.0, 105.0), (115.0, 106.0), (116.0, 107.0),
+        (100.0, 90.0),
+        (108.0, 94.0),
+        (112.0, 104.0),
+        (110.0, 103.0),
+        (111.0, 102.0),
+        (112.0, 103.0),
+        (113.0, 104.0),
+        (114.0, 105.0),
+        (115.0, 106.0),
+        (116.0, 107.0),
     ];
     let pool15: Vec<Candle> = (0..40)
         .map(|i| {
@@ -215,15 +251,21 @@ fn two_pooled_timeframes_synthesize_onto_one_chart() {
     let mut series_pool = std::collections::HashMap::new();
     series_pool.insert("BTCUSDT@15M".to_string(), pool15);
     series_pool.insert("BTCUSDT@1H".to_string(), pool1h);
-    let inputs = Inputs { series_pool, ..Inputs::default() };
+    let inputs = Inputs {
+        series_pool,
+        ..Inputs::default()
+    };
     let output = run(&parsed, &candles, &inputs).expect("run");
     let boxes: Vec<(f64, f64, f64)> = output
         .objects
         .iter()
         .filter_map(|o| match o {
-            pine_lite::interp::ScriptObject::BoxTime { left_nanos, top, bottom, .. } => {
-                Some((*left_nanos, *top, *bottom))
-            }
+            pine_lite::interp::ScriptObject::BoxTime {
+                left_nanos,
+                top,
+                bottom,
+                ..
+            } => Some((*left_nanos, *top, *bottom)),
             _ => None,
         })
         .collect();
@@ -240,5 +282,9 @@ fn two_pooled_timeframes_synthesize_onto_one_chart() {
             _ => None,
         })
         .collect();
-    assert_eq!(labels, ["15m FVG", "1h FVG"], "each zone names its timeframe");
+    assert_eq!(
+        labels,
+        ["15m FVG", "1h FVG"],
+        "each zone names its timeframe"
+    );
 }

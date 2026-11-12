@@ -297,12 +297,20 @@ pub struct Arg {
 /// lexer recorded in each token's span. An indentation increase opens a block;
 /// back to a previous level closes it -- the standard Python/Pine rule.
 pub fn parse(tokens: Vec<Token>) -> Result<Script, Vec<ScriptError>> {
-    let mut p = Parser { tokens, pos: 0, errors: Vec::new(), stmt_indent: 0 };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        errors: Vec::new(),
+        stmt_indent: 0,
+    };
     let items = p.items(0);
     if p.errors.is_empty() {
         // The lexer parsed the header; the parser carries the default until
         // `vet` re-attaches the real one.
-        Ok(Script { header: Header::default(), items })
+        Ok(Script {
+            header: Header::default(),
+            items,
+        })
     } else {
         Err(p.errors)
     }
@@ -320,7 +328,9 @@ struct Parser {
 
 impl Parser {
     fn peek(&self) -> &Token {
-        self.tokens.get(self.pos).unwrap_or(self.tokens.last().expect("eof token"))
+        self.tokens
+            .get(self.pos)
+            .unwrap_or(self.tokens.last().expect("eof token"))
     }
     fn bump(&mut self) -> Token {
         let t = self.peek().clone();
@@ -401,7 +411,13 @@ impl Parser {
                 while !matches!(self.peek().kind, TokenKind::Newline | TokenKind::Eof) {
                     self.bump();
                 }
-                Some(Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } })
+                Some(Item::Expr {
+                    span,
+                    expr: Expr {
+                        kind: ExprKind::Na,
+                        span,
+                    },
+                })
             }
             TokenKind::Keyword(k) if k == "while" => {
                 self.bump();
@@ -479,7 +495,14 @@ impl Parser {
                 let mode = VarMode::Auto;
                 let expr = self.expr()?;
                 self.end_of_line();
-                Some(Item::Assign { span, name, mode, op: Some(op), expr, decl_type: None })
+                Some(Item::Assign {
+                    span,
+                    name,
+                    mode,
+                    op: Some(op),
+                    expr,
+                    decl_type: None,
+                })
             }
             _ => {
                 let expr = self.expr()?;
@@ -499,7 +522,10 @@ impl Parser {
             match self.bump().kind {
                 TokenKind::Ident(n) => names.push(n),
                 other => {
-                    self.err(span, format!("a multi-value assignment needs names, found `{other:?}`"));
+                    self.err(
+                        span,
+                        format!("a multi-value assignment needs names, found `{other:?}`"),
+                    );
                     break;
                 }
             }
@@ -512,7 +538,10 @@ impl Parser {
         if closing_bracket {
             match self.bump().kind {
                 TokenKind::RBracket => {}
-                other => self.err(span, format!("`[` names must close with `]`, found `{other:?}`")),
+                other => self.err(
+                    span,
+                    format!("`[` names must close with `]`, found `{other:?}`"),
+                ),
             }
         }
         match self.bump().kind {
@@ -522,7 +551,10 @@ impl Parser {
                 format!("a multi-value assignment needs `=`, found `{other:?}`"),
             ),
         }
-        let call = self.expr().unwrap_or(Expr { span, kind: ExprKind::Na });
+        let call = self.expr().unwrap_or(Expr {
+            span,
+            kind: ExprKind::Na,
+        });
         self.end_of_line();
         Item::Destructure { span, names, call }
     }
@@ -530,12 +562,22 @@ impl Parser {
     /// `var`/`varip` declarations: `var name = expr`. The caller has already
     /// consumed the keyword.
     fn var_decl(&mut self, span: Span, keyword: String) -> Item {
-        let mode = if keyword == "var" { VarMode::Var } else { VarMode::Varip };
+        let mode = if keyword == "var" {
+            VarMode::Var
+        } else {
+            VarMode::Varip
+        };
         let mut name = match self.bump().kind {
             TokenKind::Ident(n) => n,
             other => {
                 self.err(span, format!("`{keyword}` needs a name, found `{other:?}`"));
-                return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+                return Item::Expr {
+                    span,
+                    expr: Expr {
+                        kind: ExprKind::Na,
+                        span,
+                    },
+                };
             }
         };
         // `var float x = 0.0`: Pine carries an optional type word between the
@@ -553,8 +595,17 @@ impl Parser {
             name = match self.bump().kind {
                 TokenKind::Ident(n) => n,
                 other => {
-                    self.err(span, format!("`{keyword}` needs a name after the type, found `{other:?}`"));
-                    return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+                    self.err(
+                        span,
+                        format!("`{keyword}` needs a name after the type, found `{other:?}`"),
+                    );
+                    return Item::Expr {
+                        span,
+                        expr: Expr {
+                            kind: ExprKind::Na,
+                            span,
+                        },
+                    };
                 }
             };
         }
@@ -566,14 +617,27 @@ impl Parser {
             }
             _ => None,
         };
-        let expr = self.expr().unwrap_or(Expr { kind: ExprKind::Na, span });
+        let expr = self.expr().unwrap_or(Expr {
+            kind: ExprKind::Na,
+            span,
+        });
         self.end_of_line();
-        Item::Assign { span, name, mode, op, expr, decl_type }
+        Item::Assign {
+            span,
+            name,
+            mode,
+            op,
+            expr,
+            decl_type,
+        }
     }
 
     fn if_stmt(&mut self, indent: usize, span: Span) -> Item {
         self.bump(); // `if`
-        let cond = self.expr().unwrap_or(Expr { kind: ExprKind::Na, span });
+        let cond = self.expr().unwrap_or(Expr {
+            kind: ExprKind::Na,
+            span,
+        });
         let body = self.block_body(indent);
         let mut els = None;
         // `else` may sit on the body's closing line or its own; the lexer's
@@ -593,7 +657,14 @@ impl Parser {
         } else {
             self.pos = save;
         }
-        Item::Block { span, kind: BlockKind::If, exprs: vec![cond], loop_var: None, body, els }
+        Item::Block {
+            span,
+            kind: BlockKind::If,
+            exprs: vec![cond],
+            loop_var: None,
+            body,
+            els,
+        }
     }
 
     fn for_stmt(&mut self, indent: usize, span: Span) -> Item {
@@ -601,7 +672,10 @@ impl Parser {
         let loop_var = match self.bump().kind {
             TokenKind::Ident(v) => Some(v),
             other => {
-                self.err(span, format!("`for` needs a loop variable, found `{other:?}`"));
+                self.err(
+                    span,
+                    format!("`for` needs a loop variable, found `{other:?}`"),
+                );
                 None
             }
         };
@@ -612,7 +686,10 @@ impl Parser {
                 String::new()
             }
         };
-        let from = self.expr().unwrap_or(Expr { kind: ExprKind::Na, span });
+        let from = self.expr().unwrap_or(Expr {
+            kind: ExprKind::Na,
+            span,
+        });
         let _to = match self.bump().kind {
             TokenKind::Keyword(k) if k == "to" => k,
             other => {
@@ -620,8 +697,14 @@ impl Parser {
                 String::new()
             }
         };
-        let to = self.expr().unwrap_or(Expr { kind: ExprKind::Na, span });
-        let mut step = Expr { kind: ExprKind::Num(1.0), span };
+        let to = self.expr().unwrap_or(Expr {
+            kind: ExprKind::Na,
+            span,
+        });
+        let mut step = Expr {
+            kind: ExprKind::Num(1.0),
+            span,
+        };
         if matches!(self.peek().kind, TokenKind::Keyword(ref k) if k == "by") {
             self.bump();
             step = self.expr().unwrap_or(step);
@@ -669,10 +752,20 @@ impl Parser {
         // `=>`
         match self.bump().kind {
             TokenKind::Op(op) if op == "=>" => {}
-            other => self.err(span, format!("a function body starts with `=>`, found `{other:?}`")),
+            other => self.err(
+                span,
+                format!("a function body starts with `=>`, found `{other:?}`"),
+            ),
         }
         let body = self.block_body(span.col.saturating_sub(1));
-        Item::FuncDef { span, name, params, defaults, body, method_of: None }
+        Item::FuncDef {
+            span,
+            name,
+            params,
+            defaults,
+            body,
+            method_of: None,
+        }
     }
 
     /// `method name(TypeName receiver, param, ...) => body`: the same
@@ -685,7 +778,13 @@ impl Parser {
             TokenKind::Ident(n) => n,
             other => {
                 self.err(span, format!("`method` needs a name, found `{other:?}`"));
-                return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+                return Item::Expr {
+                    span,
+                    expr: Expr {
+                        kind: ExprKind::Na,
+                        span,
+                    },
+                };
             }
         };
         self.bump(); // (
@@ -693,14 +792,26 @@ impl Parser {
             TokenKind::Ident(t) => t,
             other => {
                 self.err(span, format!("a method's first parameter is the receiver's type: method {name}(Point p, ...), found `{other:?}`"));
-                return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+                return Item::Expr {
+                    span,
+                    expr: Expr {
+                        kind: ExprKind::Na,
+                        span,
+                    },
+                };
             }
         };
         let receiver = match self.bump().kind {
             TokenKind::Ident(r) => r,
             other => {
                 self.err(span, format!("the receiver needs a name after its type: method {name}({type_name} p, ...), found `{other:?}`"));
-                return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+                return Item::Expr {
+                    span,
+                    expr: Expr {
+                        kind: ExprKind::Na,
+                        span,
+                    },
+                };
             }
         };
         let mut params = vec![receiver];
@@ -717,7 +828,10 @@ impl Parser {
                         match self.bump().kind {
                             TokenKind::Ident(n) => n,
                             other => {
-                                self.err(span, format!("a typed parameter needs a name, found `{other:?}`"));
+                                self.err(
+                                    span,
+                                    format!("a typed parameter needs a name, found `{other:?}`"),
+                                );
                                 break;
                             }
                         }
@@ -743,10 +857,20 @@ impl Parser {
         }
         match self.bump().kind {
             TokenKind::Op(op) if op == "=>" => {}
-            other => self.err(span, format!("a method body starts with `=>`, found `{other:?}`")),
+            other => self.err(
+                span,
+                format!("a method body starts with `=>`, found `{other:?}`"),
+            ),
         }
         let body = self.block_body(span.col.saturating_sub(1));
-        Item::FuncDef { span, name, params, defaults, body, method_of: Some(type_name) }
+        Item::FuncDef {
+            span,
+            name,
+            params,
+            defaults,
+            body,
+            method_of: Some(type_name),
+        }
     }
 
     /// The words Pine lets a variable declaration carry. Handles
@@ -755,8 +879,17 @@ impl Parser {
     fn is_type_word(word: &str) -> bool {
         matches!(
             word,
-            "float" | "int" | "bool" | "string" | "color" | "line" | "label" | "box" | "table"
-                | "linefill" | "polyline"
+            "float"
+                | "int"
+                | "bool"
+                | "string"
+                | "color"
+                | "line"
+                | "label"
+                | "box"
+                | "table"
+                | "linefill"
+                | "polyline"
         )
     }
 
@@ -792,8 +925,17 @@ impl Parser {
         let name = match self.bump().kind {
             TokenKind::Ident(n) => n,
             other => {
-                self.err(span, format!("`type` needs a name (type Point), found `{other:?}`"));
-                return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+                self.err(
+                    span,
+                    format!("`type` needs a name (type Point), found `{other:?}`"),
+                );
+                return Item::Expr {
+                    span,
+                    expr: Expr {
+                        kind: ExprKind::Na,
+                        span,
+                    },
+                };
             }
         };
         self.end_of_line();
@@ -823,7 +965,10 @@ impl Parser {
             let fname = match self.bump().kind {
                 TokenKind::Ident(n) => n,
                 other => {
-                    self.err(self.peek().span, format!("a field needs a name after its type, found `{other:?}`"));
+                    self.err(
+                        self.peek().span,
+                        format!("a field needs a name after its type, found `{other:?}`"),
+                    );
                     break;
                 }
             };
@@ -876,7 +1021,10 @@ impl Parser {
                 match self.bump().kind {
                     TokenKind::Op(op) if op == "=>" => {}
                     other => {
-                        self.err(self.peek().span, format!("a switch arm is `test => result`, found `{other:?}`"));
+                        self.err(
+                            self.peek().span,
+                            format!("a switch arm is `test => result`, found `{other:?}`"),
+                        );
                         return None;
                     }
                 }
@@ -902,7 +1050,10 @@ impl Parser {
             self.err(span, "a switch needs at least one `test => result` arm");
             return None;
         }
-        Some(Expr { span, kind: ExprKind::Switch { subject, arms } })
+        Some(Expr {
+            span,
+            kind: ExprKind::Switch { subject, arms },
+        })
     }
 
     fn skip_blank(&mut self) {
@@ -962,7 +1113,10 @@ impl Parser {
             let then = self.expr()?;
             match self.bump().kind {
                 TokenKind::Colon => {}
-                other => self.err(self.peek().span, format!("`?:` needs `:`, found `{other:?}`")),
+                other => self.err(
+                    self.peek().span,
+                    format!("`?:` needs `:`, found `{other:?}`"),
+                ),
             }
             let els = self.expr()?;
             let span = cond.span;
@@ -1029,7 +1183,10 @@ impl Parser {
             if matches!(self.peek().kind, TokenKind::Assign(ref s) if s == "=")
                 && matches!(left.kind, ExprKind::History { .. })
             {
-                self.err(left.span, "indexed assignment is not in pine-lite v1; use `array.set(a, i, v)`");
+                self.err(
+                    left.span,
+                    "indexed assignment is not in pine-lite v1; use `array.set(a, i, v)`",
+                );
                 break;
             }
             let op = match self.peek().kind.clone() {
@@ -1113,17 +1270,35 @@ impl Parser {
             TokenKind::Op(op) if op == "-" => {
                 self.bump();
                 let expr = self.unary()?;
-                return Some(Expr { span, kind: ExprKind::Un { op: UnOp::Neg, expr: Box::new(expr) } });
+                return Some(Expr {
+                    span,
+                    kind: ExprKind::Un {
+                        op: UnOp::Neg,
+                        expr: Box::new(expr),
+                    },
+                });
             }
             TokenKind::Op(op) if op == "+" => {
                 self.bump();
                 let expr = self.unary()?;
-                return Some(Expr { span, kind: ExprKind::Un { op: UnOp::Pos, expr: Box::new(expr) } });
+                return Some(Expr {
+                    span,
+                    kind: ExprKind::Un {
+                        op: UnOp::Pos,
+                        expr: Box::new(expr),
+                    },
+                });
             }
             TokenKind::Keyword(k) if k == "not" => {
                 self.bump();
                 let expr = self.unary()?;
-                return Some(Expr { span, kind: ExprKind::Un { op: UnOp::Not, expr: Box::new(expr) } });
+                return Some(Expr {
+                    span,
+                    kind: ExprKind::Un {
+                        op: UnOp::Not,
+                        expr: Box::new(expr),
+                    },
+                });
             }
             _ => {}
         }
@@ -1138,7 +1313,11 @@ impl Parser {
             let span = left.span;
             left = Expr {
                 span,
-                kind: ExprKind::Bin { left: Box::new(left), op: BinOp::Pow, right: Box::new(right) },
+                kind: ExprKind::Bin {
+                    left: Box::new(left),
+                    op: BinOp::Pow,
+                    right: Box::new(right),
+                },
             };
         }
         Some(left)
@@ -1151,14 +1330,18 @@ impl Parser {
             let offset = self.expr()?;
             match self.bump().kind {
                 TokenKind::RBracket => {}
-                other => {
-                    self.err(self.peek().span, format!("history index needs `]`, found `{other:?}`"))
-                }
+                other => self.err(
+                    self.peek().span,
+                    format!("history index needs `]`, found `{other:?}`"),
+                ),
             }
             let span = expr.span;
             expr = Expr {
                 span,
-                kind: ExprKind::History { base: Box::new(expr), offset: Box::new(offset) },
+                kind: ExprKind::History {
+                    base: Box::new(expr),
+                    offset: Box::new(offset),
+                },
             };
         }
         Some(expr)
@@ -1167,11 +1350,26 @@ impl Parser {
     fn primary(&mut self) -> Option<Expr> {
         let span = self.peek().span;
         match self.bump().kind {
-            TokenKind::Number(n) => Some(Expr { span, kind: ExprKind::Num(n) }),
-            TokenKind::Str(s) => Some(Expr { span, kind: ExprKind::Str(s) }),
-            TokenKind::Color(c) => Some(Expr { span, kind: ExprKind::Color(c) }),
-            TokenKind::Keyword(k) if k == "true" => Some(Expr { span, kind: ExprKind::Bool(true) }),
-            TokenKind::Keyword(k) if k == "false" => Some(Expr { span, kind: ExprKind::Bool(false) }),
+            TokenKind::Number(n) => Some(Expr {
+                span,
+                kind: ExprKind::Num(n),
+            }),
+            TokenKind::Str(s) => Some(Expr {
+                span,
+                kind: ExprKind::Str(s),
+            }),
+            TokenKind::Color(c) => Some(Expr {
+                span,
+                kind: ExprKind::Color(c),
+            }),
+            TokenKind::Keyword(k) if k == "true" => Some(Expr {
+                span,
+                kind: ExprKind::Bool(true),
+            }),
+            TokenKind::Keyword(k) if k == "false" => Some(Expr {
+                span,
+                kind: ExprKind::Bool(false),
+            }),
             TokenKind::Keyword(k) if k == "na" => {
                 // `na` is both the literal and Pine's test function: allow the
                 // call form `na(x)` alongside the bare literal.
@@ -1180,11 +1378,22 @@ impl Parser {
                     let inner = self.expr()?;
                     match self.bump().kind {
                         TokenKind::RParen => {}
-                        other => self.err(self.peek().span, format!("closing `)` for `na(...)`, found `{other:?}`")),
+                        other => self.err(
+                            self.peek().span,
+                            format!("closing `)` for `na(...)`, found `{other:?}`"),
+                        ),
                     }
-                    Some(Expr { span, kind: ExprKind::NaChecked { value: Box::new(inner) } })
+                    Some(Expr {
+                        span,
+                        kind: ExprKind::NaChecked {
+                            value: Box::new(inner),
+                        },
+                    })
                 } else {
-                    Some(Expr { span, kind: ExprKind::Na })
+                    Some(Expr {
+                        span,
+                        kind: ExprKind::Na,
+                    })
                 }
             }
             TokenKind::Keyword(k) if k == "switch" => self.switch_expr(span),
@@ -1192,17 +1401,20 @@ impl Parser {
                 // A declaration mid-expression position is a statement; treat
                 // it as one by handing back to the statement parser via a
                 // synthetic item is not possible here, so record the error.
-                self.err(span, "`var` declarations start a statement, not an expression");
+                self.err(
+                    span,
+                    "`var` declarations start a statement, not an expression",
+                );
                 None
             }
             TokenKind::Ident(name) => {
                 if matches!(self.peek().kind, TokenKind::LParen) {
                     self.bump(); // (
-                    // A call's arguments may wrap across lines: models format
-                    // long `plot(...)`/`label.new(...)` calls one argument per
-                    // line, and the lexer's per-line Newline must not read as
-                    // "expression ends here" inside the parens. The parens own
-                    // the newline, the way Pine's do.
+                                 // A call's arguments may wrap across lines: models format
+                                 // long `plot(...)`/`label.new(...)` calls one argument per
+                                 // line, and the lexer's per-line Newline must not read as
+                                 // "expression ends here" inside the parens. The parens own
+                                 // the newline, the way Pine's do.
                     while matches!(self.peek().kind, TokenKind::Newline) {
                         self.bump();
                     }
@@ -1226,7 +1438,10 @@ impl Parser {
                             None
                         };
                         let value = self.expr()?;
-                        args.push(Arg { name: name_arg, value });
+                        args.push(Arg {
+                            name: name_arg,
+                            value,
+                        });
                         // Between arguments: a wrapped call puts the newline
                         // before the comma (`...high,\n     low)`), so skip
                         // blank lines ahead of the separator too.
@@ -1249,23 +1464,30 @@ impl Parser {
                             }
                         }
                     }
-                    Some(Expr { span, kind: ExprKind::Call { callee: name, args } })
+                    Some(Expr {
+                        span,
+                        kind: ExprKind::Call { callee: name, args },
+                    })
                 } else {
-                    Some(Expr { span, kind: ExprKind::Ident(name) })
+                    Some(Expr {
+                        span,
+                        kind: ExprKind::Ident(name),
+                    })
                 }
             }
             TokenKind::LParen => {
                 let inner = self.expr()?;
                 match self.bump().kind {
                     TokenKind::RParen => {}
-                    other => {
-                        self.err(self.peek().span, format!("closing `)`, found `{other:?}`"))
-                    }
+                    other => self.err(self.peek().span, format!("closing `)`, found `{other:?}`")),
                 }
                 Some(inner)
             }
             other => {
-                self.err(span, format!("unexpected token `{other:?}` in an expression"));
+                self.err(
+                    span,
+                    format!("unexpected token `{other:?}` in an expression"),
+                );
                 None
             }
         }

@@ -166,13 +166,29 @@ pub(crate) fn validate_registry_concept_states(
         if !names.insert(state.name.as_str()) {
             return Err(format!("duplicate registry concept name `{}`", state.name));
         }
-        if market_data::concepts::concept_version(&state.concept_id, &state.concept_version).is_none() {
-            return Err(format!("unknown or unsupported detector pin {}@{}", state.concept_id, state.concept_version));
+        if market_data::concepts::concept_version(&state.concept_id, &state.concept_version)
+            .is_none()
+        {
+            return Err(format!(
+                "unknown or unsupported detector pin {}@{}",
+                state.concept_id, state.concept_version
+            ));
         }
         versions.insert(state.concept_id.clone(), state.concept_version.clone());
-        parameters.insert(state.concept_id.clone(), state.parameters.iter().map(|(name, value)| (name.clone(), *value)).collect());
+        parameters.insert(
+            state.concept_id.clone(),
+            state
+                .parameters
+                .iter()
+                .map(|(name, value)| (name.clone(), *value))
+                .collect(),
+        );
     }
-    if let Some(issue) = market_data::composer::validate_parameters_for_versions(&parameters, &versions).into_iter().next() {
+    if let Some(issue) =
+        market_data::composer::validate_parameters_for_versions(&parameters, &versions)
+            .into_iter()
+            .next()
+    {
         return Err(format!("{}: {}", issue.path, issue.message));
     }
     Ok(())
@@ -451,25 +467,44 @@ pub async fn generate_image(
             "image prompt must contain between 1 and 2000 characters",
         ));
     }
-    if body.images.len() > 2 || body.images.iter().any(|image| image.data.len() > 8_000_000
-        || !matches!(image.media_type.as_str(), "image/png" | "image/jpeg" | "image/webp" | "image/gif"))
+    if body.images.len() > 2
+        || body.images.iter().any(|image| {
+            image.data.len() > 8_000_000
+                || !matches!(
+                    image.media_type.as_str(),
+                    "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+                )
+        })
     {
         return Err(ApiError::bad_request(
             "IMAGE_INPUT_INVALID",
             "image generation accepts up to two PNG, JPEG, WebP or GIF reference images (8 MB each)",
         ));
     }
-    enforce_usage(&state, user.user_id, UsageMetric::AiCredit, CREDIT_CHART_ANALYSIS).await?;
+    enforce_usage(
+        &state,
+        user.user_id,
+        UsageMetric::AiCredit,
+        CREDIT_CHART_ANALYSIS,
+    )
+    .await?;
     let agent = crate::provider_routes::resolve_agent(&state, &user).await?;
-    let references: Vec<(String, String)> = body.images.into_iter()
-        .map(|image| (image.media_type, image.data)).collect();
-    let image = agent.llm().generate_image(prompt, &references).await.map_err(|error| {
-        ApiError::coded(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "IMAGE_GENERATION_UNAVAILABLE",
-            error.to_string(),
-        )
-    })?;
+    let references: Vec<(String, String)> = body
+        .images
+        .into_iter()
+        .map(|image| (image.media_type, image.data))
+        .collect();
+    let image = agent
+        .llm()
+        .generate_image(prompt, &references)
+        .await
+        .map_err(|error| {
+            ApiError::coded(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "IMAGE_GENERATION_UNAVAILABLE",
+                error.to_string(),
+            )
+        })?;
     Ok(Json(image))
 }
 

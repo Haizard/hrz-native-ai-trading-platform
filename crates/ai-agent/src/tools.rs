@@ -30,10 +30,11 @@ use tracing::debug;
 use analytics_core::types::{Candle, Timeframe, Trade};
 use analytics_core::volume_profile::VolumeNode;
 use analytics_core::{
-    bar_delta_stats_window, build_market_state, calculate_cvd_by_size, calculate_vpin_series,
-    calculate_volume_profile_from_candles, delta_by_size_per_candle, detect_absorption,
-    detect_imbalances_with, detect_liquidity_levels_with, detect_market_structure, MarketState,
-    MarketStateConfig, SizeClass, SizeClassConfig, VpinConfig,
+    bar_delta_stats_window, build_market_state, calculate_cvd_by_size,
+    calculate_volume_profile_from_candles, calculate_vpin_series, delta_by_size_per_candle,
+    detect_absorption, detect_imbalances_with, detect_liquidity_levels_with,
+    detect_market_structure, MarketState, MarketStateConfig, SizeClass, SizeClassConfig,
+    VpinConfig,
 };
 
 use crate::error::AgentError;
@@ -506,10 +507,7 @@ impl<'a> ToolContext<'a> {
 
     /// Attach the ladder this run read, so the marked review photographs it.
     #[must_use]
-    pub fn with_review_ladder(
-        mut self,
-        ladder: &crate::multi_timeframe::TimeframeLadder,
-    ) -> Self {
+    pub fn with_review_ladder(mut self, ladder: &crate::multi_timeframe::TimeframeLadder) -> Self {
         self.review_ladder = Some(ladder.clone());
         self
     }
@@ -534,7 +532,13 @@ impl<'a> ToolContext<'a> {
 
     /// Attach the chart viewport the question arrived with.
     #[must_use]
-    pub fn with_viewport(mut self, symbol: &str, timeframe: Timeframe, from_ns: i64, to_ns: i64) -> Self {
+    pub fn with_viewport(
+        mut self,
+        symbol: &str,
+        timeframe: Timeframe,
+        from_ns: i64,
+        to_ns: i64,
+    ) -> Self {
         self.viewport = Some(ViewportWindow {
             symbol: symbol.to_string(),
             timeframe,
@@ -703,7 +707,10 @@ impl ToolRegistry {
                 ToolSpec {
                     name: "get_rsi".into(),
                     description: GET_RSI.into(),
-                    input_schema: indicator_schema(&[("period", period_prop(14)), ("limit", limit_prop())]),
+                    input_schema: indicator_schema(&[
+                        ("period", period_prop(14)),
+                        ("limit", limit_prop()),
+                    ]),
                     exposed_tool: Some("classic_indicators"),
                 },
                 ToolSpec {
@@ -722,8 +729,11 @@ impl ToolRegistry {
                     description: GET_BOLLINGER_BANDS.into(),
                     input_schema: indicator_schema(&[
                         ("period", period_prop(20)),
-                        ("mult", json!({"type": "number", "exclusiveMinimum": 0.0, "maximum": 5.0,
-                                        "description": "Band width in standard deviations (default 2)"})),
+                        (
+                            "mult",
+                            json!({"type": "number", "exclusiveMinimum": 0.0, "maximum": 5.0,
+                                        "description": "Band width in standard deviations (default 2)"}),
+                        ),
                         ("limit", limit_prop()),
                     ]),
                     exposed_tool: Some("classic_indicators"),
@@ -738,8 +748,11 @@ impl ToolRegistry {
                     name: "get_moving_average".into(),
                     description: GET_MOVING_AVERAGE.into(),
                     input_schema: indicator_schema(&[
-                        ("kind", json!({"type": "string", "enum": ["ema", "sma"],
-                                        "description": "Average kind (default ema)"})),
+                        (
+                            "kind",
+                            json!({"type": "string", "enum": ["ema", "sma"],
+                                        "description": "Average kind (default ema)"}),
+                        ),
                         ("period", period_prop(20)),
                         ("limit", limit_prop()),
                     ]),
@@ -1000,7 +1013,11 @@ impl ToolRegistry {
     /// The four concept-strategy tools ride the base set (always exposed).
     #[cfg(test)]
     pub fn test_names() -> Vec<String> {
-        Self::market_analysis().names().into_iter().map(|s| s.to_string()).collect()
+        Self::market_analysis()
+            .names()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// The registry's tool names, in registration order.
@@ -1097,15 +1114,19 @@ impl ToolRegistry {
             "detect_zones" => detect_zones_tool(ctx, &call.input).await,
             "open_chart" => open_chart_tool(ctx, &call.input).await,
             "set_chart" => set_chart_tool(ctx, &call.input).await,
-                "look_at_chart" => look_at_chart_tool(ctx, &call.input).await,
+            "look_at_chart" => look_at_chart_tool(ctx, &call.input).await,
             "review_marked_charts" => review_marked_charts_tool(ctx, &call.input).await,
-        "create_indicator" => create_pipeline_tool("create_indicator", &call.input, "description").await,
-        "create_strategy" => create_pipeline_tool("create_strategy", &call.input, "description").await,
-        "list_concepts" => list_concepts(ctx, &call.input).await,
-        "concept_signals" => concept_signals(ctx, &call.input).await,
-        "compose_concept_strategy" => compose_concept_strategy(ctx, &call.input).await,
-        "backtest_composition" => backtest_composition(ctx, &call.input).await,
-        "scan_market" => scan_market_tool(&call.input).await,
+            "create_indicator" => {
+                create_pipeline_tool("create_indicator", &call.input, "description").await
+            }
+            "create_strategy" => {
+                create_pipeline_tool("create_strategy", &call.input, "description").await
+            }
+            "list_concepts" => list_concepts(ctx, &call.input).await,
+            "concept_signals" => concept_signals(ctx, &call.input).await,
+            "compose_concept_strategy" => compose_concept_strategy(ctx, &call.input).await,
+            "backtest_composition" => backtest_composition(ctx, &call.input).await,
+            "scan_market" => scan_market_tool(&call.input).await,
             "compare_timeframes" => compare_timeframes(ctx, &call.input).await,
             "cross_timeframe_confluence" => cross_timeframe_confluence(ctx, &call.input).await,
             "backtest_strategy" => backtest_strategy(ctx, &call.input).await,
@@ -1137,9 +1158,10 @@ impl ToolRegistry {
                 ctx.capabilities.as_ref(),
                 call.input.get("symbol").and_then(Value::as_str),
             ) {
-                if let (Some(block), Some(object)) =
-                    (view.tool_provenance(&call.name, symbol), value.as_object_mut())
-                {
+                if let (Some(block), Some(object)) = (
+                    view.tool_provenance(&call.name, symbol),
+                    value.as_object_mut(),
+                ) {
                     object.insert("provenance".to_string(), block);
                 }
             }
@@ -1266,19 +1288,28 @@ fn detect_pattern_schema() -> Value {
         .map(|k| Value::from(k.name()))
         .collect();
     indicator_schema(&[
-        ("pattern", json!({
-            "type": "string",
-            "enum": patterns,
-            "description": "The pattern to look for. Omit to detect every kind.",
-        })),
-        ("tolerance_pct", json!({
-            "type": "number", "exclusiveMinimum": 0.0, "maximum": 0.05,
-            "description": "How far 'equal' extremes may differ, as a fraction of price (default 0.004 = 0.4%)",
-        })),
-        ("min_confidence", json!({
-            "type": "number", "minimum": 0.0, "maximum": 1.0,
-            "description": "Only report matches at or above this confidence (default 0.5)",
-        })),
+        (
+            "pattern",
+            json!({
+                "type": "string",
+                "enum": patterns,
+                "description": "The pattern to look for. Omit to detect every kind.",
+            }),
+        ),
+        (
+            "tolerance_pct",
+            json!({
+                "type": "number", "exclusiveMinimum": 0.0, "maximum": 0.05,
+                "description": "How far 'equal' extremes may differ, as a fraction of price (default 0.004 = 0.4%)",
+            }),
+        ),
+        (
+            "min_confidence",
+            json!({
+                "type": "number", "minimum": 0.0, "maximum": 1.0,
+                "description": "Only report matches at or above this confidence (default 0.5)",
+            }),
+        ),
     ])
 }
 
@@ -2173,15 +2204,18 @@ async fn get_delta_by_size(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
     let cvd = calculate_cvd_by_size(&candles, &trades, &config, true);
     let last = cvd.last();
 
-    let classes = SizeClass::all().iter().map(|class| {
-        let index = class.index();
-        json!({
-            "class": class.as_str(),
-            "window_delta": per_candle.iter().map(|b| b.classes[index].delta()).sum::<f64>(),
-            "cvd_latest": last.map_or(0.0, |p| p.classes[index]),
-            "trades": per_candle.iter().map(|b| b.classes[index].trades).sum::<usize>(),
+    let classes = SizeClass::all()
+        .iter()
+        .map(|class| {
+            let index = class.index();
+            json!({
+                "class": class.as_str(),
+                "window_delta": per_candle.iter().map(|b| b.classes[index].delta()).sum::<f64>(),
+                "cvd_latest": last.map_or(0.0, |p| p.classes[index]),
+                "trades": per_candle.iter().map(|b| b.classes[index].trades).sum::<usize>(),
+            })
         })
-    }).collect::<Vec<_>>();
+        .collect::<Vec<_>>();
 
     Ok(json!({
         "symbol": symbol,
@@ -2203,7 +2237,9 @@ async fn get_bar_delta_stats(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
     const TOOL: &str = "get_bar_delta_stats";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.window_lookback(optional_u64(args, "count", TOOL)?, &symbol, timeframe).min(50);
+    let lookback = ctx
+        .window_lookback(optional_u64(args, "count", TOOL)?, &symbol, timeframe)
+        .min(50);
     let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
     if trades.is_empty() {
         return Ok(json!({
@@ -2243,7 +2279,9 @@ async fn get_vpin(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentErr
     const TOOL: &str = "get_vpin";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.window_lookback(optional_u64(args, "count", TOOL)?, &symbol, timeframe).min(200);
+    let lookback = ctx
+        .window_lookback(optional_u64(args, "count", TOOL)?, &symbol, timeframe)
+        .min(200);
     let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
     if trades.is_empty() {
         return Ok(json!({
@@ -2298,8 +2336,14 @@ async fn detect_size_divergence(ctx: &ToolContext<'_>, args: &Value) -> Result<V
 
     let config = SizeClassConfig::default();
     let cvd = calculate_cvd_by_size(&candles, &trades, &config, true);
-    let small: Vec<f64> = cvd.iter().map(|p| p.classes[SizeClass::Small.index()]).collect();
-    let large: Vec<f64> = cvd.iter().map(|p| p.classes[SizeClass::Large.index()]).collect();
+    let small: Vec<f64> = cvd
+        .iter()
+        .map(|p| p.classes[SizeClass::Small.index()])
+        .collect();
+    let large: Vec<f64> = cvd
+        .iter()
+        .map(|p| p.classes[SizeClass::Large.index()])
+        .collect();
 
     // Normalized Pearson correlation between the small-order and large-order
     // CVD paths: -1 = opposite behavior, +1 = identical behavior.
@@ -2332,7 +2376,11 @@ fn correlation(a: &[f64], b: &[f64]) -> f64 {
     let (a, b) = (&a[..n], &b[..n]);
     let mean_a = a.iter().sum::<f64>() / n as f64;
     let mean_b = b.iter().sum::<f64>() / n as f64;
-    let covariance: f64 = a.iter().zip(b).map(|(x, y)| (x - mean_a) * (y - mean_b)).sum();
+    let covariance: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| (x - mean_a) * (y - mean_b))
+        .sum();
     let var_a: f64 = a.iter().map(|x| (x - mean_a) * (x - mean_a)).sum();
     let var_b: f64 = b.iter().map(|y| (y - mean_b) * (y - mean_b)).sum();
     let denominator = (var_a * var_b).sqrt();
@@ -2677,15 +2725,22 @@ async fn get_rsi(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentErro
     const TOOL: &str = "get_rsi";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let period = optional_u64(args, "period", TOOL)?.unwrap_or(14).clamp(2, 500) as usize;
-    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
+    let period = optional_u64(args, "period", TOOL)?
+        .unwrap_or(14)
+        .clamp(2, 500) as usize;
+    let limit = optional_u64(args, "limit", TOOL)?
+        .unwrap_or(10)
+        .clamp(1, 50) as usize;
     let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     let series = analytics_core::indicators::rsi(&closes_of(&candles), period);
-    let readings = series_tail(&series, &candles, limit, |t, time_ms, v| {
-        json!({"t": t, "time_ms": time_ms, "value": v})
-    });
+    let readings = series_tail(
+        &series,
+        &candles,
+        limit,
+        |t, time_ms, v| json!({"t": t, "time_ms": time_ms, "value": v}),
+    );
     let latest = readings.last().cloned();
     Ok(json!({
         "symbol": symbol,
@@ -2703,10 +2758,18 @@ async fn get_macd(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentErr
     const TOOL: &str = "get_macd";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let fast = optional_u64(args, "fast", TOOL)?.unwrap_or(12).clamp(2, 500) as usize;
-    let slow = optional_u64(args, "slow", TOOL)?.unwrap_or(26).clamp(2, 500) as usize;
-    let signal = optional_u64(args, "signal", TOOL)?.unwrap_or(9).clamp(2, 500) as usize;
-    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
+    let fast = optional_u64(args, "fast", TOOL)?
+        .unwrap_or(12)
+        .clamp(2, 500) as usize;
+    let slow = optional_u64(args, "slow", TOOL)?
+        .unwrap_or(26)
+        .clamp(2, 500) as usize;
+    let signal = optional_u64(args, "signal", TOOL)?
+        .unwrap_or(9)
+        .clamp(2, 500) as usize;
+    let limit = optional_u64(args, "limit", TOOL)?
+        .unwrap_or(10)
+        .clamp(1, 50) as usize;
     let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
@@ -2730,9 +2793,15 @@ async fn get_bollinger_bands(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
     const TOOL: &str = "get_bollinger_bands";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let period = optional_u64(args, "period", TOOL)?.unwrap_or(20).clamp(2, 500) as usize;
-    let mult = optional_f64(args, "mult", TOOL)?.unwrap_or(2.0).clamp(0.1, 5.0);
-    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
+    let period = optional_u64(args, "period", TOOL)?
+        .unwrap_or(20)
+        .clamp(2, 500) as usize;
+    let mult = optional_f64(args, "mult", TOOL)?
+        .unwrap_or(2.0)
+        .clamp(0.1, 5.0);
+    let limit = optional_u64(args, "limit", TOOL)?
+        .unwrap_or(10)
+        .clamp(1, 50) as usize;
     let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
@@ -2755,7 +2824,9 @@ async fn get_atr_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Agen
     const TOOL: &str = "get_atr";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let period = optional_u64(args, "period", TOOL)?.unwrap_or(14).clamp(2, 500) as usize;
+    let period = optional_u64(args, "period", TOOL)?
+        .unwrap_or(14)
+        .clamp(2, 500) as usize;
     let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
@@ -2787,8 +2858,12 @@ async fn get_moving_average(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
             reason: format!("`kind` must be ema or sma; got `{kind}`"),
         });
     }
-    let period = optional_u64(args, "period", TOOL)?.unwrap_or(20).clamp(2, 500) as usize;
-    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
+    let period = optional_u64(args, "period", TOOL)?
+        .unwrap_or(20)
+        .clamp(2, 500) as usize;
+    let limit = optional_u64(args, "limit", TOOL)?
+        .unwrap_or(10)
+        .clamp(1, 50) as usize;
     let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
@@ -2798,9 +2873,12 @@ async fn get_moving_average(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
     } else {
         analytics_core::indicators::sma(&closes, period)
     };
-    let readings = series_tail(&series, &candles, limit, |t, time_ms, v| {
-        json!({"t": t, "time_ms": time_ms, "value": v})
-    });
+    let readings = series_tail(
+        &series,
+        &candles,
+        limit,
+        |t, time_ms, v| json!({"t": t, "time_ms": time_ms, "value": v}),
+    );
     Ok(json!({
         "symbol": symbol,
         "timeframe": timeframe.to_string(),
@@ -3175,7 +3253,10 @@ async fn list_concepts(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Age
         reason: "no concept catalog is attached to this agent".into(),
     })?;
     let concepts = catalog.search(keyword.as_deref(), library.as_deref());
-    let eligible = concepts.iter().filter(|concept| concept.strategy_eligible).count();
+    let eligible = concepts
+        .iter()
+        .filter(|concept| concept.strategy_eligible)
+        .count();
     Ok(serde_json::json!({
         "concepts": concepts,
         "count": concepts.len(),
@@ -3188,7 +3269,9 @@ async fn list_concepts(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Age
 async fn concept_signals(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
     const TOOL: &str = "concept_signals";
     let symbol = string_arg(args, "symbol", TOOL)?;
-    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(20).clamp(1, 50) as usize;
+    let limit = optional_u64(args, "limit", TOOL)?
+        .unwrap_or(20)
+        .clamp(1, 50) as usize;
     let runner = ctx.compositions.ok_or_else(|| AgentError::ToolFailed {
         tool: TOOL.into(),
         reason: "no composition runner is attached to this agent".into(),
@@ -3202,7 +3285,10 @@ async fn concept_signals(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, A
 }
 
 /// `compose_concept_strategy`: validate the document, no run.
-async fn compose_concept_strategy(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+async fn compose_concept_strategy(
+    ctx: &ToolContext<'_>,
+    args: &Value,
+) -> Result<Value, AgentError> {
     const TOOL: &str = "compose_concept_strategy";
     let document = string_arg(args, "document", TOOL)?;
     let runner = ctx.compositions.ok_or_else(|| AgentError::ToolFailed {
@@ -3219,12 +3305,16 @@ async fn backtest_composition(ctx: &ToolContext<'_>, args: &Value) -> Result<Val
     let document = string_arg(args, "document", TOOL)?;
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = optional_string(args, "timeframe", TOOL)?.unwrap_or_else(|| "1h".to_string());
-    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(500).clamp(50, 1000) as usize;
+    let limit = optional_u64(args, "limit", TOOL)?
+        .unwrap_or(500)
+        .clamp(50, 1000) as usize;
     let runner = ctx.compositions.ok_or_else(|| AgentError::ToolFailed {
         tool: TOOL.into(),
         reason: "no composition runner is attached to this agent".into(),
     })?;
-    let report = runner.run_composition(&document, &symbol, &timeframe, limit).await?;
+    let report = runner
+        .run_composition(&document, &symbol, &timeframe, limit)
+        .await?;
     Ok(serde_json::json!({
         "report": report,
         "honest_read": "a small trade count is not a verdict, and a losing window is information: say what the numbers say, not what the user hoped.",
@@ -3308,7 +3398,10 @@ async fn search_web_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, A
 /// JSON, and the agent loop strips the key (the text result must stay lean)
 /// and reattaches the images as content blocks -- the same door the chart
 /// captures use.
-async fn search_pattern_images_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+async fn search_pattern_images_tool(
+    ctx: &ToolContext<'_>,
+    args: &Value,
+) -> Result<Value, AgentError> {
     let query = args
         .get("query")
         .and_then(Value::as_str)
@@ -3367,18 +3460,21 @@ fn timeframes_arg(args: &Value, tool: &str) -> Result<Vec<Timeframe>, AgentError
             tool: tool.into(),
             reason: "every `timeframes` entry must be a string".into(),
         })?;
-        out.push(s.parse::<Timeframe>().map_err(|_| AgentError::InvalidToolArgs {
-            tool: tool.into(),
-            reason: format!(
-                "`timeframes` entries must be one of {}; got `{s}`",
-                Timeframe::all()
-                    .iter()
-                    .rev()
-                    .map(|tf| tf.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        })?);
+        out.push(
+            s.parse::<Timeframe>()
+                .map_err(|_| AgentError::InvalidToolArgs {
+                    tool: tool.into(),
+                    reason: format!(
+                        "`timeframes` entries must be one of {}; got `{s}`",
+                        Timeframe::all()
+                            .iter()
+                            .rev()
+                            .map(|tf| tf.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                })?,
+        );
     }
     if !(2..=6).contains(&out.len()) {
         return Err(AgentError::InvalidToolArgs {
@@ -3420,8 +3516,7 @@ async fn compare_timeframes(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
         }
     }
     let first_trend = frames[0]["trend"].clone();
-    let aligned = frames.iter().all(|f| f["trend"] == first_trend)
-        && first_trend != "Ranging";
+    let aligned = frames.iter().all(|f| f["trend"] == first_trend) && first_trend != "Ranging";
     Ok(json!({
         "symbol": symbol,
         "frames": frames,
@@ -3430,7 +3525,10 @@ async fn compare_timeframes(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
     }))
 }
 
-async fn cross_timeframe_confluence(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+async fn cross_timeframe_confluence(
+    ctx: &ToolContext<'_>,
+    args: &Value,
+) -> Result<Value, AgentError> {
     const TOOL: &str = "cross_timeframe_confluence";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframes = timeframes_arg(args, TOOL)?;
@@ -3681,7 +3779,9 @@ fn points_arg(args: &Value, tool: &str) -> Result<Vec<AgentPoint>, AgentError> {
         .as_array()
         .ok_or_else(|| invalid("`points` must be an array of {time_ms, price} objects".into()))?;
     if items.len() > 64 {
-        return Err(invalid("`points` exceeds the 64-anchor limit for one AI drawing".into()));
+        return Err(invalid(
+            "`points` exceeds the 64-anchor limit for one AI drawing".into(),
+        ));
     }
     if items.is_empty() {
         return Err(invalid(
@@ -3699,7 +3799,9 @@ fn points_arg(args: &Value, tool: &str) -> Result<Vec<AgentPoint>, AgentError> {
                     .ok_or_else(|| {
                         invalid(format!(
                             "point {index} needs `{key}` as a finite number; it is {}",
-                            item.get(key).map(Value::to_string).unwrap_or_else(|| "absent".into())
+                            item.get(key)
+                                .map(Value::to_string)
+                                .unwrap_or_else(|| "absent".into())
                         ))
                     })
             };
@@ -3772,7 +3874,6 @@ async fn delete_drawing(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
         }))
     }
 }
-
 
 /// What the memory tools need from the context: a source, optionally a
 /// writer, and whose memory it is.
@@ -3983,7 +4084,12 @@ async fn take_snapshot(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Age
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(entries)) => entries
             .iter()
-            .filter_map(|e| e.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+            .filter_map(|e| {
+                e.as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            })
             .collect(),
         Some(_) => {
             return Err(AgentError::InvalidToolArgs {
@@ -3996,10 +4102,15 @@ async fn take_snapshot(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Age
 
     let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
-    let price = candles.last().map(|c| c.close).ok_or_else(|| AgentError::ToolFailed {
-        tool: TOOL.into(),
-        reason: format!("no candles for {symbol} {timeframe}: a snapshot of nothing is not a snapshot"),
-    })?;
+    let price = candles
+        .last()
+        .map(|c| c.close)
+        .ok_or_else(|| AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason: format!(
+                "no candles for {symbol} {timeframe}: a snapshot of nothing is not a snapshot"
+            ),
+        })?;
     let structure = structure_digest(&candles, ctx.config.clone());
 
     // The drawings are frozen as the read tool reports them, ids included --
@@ -4091,8 +4202,14 @@ fn drawing_identity(drawing: &Value) -> String {
                 .map(|point| {
                     format!(
                         "{},{}",
-                        point.get("time_ms").and_then(Value::as_f64).unwrap_or_default(),
-                        point.get("price").and_then(Value::as_f64).unwrap_or_default()
+                        point
+                            .get("time_ms")
+                            .and_then(Value::as_f64)
+                            .unwrap_or_default(),
+                        point
+                            .get("price")
+                            .and_then(Value::as_f64)
+                            .unwrap_or_default()
                     )
                 })
                 .collect::<Vec<_>>()
@@ -4182,18 +4299,24 @@ async fn compare_snapshots(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
     } else {
         0.0
     };
-    let trend_a = a.structure.get("trend").and_then(Value::as_str).unwrap_or("?");
-    let trend_b = b.structure.get("trend").and_then(Value::as_str).unwrap_or("?");
+    let trend_a = a
+        .structure
+        .get("trend")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let trend_b = b
+        .structure
+        .get("trend")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
     let trend_changed = trend_a != trend_b;
 
     let highs_a = a.structure.get("swing_highs").and_then(Value::as_array);
     let highs_b = b.structure.get("swing_highs").and_then(Value::as_array);
-    let swing_high_moved = highs_a.and_then(|h| h.first())
-        != highs_b.and_then(|h| h.first());
+    let swing_high_moved = highs_a.and_then(|h| h.first()) != highs_b.and_then(|h| h.first());
     let lows_a = a.structure.get("swing_lows").and_then(Value::as_array);
     let lows_b = b.structure.get("swing_lows").and_then(Value::as_array);
-    let swing_low_moved = lows_a.and_then(|l| l.first())
-        != lows_b.and_then(|l| l.first());
+    let swing_low_moved = lows_a.and_then(|l| l.first()) != lows_b.and_then(|l| l.first());
 
     let drawings_a = a.drawings.as_array().cloned().unwrap_or_default();
     let drawings_b = b.drawings.as_array().cloned().unwrap_or_default();
@@ -4309,7 +4432,10 @@ fn top_nodes(histogram: &[VolumeNode], limit: usize) -> Vec<Value> {
 /// registry's declared labels when the host attached a `CapabilityView`. This
 /// replaced the ad-hoc `data_note` patch: "absorption is empty because no
 /// trades exist" is now a labelled section, not a footnote.
-fn render_state(state: &MarketState, view: Option<&crate::capability_view::CapabilityView>) -> Value {
+fn render_state(
+    state: &MarketState,
+    view: Option<&crate::capability_view::CapabilityView>,
+) -> Value {
     let provenance = match view {
         Some(view) => view.state_provenance(state),
         None => crate::capability_view::observed_provenance(state),
@@ -4367,13 +4493,21 @@ fn render_state(state: &MarketState, view: Option<&crate::capability_view::Capab
 
 #[cfg(test)]
 mod tests {
-#[test]
-fn the_concept_strategy_tools_are_in_the_base_set() {
-    let names = crate::tools::ToolRegistry::test_names();
-    for tool in ["list_concepts", "concept_signals", "compose_concept_strategy", "backtest_composition"] {
-        assert!(names.iter().any(|n| n == tool), "{tool} missing from the exposed set");
+    #[test]
+    fn the_concept_strategy_tools_are_in_the_base_set() {
+        let names = crate::tools::ToolRegistry::test_names();
+        for tool in [
+            "list_concepts",
+            "concept_signals",
+            "compose_concept_strategy",
+            "backtest_composition",
+        ] {
+            assert!(
+                names.iter().any(|n| n == tool),
+                "{tool} missing from the exposed set"
+            );
+        }
     }
-}
 
     use super::*;
     use crate::llm_client::{ContentBlock, Message, Role};
@@ -4692,7 +4826,10 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         for command in commands {
             assert_eq!(command["action"], "capture_chart");
             assert_eq!(command["symbol"], "BTCUSDT");
-            assert_eq!(command["marked"], true, "the shell photographs the marked chart");
+            assert_eq!(
+                command["marked"], true,
+                "the shell photographs the marked chart"
+            );
         }
         assert_eq!(
             out["frames"].as_array().expect("frames").len(),
@@ -4960,7 +5097,11 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         ));
         let fixture = Fixture::rising(60);
         let ctx = ToolContext::new(&fixture).with_capabilities(
-            crate::capability_view::CapabilityView::new(registry, Provider::Bybit, SymbolClass::Spot),
+            crate::capability_view::CapabilityView::new(
+                registry,
+                Provider::Bybit,
+                SymbolClass::Spot,
+            ),
         );
         let out = ToolRegistry::market_analysis()
             .execute(
@@ -5096,7 +5237,10 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         let ctx = ToolContext::new(&fixture);
         let out = ToolRegistry::market_analysis()
             .execute(
-                &call("get_candles", json!({"symbol": "BTCUSDT", "timeframe": "5m", "limit": 10})),
+                &call(
+                    "get_candles",
+                    json!({"symbol": "BTCUSDT", "timeframe": "5m", "limit": 10}),
+                ),
                 &ctx,
             )
             .await
@@ -5104,7 +5248,11 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         let candles = out["candles"].as_array().unwrap();
         assert_eq!(candles.len(), 10);
         for (i, candle) in candles.iter().enumerate() {
-            assert_eq!(candle["i"].as_u64().unwrap(), i as u64, "index of candle {i}");
+            assert_eq!(
+                candle["i"].as_u64().unwrap(),
+                i as u64,
+                "index of candle {i}"
+            );
             assert_eq!(
                 candle["time_ms"].as_i64().unwrap(),
                 candle["t"].as_i64().unwrap() / 1_000_000,
@@ -5476,7 +5624,10 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
             id: None,
             kind: "hline".into(),
             label: Some("the range low".into()),
-            points: vec![crate::user_drawings::AgentPoint::at(1_767_225_600_000.0, price)],
+            points: vec![crate::user_drawings::AgentPoint::at(
+                1_767_225_600_000.0,
+                price,
+            )],
         }
     }
 
@@ -6132,7 +6283,9 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         let readings = out["readings"].as_array().expect("a readings list");
         assert_eq!(readings.len(), 10, "the default limit");
         assert!(
-            readings.iter().all(|r| r["value"].is_f64() && r["time_ms"].is_i64()),
+            readings
+                .iter()
+                .all(|r| r["value"].is_f64() && r["time_ms"].is_i64()),
             "every reading carries its value and its anchor-ready time: {readings:?}"
         );
         // A strictly rising series pins RSI at 100.
@@ -6150,8 +6303,12 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
             )
             .await
             .unwrap();
-        let latest = out["latest"].as_object().expect("60 bars warm the default MACD up");
-        assert!(latest["line"].is_f64() && latest["signal"].is_f64() && latest["histogram"].is_f64());
+        let latest = out["latest"]
+            .as_object()
+            .expect("60 bars warm the default MACD up");
+        assert!(
+            latest["line"].is_f64() && latest["signal"].is_f64() && latest["histogram"].is_f64()
+        );
     }
 
     #[tokio::test]
@@ -6160,7 +6317,10 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         let ctx = ToolContext::new(&fixture);
         let out = registry()
             .execute(
-                &call("get_bollinger_bands", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &call(
+                    "get_bollinger_bands",
+                    json!({"symbol": "BTCUSDT", "timeframe": "5m"}),
+                ),
                 &ctx,
             )
             .await
@@ -6195,21 +6355,43 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         let ctx = ToolContext::new(&fixture);
         let out = registry()
             .execute(
-                &call("detect_zones", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &call(
+                    "detect_zones",
+                    json!({"symbol": "BTCUSDT", "timeframe": "5m"}),
+                ),
                 &ctx,
             )
             .await
             .unwrap();
         assert!(out["price"].as_f64().unwrap() > 0.0);
         for zone in out["sr_zones"].as_array().unwrap() {
-            for key in ["kind", "top", "bottom", "touches", "first_time_ms", "last_time_ms"] {
+            for key in [
+                "kind",
+                "top",
+                "bottom",
+                "touches",
+                "first_time_ms",
+                "last_time_ms",
+            ] {
                 assert!(zone.get(key).is_some(), "an sr zone lost `{key}`: {zone}");
             }
             assert!(zone["top"].as_f64().unwrap() >= zone["bottom"].as_f64().unwrap());
         }
         for block in out["order_blocks"].as_array().unwrap() {
-            for key in ["name", "direction", "top", "bottom", "from_ms", "to_ms", "mitigated", "fresh"] {
-                assert!(block.get(key).is_some(), "an order block lost `{key}`: {block}");
+            for key in [
+                "name",
+                "direction",
+                "top",
+                "bottom",
+                "from_ms",
+                "to_ms",
+                "mitigated",
+                "fresh",
+            ] {
+                assert!(
+                    block.get(key).is_some(),
+                    "an order block lost `{key}`: {block}"
+                );
             }
         }
     }
@@ -6222,14 +6404,20 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         let ctx = ToolContext::new(&fixture);
         let out = registry()
             .execute(
-                &call("open_chart", json!({"symbol": "ethusdt", "timeframe": "1h"})),
+                &call(
+                    "open_chart",
+                    json!({"symbol": "ethusdt", "timeframe": "1h"}),
+                ),
                 &ctx,
             )
             .await
             .unwrap();
         let command = &out["ui_command"];
         assert_eq!(command["action"], "open_chart");
-        assert_eq!(command["symbol"], "ETHUSDT", "symbols render as the venue spells them");
+        assert_eq!(
+            command["symbol"], "ETHUSDT",
+            "symbols render as the venue spells them"
+        );
         assert_eq!(command["timeframe"], "1h");
         assert!(out["note"].as_str().unwrap().contains("not confirmed"));
     }
@@ -6311,7 +6499,10 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         let ctx = ToolContext::new(&fixture);
         let out = registry()
             .execute(
-                &call("detect_pattern", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &call(
+                    "detect_pattern",
+                    json!({"symbol": "BTCUSDT", "timeframe": "5m"}),
+                ),
                 &ctx,
             )
             .await
@@ -6456,7 +6647,8 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
                 note: snapshot.note.clone(),
                 tags: snapshot.tags.clone(),
                 created_by: snapshot.created_by.clone(),
-                created_at: 1_700_000_000_000_000_000 + i64::try_from(n).unwrap() * 3_600_000_000_000,
+                created_at: 1_700_000_000_000_000_000
+                    + i64::try_from(n).unwrap() * 3_600_000_000_000,
             };
             self.rows.lock().expect("lock").push(row.clone());
             Ok(row)
@@ -6483,7 +6675,11 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
             limit: usize,
         ) -> Result<Vec<crate::snapshots::ChartSnapshot>, AgentError> {
             let rows = self.rows.lock().expect("lock");
-            let mut matched: Vec<_> = rows.iter().filter(|r| r.symbol == symbol).cloned().collect();
+            let mut matched: Vec<_> = rows
+                .iter()
+                .filter(|r| r.symbol == symbol)
+                .cloned()
+                .collect();
             matched.sort_by_key(|r| std::cmp::Reverse(r.created_at));
             matched.truncate(limit);
             Ok(matched)
@@ -6520,7 +6716,10 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         assert_eq!(out["note"], "the range as mapped");
         let stored = store.rows.lock().expect("lock");
         assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].created_by, "ai", "the agent's capture is marked as its own");
+        assert_eq!(
+            stored[0].created_by, "ai",
+            "the agent's capture is marked as its own"
+        );
         assert_eq!(stored[0].price, 129.5, "the last close of the fixture");
         assert_eq!(stored[0].drawings.as_array().expect("drawings").len(), 1);
         assert!(stored[0].structure.get("trend").is_some());
@@ -6532,7 +6731,10 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         let ctx = ToolContext::new(&fixture);
         let err = registry()
             .execute(
-                &call("take_snapshot", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &call(
+                    "take_snapshot",
+                    json!({"symbol": "BTCUSDT", "timeframe": "5m"}),
+                ),
                 &ctx,
             )
             .await
@@ -6570,7 +6772,13 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
     async fn compare_snapshots_reports_price_trend_and_drawing_changes() {
         let fixture = Fixture::rising(10);
         let store = SnapshotFixture::new();
-        store.seed("s1", 100.0, "Ranging", &["a", "b"], 1_700_000_000_000_000_000);
+        store.seed(
+            "s1",
+            100.0,
+            "Ranging",
+            &["a", "b"],
+            1_700_000_000_000_000_000,
+        );
         store.seed("s2", 102.0, "Up", &["b", "c"], 1_700_000_003_600_000_000);
         let ctx = ToolContext::new(&fixture).with_snapshots(&store, "user-1");
 

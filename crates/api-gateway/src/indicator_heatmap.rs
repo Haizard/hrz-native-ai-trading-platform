@@ -1,12 +1,12 @@
 //! Multi-timeframe family heatmap for the chart inspector.
 
-use axum::Json;
 use axum::extract::{Query, State};
+use axum::Json;
 use serde::Deserialize;
 
 use analytics_core::types::Timeframe;
 
-use crate::{AppState, error::ApiError};
+use crate::{error::ApiError, AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct HeatmapQuery {

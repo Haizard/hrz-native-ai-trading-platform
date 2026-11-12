@@ -94,8 +94,15 @@ pub struct PreparedImage {
 ///
 /// # Errors
 /// A human-readable reason, worded to reach the trader.
-pub fn prepare_image(name: &str, media_type: &str, data_base64: &str) -> Result<PreparedImage, String> {
-    if !matches!(media_type, "image/png" | "image/jpeg" | "image/webp" | "image/gif") {
+pub fn prepare_image(
+    name: &str,
+    media_type: &str,
+    data_base64: &str,
+) -> Result<PreparedImage, String> {
+    if !matches!(
+        media_type,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    ) {
         return Err(format!(
             "`{name}` is `{media_type}`, which the interview cannot show the model; \
              PNG, JPEG, WebP or GIF images work"
@@ -174,21 +181,29 @@ mod tests {
 
     #[test]
     fn a_text_file_arrives_verbatim() {
-        let prepared = prepare("notes.txt", &b64("liquidity sweeps happen at equal highs")).unwrap();
+        let prepared =
+            prepare("notes.txt", &b64("liquidity sweeps happen at equal highs")).unwrap();
         assert_eq!(prepared.name, "notes.txt");
         assert_eq!(prepared.text, "liquidity sweeps happen at equal highs");
     }
 
     #[test]
     fn markdown_is_accepted_as_text() {
-        let prepared = prepare("book.md", &b64("# Order Blocks\nA down candle before the impulse.")).unwrap();
+        let prepared = prepare(
+            "book.md",
+            &b64("# Order Blocks\nA down candle before the impulse."),
+        )
+        .unwrap();
         assert!(prepared.text.contains("Order Blocks"));
     }
 
     #[test]
     fn an_unknown_extension_is_refused_with_a_way_forward() {
         let err = prepare("book.epub", &b64("whatever")).unwrap_err();
-        assert!(err.contains("epub"), "the refusal names what arrived: {err}");
+        assert!(
+            err.contains("epub"),
+            "the refusal names what arrived: {err}"
+        );
         assert!(err.contains("PDF"), "the refusal names what works: {err}");
     }
 
@@ -227,7 +242,12 @@ mod tests {
 
     #[test]
     fn an_image_passes_through_with_its_media_type() {
-        let img = prepare_image("pattern.png", "image/png", &b64("not really a png but bytes")).unwrap();
+        let img = prepare_image(
+            "pattern.png",
+            "image/png",
+            &b64("not really a png but bytes"),
+        )
+        .unwrap();
         assert_eq!(img.media_type, "image/png");
         assert_eq!(img.name, "pattern.png");
     }

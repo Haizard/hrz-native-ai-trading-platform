@@ -30,8 +30,16 @@ pub fn structure_lean(candles: &[Candle]) -> Option<Side> {
 /// means "nearby" on the 1h means "far" on it).
 pub fn structure_lean_at(candles: &[Candle], lookback: usize) -> Option<Side> {
     let swings = find_swings(candles, lookback);
-    let highs: Vec<f64> = swings.iter().filter(|s| s.kind == SwingKind::High).map(|s| s.price).collect();
-    let lows: Vec<f64> = swings.iter().filter(|s| s.kind == SwingKind::Low).map(|s| s.price).collect();
+    let highs: Vec<f64> = swings
+        .iter()
+        .filter(|s| s.kind == SwingKind::High)
+        .map(|s| s.price)
+        .collect();
+    let lows: Vec<f64> = swings
+        .iter()
+        .filter(|s| s.kind == SwingKind::Low)
+        .map(|s| s.price)
+        .collect();
     if highs.len() >= 2 && lows.len() >= 2 {
         let (h1, h2) = (highs[highs.len() - 2], highs[highs.len() - 1]);
         let (l1, l2) = (lows[lows.len() - 2], lows[lows.len() - 1]);
@@ -167,7 +175,10 @@ pub fn detect_mtf_alignment(candles: &[Candle], symbol: &str) -> Vec<MarketEvent
 pub fn period_bias(candles: &[Candle], from_ns: i64, to_ns: i64) -> Option<Side> {
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
-    for k in candles.iter().filter(|k| k.open_time >= from_ns && k.open_time < to_ns) {
+    for k in candles
+        .iter()
+        .filter(|k| k.open_time >= from_ns && k.open_time < to_ns)
+    {
         lo = lo.min(k.low);
         hi = hi.max(k.high);
     }
@@ -263,7 +274,9 @@ mod tests {
     }
 
     fn series(bars: &[(i64, f64, f64, f64, f64)]) -> Vec<Candle> {
-        bars.iter().map(|(t, o, h, l, c)| k(*t, *o, *h, *l, *c)).collect()
+        bars.iter()
+            .map(|(t, o, h, l, c)| k(*t, *o, *h, *l, *c))
+            .collect()
     }
 
     const H: i64 = 3_600_000_000_000;
@@ -320,7 +333,11 @@ mod tests {
     #[test]
     fn the_classifier_reads_a_trend_and_chop_honestly() {
         let trend = uptrend(60, 0, 100.0);
-        assert_eq!(classify(&trend), Regime::TrendUp, "a rising structure with a strong ADX");
+        assert_eq!(
+            classify(&trend),
+            Regime::TrendUp,
+            "a rising structure with a strong ADX"
+        );
         let flat = chop(60, 0);
         assert_eq!(classify(&flat), Regime::Range, "chop is a range");
     }
@@ -335,7 +352,10 @@ mod tests {
         for end in 34..candles.len() {
             for e in detect_regime(&candles[..=end], "T") {
                 if e.kind == EventKind::RegimeShift && e.side == Some(Side::Buy) {
-                    assert_eq!(e.bar_time, candles[end].open_time, "stamped on the shift bar");
+                    assert_eq!(
+                        e.bar_time, candles[end].open_time,
+                        "stamped on the shift bar"
+                    );
                     shifts += 1;
                 }
             }
@@ -367,7 +387,13 @@ mod tests {
             let open = price;
             price *= 0.985;
             let wick = 0.05 + (i % 3) as f64 * 0.01;
-            bars.push(((50 + i) as i64 * H, open, open.max(price) + wick, open.min(price) - wick, price));
+            bars.push((
+                (50 + i) as i64 * H,
+                open,
+                open.max(price) + wick,
+                open.min(price) - wick,
+                price,
+            ));
         }
         candles.extend(series(&bars));
         // The resumption: the uptrend restarts.
@@ -377,7 +403,10 @@ mod tests {
         for end in 60..candles.len() {
             for e in detect_mtf_alignment(&candles[..=end], "T") {
                 if e.side == Some(Side::Buy) {
-                    assert_eq!(e.bar_time, candles[end].open_time, "stamped on the turn bar");
+                    assert_eq!(
+                        e.bar_time, candles[end].open_time,
+                        "stamped on the turn bar"
+                    );
                     fired = true;
                 }
             }
@@ -394,10 +423,19 @@ mod tests {
         let mut day1 = uptrend(48, 0, 100.0);
         let hi = day1.iter().map(|c| c.high).fold(f64::MIN, f64::max);
         let open2 = hi * 1.002;
-        day1.push(k(48 * H, open2, open2 * 1.002, open2 * 0.999, open2 * 1.001));
+        day1.push(k(
+            48 * H,
+            open2,
+            open2 * 1.002,
+            open2 * 0.999,
+            open2 * 1.001,
+        ));
         let events = detect_bias(&day1, "T");
         let bias = events.iter().find(|e| e.kind == EventKind::DailyBias);
-        assert!(bias.is_some(), "the roll above the range with rising structure is a buy bias");
+        assert!(
+            bias.is_some(),
+            "the roll above the range with rising structure is a buy bias"
+        );
         assert_eq!(bias.expect("checked").side, Some(Side::Buy));
         // An open INSIDE the range is no bias.
         let mut day1b = uptrend(48, 0, 100.0);
@@ -405,6 +443,8 @@ mod tests {
             + day1b.iter().map(|c| c.low).fold(f64::MAX, f64::min))
             / 2.0;
         day1b.push(k(48 * H, mid, mid * 1.002, mid * 0.998, mid * 1.001));
-        assert!(!detect_bias(&day1b, "T").iter().any(|e| e.kind == EventKind::DailyBias));
+        assert!(!detect_bias(&day1b, "T")
+            .iter()
+            .any(|e| e.kind == EventKind::DailyBias));
     }
 }

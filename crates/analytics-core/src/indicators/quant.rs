@@ -17,7 +17,11 @@ pub fn zscore(closes: &[f64], period: usize) -> Vec<Option<f64>> {
         let mean = window.iter().sum::<f64>() / period as f64;
         let var = window.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / period as f64;
         let sd = var.sqrt();
-        out[i] = Some(if sd > 0.0 { (closes[i] - mean) / sd } else { 0.0 });
+        out[i] = Some(if sd > 0.0 {
+            (closes[i] - mean) / sd
+        } else {
+            0.0
+        });
     }
     out
 }
@@ -159,7 +163,11 @@ pub fn shannon_entropy(closes: &[f64], window: usize, bins: usize) -> Vec<Option
 /// return is the spread's lag-1 autocorrelation of differences at the tail
 /// -- the honesty gate: a pair that does not mean-revert is two prices, not
 /// a spread, and the caller should show the gate beside the line.
-pub fn pair_spread(a: &[f64], b: &[f64], window: usize) -> (Vec<Option<f64>>, Vec<Option<f64>>, f64) {
+pub fn pair_spread(
+    a: &[f64],
+    b: &[f64],
+    window: usize,
+) -> (Vec<Option<f64>>, Vec<Option<f64>>, f64) {
     let n = a.len().min(b.len());
     let mut z_line = vec![None; n];
     let mut spread_line = vec![None; n];
@@ -184,11 +192,18 @@ pub fn pair_spread(a: &[f64], b: &[f64], window: usize) -> (Vec<Option<f64>>, Ve
         let ms = spread.iter().sum::<f64>() / window as f64;
         let sd = (spread.iter().map(|v| (v - ms).powi(2)).sum::<f64>() / window as f64).sqrt();
         spread_line[i] = Some(a[i] - beta * b[i]);
-        z_line[i] = Some(if sd > 0.0 { ((a[i] - beta * b[i]) - ms) / sd } else { 0.0 });
+        z_line[i] = Some(if sd > 0.0 {
+            ((a[i] - beta * b[i]) - ms) / sd
+        } else {
+            0.0
+        });
     }
     // The gate: autocorrelation of the spread's first difference at the tail.
     let tail = &spread_line[n.saturating_sub(window).max(window - 1)..];
-    let diffs: Vec<f64> = tail.windows(2).filter_map(|w| w[1].zip(w[0]).map(|(x, y)| x - y)).collect();
+    let diffs: Vec<f64> = tail
+        .windows(2)
+        .filter_map(|w| w[1].zip(w[0]).map(|(x, y)| x - y))
+        .collect();
     let gate = if diffs.len() > 10 {
         let m = diffs.iter().sum::<f64>() / diffs.len() as f64;
         let mut num = 0.0;
@@ -199,7 +214,11 @@ pub fn pair_spread(a: &[f64], b: &[f64], window: usize) -> (Vec<Option<f64>>, Ve
         for d in &diffs {
             den += (d - m).powi(2);
         }
-        if den > 0.0 { num / den } else { 0.0 }
+        if den > 0.0 {
+            num / den
+        } else {
+            0.0
+        }
     } else {
         0.0
     };
@@ -218,7 +237,9 @@ mod tests {
         let mut price = 50.0;
         let mut state: u64 = 99;
         for i in 0..120 {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let step = ((state >> 33) % 100) as f64 / 10000.0 - 0.005;
             price *= 1.0 + step;
             b.push(price);
@@ -237,12 +258,17 @@ mod tests {
         let mut c = Vec::new();
         let mut price2 = 80.0;
         for _ in 0..120 {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             price2 *= 1.0 + (((state >> 33) % 100) as f64 / 10000.0 - 0.005);
             c.push(price2);
         }
         let (_, _, gate2) = pair_spread(&a, &c, 60);
-        assert!(gate2 > gate, "independent walks read worse: {gate2} vs {gate}");
+        assert!(
+            gate2 > gate,
+            "independent walks read worse: {gate2} vs {gate}"
+        );
     }
 
     #[test]
@@ -252,7 +278,11 @@ mod tests {
         let mut closes = vec![10.0; 30];
         closes.push(12.0);
         let v = zscore(&closes, 20);
-        assert!(v[30].unwrap() > 2.0, "the outlier reads several sigmas: {}", v[30].unwrap());
+        assert!(
+            v[30].unwrap() > 2.0,
+            "the outlier reads several sigmas: {}",
+            v[30].unwrap()
+        );
         // Flat is zero, not NaN.
         let flat = zscore(&vec![10.0; 25], 20);
         assert_eq!(flat[24], Some(0.0));
@@ -268,12 +298,21 @@ mod tests {
         }
         let v = kalman(&closes, 0.01, 0.5);
         let last = v[39].unwrap();
-        assert!(last > 105.0 && last < 110.5, "settled near the new level: {last}");
+        assert!(
+            last > 105.0 && last < 110.5,
+            "settled near the new level: {last}"
+        );
         // The filtered line is smoother than the raw: its bar-to-bar swing
         // is smaller than the raw series'.
         let raw_swing: f64 = closes.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>();
-        let kal_swing: f64 = v.windows(2).map(|w| (w[1].unwrap() - w[0].unwrap()).abs()).sum::<f64>();
-        assert!(kal_swing < raw_swing, "the filter smooths: {kal_swing} < {raw_swing}");
+        let kal_swing: f64 = v
+            .windows(2)
+            .map(|w| (w[1].unwrap() - w[0].unwrap()).abs())
+            .sum::<f64>();
+        assert!(
+            kal_swing < raw_swing,
+            "the filter smooths: {kal_swing} < {raw_swing}"
+        );
     }
 
     #[test]
@@ -293,7 +332,9 @@ mod tests {
         // returns SHRINK with price, and a systematic decline in returns is
         // itself a change -- the first calm fixture was the trap.)
         let calm: Vec<f64> = (0..50).map(|i| 100.0 * 1.0005f64.powi(i)).collect();
-        assert!(cusum_changepoint(&calm, 40, 2.5).iter().all(|v| v.is_none()));
+        assert!(cusum_changepoint(&calm, 40, 2.5)
+            .iter()
+            .all(|v| v.is_none()));
     }
 
     #[test]

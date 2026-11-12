@@ -129,12 +129,7 @@ pub(super) fn corners(geometry: Geometry<'_>) -> Option<(f64, f64, f64, f64)> {
     }
     let (x1, y1) = (geometry.x(0), geometry.y(0));
     let (x2, y2) = (geometry.x(1), geometry.y(1));
-    Some((
-        x1.min(x2),
-        y1.min(y2),
-        (x2 - x1).abs(),
-        (y2 - y1).abs(),
-    ))
+    Some((x1.min(x2), y1.min(y2), (x2 - x1).abs(), (y2 - y1).abs()))
 }
 
 /// A rotated rectangle: three clicks define one edge (points 0→1) and the

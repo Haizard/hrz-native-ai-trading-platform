@@ -403,7 +403,9 @@ pub async fn remove(
             .map(|skill| skill.name)
     });
     let Some(name) = target_name else {
-        return Err(ApiError::not_found(format!("no skill of yours with id `{id}`")));
+        return Err(ApiError::not_found(format!(
+            "no skill of yours with id `{id}`"
+        )));
     };
 
     for row in rows.iter().filter(|row| row.name == name) {

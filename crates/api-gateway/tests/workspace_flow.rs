@@ -7,7 +7,9 @@ use serde_json::json;
 
 #[tokio::test]
 async fn a_workspace_round_trips_and_is_owner_scoped() {
-    let Some(h) = common::Harness::new().await else { return };
+    let Some(h) = common::Harness::new().await else {
+        return;
+    };
     let alice = h.register().await;
     let bob = h.register().await;
 
@@ -25,7 +27,9 @@ async fn a_workspace_round_trips_and_is_owner_scoped() {
             { "symbol": "ETHUSDT", "timeframe": "15m", "mode": "line", "limit": "1000", "indicator": null, "scripts": [] }
         ]
     });
-    let (status, body) = h.put("/workspace", json!({ "state": state }), Some(&alice.token)).await;
+    let (status, body) = h
+        .put("/workspace", json!({ "state": state }), Some(&alice.token))
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["saved"], true);
 
@@ -33,7 +37,10 @@ async fn a_workspace_round_trips_and_is_owner_scoped() {
     assert_eq!(read["state"], state);
 
     let other = h.ok("/workspace", Some(&bob.token)).await;
-    assert!(other["state"].is_null(), "another user must not see Alice's state");
+    assert!(
+        other["state"].is_null(),
+        "another user must not see Alice's state"
+    );
 
     alice.cleanup(&h.database).await;
     bob.cleanup(&h.database).await;
@@ -41,7 +48,9 @@ async fn a_workspace_round_trips_and_is_owner_scoped() {
 
 #[tokio::test]
 async fn an_invalid_state_is_refused() {
-    let Some(h) = common::Harness::new().await else { return };
+    let Some(h) = common::Harness::new().await else {
+        return;
+    };
     let user = h.register().await;
 
     let too_many_panes = json!({ "version": 1, "panes": vec![json!({}); 101] });

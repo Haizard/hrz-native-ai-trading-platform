@@ -185,7 +185,9 @@ pub fn cross(geometry: Geometry<'_>) -> Vec<DrawingPart> {
 pub fn info(geometry: Geometry<'_>) -> Vec<DrawingPart> {
     let (x1, y1) = (geometry.x(0), geometry.y(0));
     let (x2, y2) = (geometry.x(1), geometry.y(1));
-    let bars = geometry.bars_between(geometry.points[0], geometry.points[1]).len();
+    let bars = geometry
+        .bars_between(geometry.points[0], geometry.points[1])
+        .len();
     vec![
         DrawingPart::Segment {
             x1,
@@ -324,7 +326,11 @@ pub fn mark(geometry: Geometry<'_>, up: bool) -> Vec<DrawingPart> {
     let (x, y) = (geometry.x(0), geometry.y(0));
     let body = if up { MARK_HEIGHT } else { -MARK_HEIGHT };
     vec![DrawingPart::Polygon {
-        points: vec![(x, y), (x - HEAD_WIDTH, y + body), (x + HEAD_WIDTH, y + body)],
+        points: vec![
+            (x, y),
+            (x - HEAD_WIDTH, y + body),
+            (x + HEAD_WIDTH, y + body),
+        ],
         filled: true,
     }]
 }
@@ -348,8 +354,14 @@ fn head(x1: f64, y1: f64, x2: f64, y2: f64) -> Option<DrawingPart> {
     Some(DrawingPart::Polygon {
         points: vec![
             (x2, y2),
-            (x2 - ux * back - uy * HEAD_WIDTH, y2 - uy * back + ux * HEAD_WIDTH),
-            (x2 - ux * back + uy * HEAD_WIDTH, y2 - uy * back - ux * HEAD_WIDTH),
+            (
+                x2 - ux * back - uy * HEAD_WIDTH,
+                y2 - uy * back + ux * HEAD_WIDTH,
+            ),
+            (
+                x2 - ux * back + uy * HEAD_WIDTH,
+                y2 - uy * back - ux * HEAD_WIDTH,
+            ),
         ],
         filled: true,
     })
@@ -362,19 +374,11 @@ fn forward(geometry: Geometry<'_>, x: f64, y: f64, dx: f64, dy: f64) -> (f64, f6
     let plot = geometry.frame.plot;
     let mut k = f64::INFINITY;
     if dx != 0.0 {
-        let edge = if dx > 0.0 {
-            plot.x + plot.w
-        } else {
-            plot.x
-        };
+        let edge = if dx > 0.0 { plot.x + plot.w } else { plot.x };
         k = k.min((edge - x) / dx);
     }
     if dy != 0.0 {
-        let edge = if dy > 0.0 {
-            plot.y + plot.h
-        } else {
-            plot.y
-        };
+        let edge = if dy > 0.0 { plot.y + plot.h } else { plot.y };
         k = k.min((edge - y) / dy);
     }
     if !k.is_finite() {
@@ -417,8 +421,8 @@ fn both(geometry: Geometry<'_>, x: f64, y: f64, dx: f64, dy: f64) -> ((f64, f64)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drawing::DrawingOptions;
     use crate::draw::Stage;
+    use crate::drawing::DrawingOptions;
     use DrawingPart::{Polygon, Segment, Text};
 
     fn segments(parts: &[DrawingPart]) -> Vec<(f64, f64, f64, f64)> {
@@ -484,9 +488,7 @@ mod tests {
             extend: Some(Extend::Left),
             ..DrawingOptions::default()
         };
-        let (x1, _, x2, _) = segments(&horizontal_ray(
-            stage.geometry(&[at], &options),
-        ))[0];
+        let (x1, _, x2, _) = segments(&horizontal_ray(stage.geometry(&[at], &options)))[0];
         assert_eq!((x1, x2), (0.0, stage.frame.x_at_ms(at.0)));
     }
 
@@ -532,32 +534,36 @@ mod tests {
         // Counted off the traded series, inclusive of both ends: 11 bars is the
         // answer a trader reads off the axis, and a pixel estimate is not.
         let words = texts(&parts);
-        assert!(words.contains(&"110.00".to_owned()) && words.contains(&"120.00".to_owned()), "{words:?}");
+        assert!(
+            words.contains(&"110.00".to_owned()) && words.contains(&"120.00".to_owned()),
+            "{words:?}"
+        );
         assert!(words.contains(&"11 bars".to_owned()), "{words:?}");
     }
 
     #[test]
     fn an_info_line_counts_the_bars_whichever_way_it_was_dragged() {
         let stage = Stage::ramp(100, 100.0, 1.0);
-        let forward = info(
-            stage.geometry(
-                &[(stage.ms(10), 110.0), (stage.ms(20), 120.0)],
-                &DrawingOptions::default(),
-            ),
+        let forward = info(stage.geometry(
+            &[(stage.ms(10), 110.0), (stage.ms(20), 120.0)],
+            &DrawingOptions::default(),
+        ));
+        let back = info(stage.geometry(
+            &[(stage.ms(20), 120.0), (stage.ms(10), 110.0)],
+            &DrawingOptions::default(),
+        ));
+        let count =
+            |parts: &[DrawingPart]| texts(parts).into_iter().find(|text| text.ends_with("bars"));
+        assert_eq!(
+            count(&forward).as_deref(),
+            Some("11 bars"),
+            "a range of time has no direction"
         );
-        let back = info(
-            stage.geometry(
-                &[(stage.ms(20), 120.0), (stage.ms(10), 110.0)],
-                &DrawingOptions::default(),
-            ),
+        assert_eq!(
+            count(&back).as_deref(),
+            Some("11 bars"),
+            "a range of time has no direction"
         );
-        let count = |parts: &[DrawingPart]| {
-            texts(parts)
-                .into_iter()
-                .find(|text| text.ends_with("bars"))
-        };
-        assert_eq!(count(&forward).as_deref(), Some("11 bars"), "a range of time has no direction");
-        assert_eq!(count(&back).as_deref(), Some("11 bars"), "a range of time has no direction");
     }
 
     #[test]
@@ -566,7 +572,18 @@ mod tests {
         // one price a bar and the rest sit far above. A fit over the whole
         // series would slope elsewhere and read an R below 1, so this asserts
         // both that the range is the anchors' and that the line is the fit.
-        let stage = Stage::over(51, |i| if (10..=30).contains(&i) { 100.0 + i as f64 } else { 900.0 }, 100.0, 900.0);
+        let stage = Stage::over(
+            51,
+            |i| {
+                if (10..=30).contains(&i) {
+                    100.0 + i as f64
+                } else {
+                    900.0
+                }
+            },
+            100.0,
+            900.0,
+        );
         let points = [(stage.ms(10), 500.0), (stage.ms(30), 500.0)];
         let parts = regression(stage.geometry(&points, &DrawingOptions::default()));
 
@@ -621,7 +638,10 @@ mod tests {
         assert_eq!(segments(&parts).len(), 1, "{parts:?}");
         let head = &polygons(&parts)[0];
         let tip = (stage.frame.x_at_ms(to.0), stage.frame.y_at(to.1));
-        assert_eq!(head[0], tip, "the head points somewhere the shaft does not end");
+        assert_eq!(
+            head[0], tip,
+            "the head points somewhere the shaft does not end"
+        );
         assert_eq!(head.len(), 3, "a triangular head: {head:?}");
     }
 
@@ -632,17 +652,28 @@ mod tests {
         // would come out two different sizes. The mark is a pointer, not a shape.
         let narrow = Stage::ramp(100, 100.0, 1.0);
         let wide = Stage::ramp(100, 100.0, 100.0);
-        let at = |stage: &Stage| (stage.ms(50), stage.frame.price_min + (stage.frame.price_max - stage.frame.price_min) / 2.0);
+        let at = |stage: &Stage| {
+            (
+                stage.ms(50),
+                stage.frame.price_min + (stage.frame.price_max - stage.frame.price_min) / 2.0,
+            )
+        };
 
         for up in [true, false] {
-            let small = mark(narrow.geometry(&[at(&narrow)], &DrawingOptions::default()), up);
+            let small = mark(
+                narrow.geometry(&[at(&narrow)], &DrawingOptions::default()),
+                up,
+            );
             let large = mark(wide.geometry(&[at(&wide)], &DrawingOptions::default()), up);
             assert_eq!(
                 polygons(&small),
                 polygons(&large),
                 "a mark that grows with the price scale (up: {up})"
             );
-            let (x, y) = (narrow.frame.x_at_ms(at(&narrow).0), narrow.frame.y_at(at(&narrow).1));
+            let (x, y) = (
+                narrow.frame.x_at_ms(at(&narrow).0),
+                narrow.frame.y_at(at(&narrow).1),
+            );
             let body = &polygons(&small)[0];
             assert_eq!(body[0], (x, y), "the tip is not the anchor");
             let height = if up { y + MARK_HEIGHT } else { y - MARK_HEIGHT };

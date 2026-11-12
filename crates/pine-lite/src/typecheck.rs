@@ -159,7 +159,9 @@ pub fn collect_data_names(script: &Script) -> Vec<String> {
             match item {
                 Item::Expr { expr, .. } => walk(expr, names),
                 Item::Assign { expr, .. } => walk(expr, names),
-                Item::Block { exprs, body, els, .. } => {
+                Item::Block {
+                    exprs, body, els, ..
+                } => {
                     for e in exprs {
                         walk(e, names);
                     }
@@ -267,7 +269,8 @@ impl Cx {
                         "a script may request at most {MAX_SERIES_POOL} symbol/timeframe pairs; got {}",
                         self.series_pool.len()
                     ),
-                );            }
+                );
+            }
         }
     }
 
@@ -333,8 +336,7 @@ impl Cx {
                         match builtin_arity(callee) {
                             Some((min, max)) => {
                                 let total = args.len();
-                                let positional =
-                                    args.iter().filter(|a| a.name.is_none()).count();
+                                let positional = args.iter().filter(|a| a.name.is_none()).count();
                                 if total > max || positional > max {
                                     self.err(
                                         *span,
@@ -394,23 +396,51 @@ impl Cx {
                     }
                     let known = matches!(
                         word.as_str(),
-                        "float" | "int" | "bool" | "color" | "line" | "label" | "box" | "table"
-                            | "linefill" | "polyline" | "array"
+                        "float"
+                            | "int"
+                            | "bool"
+                            | "color"
+                            | "line"
+                            | "label"
+                            | "box"
+                            | "table"
+                            | "linefill"
+                            | "polyline"
+                            | "array"
                     );
                     if !known {
-                        self.err(*span, format!("`{word}` is not a field type pine-lite knows"));
+                        self.err(
+                            *span,
+                            format!("`{word}` is not a field type pine-lite knows"),
+                        );
                     }
                 }
                 self.type_fields.insert(name.clone(), fields.clone());
             }
-            Item::Assign { span, name, mode, expr, decl_type, .. } => {
+            Item::Assign {
+                span,
+                name,
+                mode,
+                expr,
+                decl_type,
+                ..
+            } => {
                 // An explicit type word must be known, and its right-hand
                 // side must have the corresponding value kind.
                 if let Some(word) = decl_type {
                     let known = matches!(
                         word.as_str(),
-                        "float" | "int" | "bool" | "color" | "string" | "line" | "label" | "box"
-                            | "table" | "linefill" | "polyline"
+                        "float"
+                            | "int"
+                            | "bool"
+                            | "color"
+                            | "string"
+                            | "line"
+                            | "label"
+                            | "box"
+                            | "table"
+                            | "linefill"
+                            | "polyline"
                     ) || self.type_fields.contains_key(word);
                     if !known {
                         self.err(*span, format!(
@@ -554,17 +584,30 @@ impl Cx {
                     self.err(*span, format!("`{name}` is declared twice with `var`"));
                 }
             }
-            Item::Block { span, kind, exprs, loop_var, body, els } => {
+            Item::Block {
+                span,
+                kind,
+                exprs,
+                loop_var,
+                body,
+                els,
+            } => {
                 let expr_types: Vec<_> = exprs.iter().map(|expr| self.expr(expr)).collect();
                 match kind {
                     BlockKind::If | BlockKind::While => {
-                        if let (Some(condition), Some(condition_ty)) = (exprs.first(), expr_types.first()) {
+                        if let (Some(condition), Some(condition_ty)) =
+                            (exprs.first(), expr_types.first())
+                        {
                             if !matches!(condition_ty, Ty::Bool | Ty::Na) {
                                 self.err(
                                     condition.span,
                                     format!(
                                         "{} condition must be bool, got {condition_ty:?}",
-                                        if *kind == BlockKind::If { "if" } else { "while" }
+                                        if *kind == BlockKind::If {
+                                            "if"
+                                        } else {
+                                            "while"
+                                        }
                                     ),
                                 );
                             }
@@ -602,7 +645,14 @@ impl Cx {
                 self.stmt_depth -= 1;
                 self.depth = self.depth.saturating_sub(1);
             }
-            Item::FuncDef { span, name, params, defaults, body, method_of } => {
+            Item::FuncDef {
+                span,
+                name,
+                params,
+                defaults,
+                body,
+                method_of,
+            } => {
                 let outer_var_types = self.out.var_types.clone();
                 let outer_variables = self.out.variables.clone();
                 let outer_udt_types = self.var_udt_types.clone();
@@ -621,8 +671,15 @@ impl Cx {
                     if let Some(recv) = params.first() {
                         self.var_udt_types.insert(recv.clone(), type_name.clone());
                     }
-                    if !self.methods.insert((type_name.clone(), name.clone()), params.clone()).is_none() {
-                        self.err(*span, format!("method `{name}` is defined twice on type `{type_name}`"));
+                    if !self
+                        .methods
+                        .insert((type_name.clone(), name.clone()), params.clone())
+                        .is_none()
+                    {
+                        self.err(
+                            *span,
+                            format!("method `{name}` is defined twice on type `{type_name}`"),
+                        );
                     }
                 }
                 if self.out.functions.contains_key(name) {
@@ -644,9 +701,13 @@ impl Cx {
                         Some(_) => seen_default = true,
                     }
                 }
-                self.out
-                    .functions
-                    .insert(name.clone(), FuncSig { params: params.clone(), defaults: defaults.clone() });
+                self.out.functions.insert(
+                    name.clone(),
+                    FuncSig {
+                        params: params.clone(),
+                        defaults: defaults.clone(),
+                    },
+                );
                 // Parameters are in scope inside the body; bind them as
                 // numbers so a recursive or self-referencing body checks.
                 let mut function_types = HashMap::new();
@@ -694,8 +755,11 @@ impl Cx {
                     self.expr(expr);
                 }
                 if let ExprKind::Call { callee, .. } = &expr.kind {
-                    if callee.starts_with("plot") || callee == "hline" || callee == "fill"
-                        || callee == "bgcolor" || callee == "barcolor"
+                    if callee.starts_with("plot")
+                        || callee == "hline"
+                        || callee == "fill"
+                        || callee == "bgcolor"
+                        || callee == "barcolor"
                     {
                         self.out.plots.push(*span);
                     }
@@ -705,11 +769,25 @@ impl Cx {
     }
 
     fn record_input(&mut self, name: &str, kind: &str, args: &[Arg], span: Span) {
-        let known = ["int", "float", "bool", "string", "color", "source", "timeframe", "time", "price", "symbol"];
+        let known = [
+            "int",
+            "float",
+            "bool",
+            "string",
+            "color",
+            "source",
+            "timeframe",
+            "time",
+            "price",
+            "symbol",
+        ];
         if !known.contains(&kind) {
             self.err(
                 span,
-                format!("`input.{kind}` is not an input kind; known: {}", known.join(", ")),
+                format!(
+                    "`input.{kind}` is not an input kind; known: {}",
+                    known.join(", ")
+                ),
             );
         }
         let defval = args.iter().find_map(|a| {
@@ -766,7 +844,10 @@ impl Cx {
                 self.expr(offset);
                 match inner {
                     Ty::Color => {
-                        self.err(expr.span, "history indexing is for numeric, bool and string series");
+                        self.err(
+                            expr.span,
+                            "history indexing is for numeric, bool and string series",
+                        );
                         Ty::Float
                     }
                     Ty::Bool => Ty::Bool,
@@ -905,11 +986,7 @@ impl Cx {
     }
 
     fn ident(&mut self, span: Span, name: &str) -> Ty {
-        if self.in_security_expr > 0
-            && self
-                .security_outer
-                .iter()
-                .any(|outer| outer.contains(name))
+        if self.in_security_expr > 0 && self.security_outer.iter().any(|outer| outer.contains(name))
         {
             self.err(
                 span,
@@ -965,7 +1042,10 @@ impl Cx {
             return Ty::Float;
         }
         if self.out.functions.contains_key(name) {
-            self.err(span, format!("`{name}` is a function; call it or rename the variable"));
+            self.err(
+                span,
+                format!("`{name}` is a function; call it or rename the variable"),
+            );
             return Ty::Float;
         }
         self.unknown(span, name)
@@ -977,32 +1057,48 @@ impl Cx {
         }
         match path {
             "bar_index" | "last_bar_index" | "time" | "time_close" | "open" | "high" | "low"
-            | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "hour" | "minute"
-            | "dayofweek" | "year" | "month" | "dayofmonth" | "syminfo.mintick" => Ty::Float,
+            | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "hour" | "minute" | "dayofweek"
+            | "year" | "month" | "dayofmonth" | "syminfo.mintick" => Ty::Float,
             // The line-extension constants (`extend=extend.right` on a
             // line) are the only dotted string constants.
             "extend.none" | "extend.right" | "extend.left" | "extend.both" => Ty::String,
             "math.pi" => Ty::Float,
             // The table-position constants (`table.new(position.top_right,
             // ...)`) are dotted string constants too.
-            "position.top_right" | "position.top_left" | "position.top_center"
-            | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
-            | "position.middle_right" | "position.middle_left" | "position.middle_center" => Ty::String,
+            "position.top_right"
+            | "position.top_left"
+            | "position.top_center"
+            | "position.bottom_right"
+            | "position.bottom_left"
+            | "position.bottom_center"
+            | "position.middle_right"
+            | "position.middle_left"
+            | "position.middle_center" => Ty::String,
             "syminfo.pointvalue" => Ty::Float,
             // The barmerge constants are dotted string constants too.
-            "barmerge.gaps_on" | "barmerge.gaps_off" | "barmerge.lookahead_on"
+            "barmerge.gaps_on"
+            | "barmerge.gaps_off"
+            | "barmerge.lookahead_on"
             | "barmerge.lookahead_off" => Ty::String,
             "size.auto" | "size.tiny" | "size.small" | "size.normal" | "size.large"
             | "size.huge" => Ty::String,
-            "strategy.direction.long" | "strategy.direction.short" | "strategy.direction.all"
+            "strategy.direction.long"
+            | "strategy.direction.short"
+            | "strategy.direction.all"
             | "strategy.direction.none" => Ty::String,
             "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
                 Ty::Bool
             }
             "syminfo.ticker" => Ty::String,
-            "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
-            | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades"
-            | "strategy.netprofit" | "strategy.grossprofit" | "strategy.grossloss"
+            "strategy.position_size"
+            | "strategy.position_avg_price"
+            | "strategy.equity"
+            | "strategy.openprofit"
+            | "strategy.closedtrades"
+            | "strategy.wintrades"
+            | "strategy.netprofit"
+            | "strategy.grossprofit"
+            | "strategy.grossloss"
             | "strategy.max_drawdown" => Ty::Float,
             _ => self.unknown(span, path),
         }
@@ -1010,11 +1106,28 @@ impl Cx {
 
     fn call(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
         const STMT_ONLY: &[&str] = &[
-            "plot", "plotshape", "plotchar", "plotarrow", "plotcandle", "plotbar", "hline", "fill", "bgcolor",
-            "barcolor", "fib.new", "table.cell", "alert", "strategy.entry", "strategy.exit",
-            "strategy.risk.max_position_size", "strategy.risk.max_intraday_loss",
-            "strategy.risk.max_drawdown", "strategy.risk.allow_entry_in",
-            "strategy.close", "strategy.close_all", "strategy.cancel",
+            "plot",
+            "plotshape",
+            "plotchar",
+            "plotarrow",
+            "plotcandle",
+            "plotbar",
+            "hline",
+            "fill",
+            "bgcolor",
+            "barcolor",
+            "fib.new",
+            "table.cell",
+            "alert",
+            "strategy.entry",
+            "strategy.exit",
+            "strategy.risk.max_position_size",
+            "strategy.risk.max_intraday_loss",
+            "strategy.risk.max_drawdown",
+            "strategy.risk.allow_entry_in",
+            "strategy.close",
+            "strategy.close_all",
+            "strategy.cancel",
         ];
         if !self.stmt_call && STMT_ONLY.contains(&callee) {
             self.err(
@@ -1036,7 +1149,11 @@ impl Cx {
         // receiver is not an argument; the rest bind by the signature.
         if let Some((base, mname)) = callee.split_once('.') {
             if let Some(type_name) = self.var_udt_types.get(base).cloned() {
-                if let Some(sig) = self.methods.get(&(type_name.clone(), mname.to_string())).cloned() {
+                if let Some(sig) = self
+                    .methods
+                    .get(&(type_name.clone(), mname.to_string()))
+                    .cloned()
+                {
                     let positional = args.iter().filter(|a| a.name.is_none()).count();
                     let want = sig.len().saturating_sub(1);
                     if positional != want {
@@ -1184,7 +1301,10 @@ impl Cx {
                     }
                     (Some("lookahead"), crate::parse::ExprKind::Ident(v))
                     | (Some("lookahead"), crate::parse::ExprKind::Member { path: v }) => {
-                        matches!(v.as_str(), "barmerge.lookahead_on" | "barmerge.lookahead_off")
+                        matches!(
+                            v.as_str(),
+                            "barmerge.lookahead_on" | "barmerge.lookahead_off"
+                        )
                     }
                     _ => false,
                 };
@@ -1306,9 +1426,7 @@ impl Cx {
         if let Some(n) = multi_only_count(callee) {
             self.err(
                 span,
-                format!(
-                    "`{callee}` returns {n} values; write them as `a, b, c = {callee}(...)`"
-                ),
+                format!("`{callee}` returns {n} values; write them as `a, b, c = {callee}(...)`"),
             );
             for a in args {
                 self.expr(&a.value);
@@ -1337,7 +1455,12 @@ impl Cx {
         let (min, max): (usize, usize) = match builtin_arity(callee) {
             Some(arity) => arity,
             None if self.out.functions.contains_key(callee) => {
-                let sig = self.out.functions.get(callee).expect("checked above").clone();
+                let sig = self
+                    .out
+                    .functions
+                    .get(callee)
+                    .expect("checked above")
+                    .clone();
                 let positional = args.iter().filter(|a| a.name.is_none()).count();
                 // Minimum arity: required parameters only. A default fills
                 // every omitted trailing slot (`f(a, b = 2)` accepts 1 or 2
@@ -1351,9 +1474,7 @@ impl Cx {
                     };
                     self.err(
                         span,
-                        format!(
-                            "`{callee}` takes {range} argument(s), got {positional}"
-                        ),
+                        format!("`{callee}` takes {range} argument(s), got {positional}"),
                     );
                 }
                 for a in args {
@@ -1414,9 +1535,7 @@ impl Cx {
         if let Some(kind) = callee.strip_prefix("input.") {
             self.check_input_parameters(kind, args, &arg_types);
         }
-        if let Some(spec) = crate::builtins::lookup(callee)
-            .filter(|spec| spec.metadata_complete)
-        {
+        if let Some(spec) = crate::builtins::lookup(callee).filter(|spec| spec.metadata_complete) {
             self.check_builtin_parameters(callee, args, &arg_types, spec.parameters);
         }
         // Inputs are whatever their kind says; everything else numeric.
@@ -1432,7 +1551,9 @@ impl Cx {
             Some(crate::builtins::BuiltinReturn::Bool) => Ty::Bool,
             Some(crate::builtins::BuiltinReturn::String) => Ty::String,
             Some(crate::builtins::BuiltinReturn::Color) => Ty::Color,
-            Some(crate::builtins::BuiltinReturn::Number | crate::builtins::BuiltinReturn::InputKind)
+            Some(
+                crate::builtins::BuiltinReturn::Number | crate::builtins::BuiltinReturn::InputKind,
+            )
             | None => Ty::Float,
         }
     }
@@ -1448,7 +1569,10 @@ impl Cx {
         let mut used = std::collections::HashSet::new();
         for (argument, ty) in args.iter().zip(arg_types) {
             let parameter_index = if let Some(name) = argument.name.as_deref() {
-                match parameters.iter().position(|parameter| parameter.name == name) {
+                match parameters
+                    .iter()
+                    .position(|parameter| parameter.name == name)
+                {
                     Some(index) => Some(index),
                     None => {
                         self.err(
@@ -1554,27 +1678,71 @@ impl Cx {
     fn builtins_contains(&self, name: &str) -> bool {
         matches!(
             name,
-            "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "bar_index"
-                | "last_bar_index" | "time" | "time_close" | "hour" | "minute" | "dayofweek"
-                | "year" | "month" | "dayofmonth" | "syminfo.mintick" | "syminfo.ticker"
-                | "extend.none" | "extend.right" | "extend.left" | "extend.both"
-                | "color.new" | "color.rgb" | "color.from_gradient"
+            "open"
+                | "high"
+                | "low"
+                | "close"
+                | "volume"
+                | "hl2"
+                | "hlc3"
+                | "ohlc4"
+                | "bar_index"
+                | "last_bar_index"
+                | "time"
+                | "time_close"
+                | "hour"
+                | "minute"
+                | "dayofweek"
+                | "year"
+                | "month"
+                | "dayofmonth"
+                | "syminfo.mintick"
+                | "syminfo.ticker"
+                | "extend.none"
+                | "extend.right"
+                | "extend.left"
+                | "extend.both"
+                | "color.new"
+                | "color.rgb"
+                | "color.from_gradient"
                 | "math.pi"
-                | "barstate.isnew" | "barstate.isfirst" | "barstate.islast"
-                | "timeframe.period" | "timeframe.multiplier" | "timeframe.isintraday"
-                | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm"
+                | "barstate.isnew"
+                | "barstate.isfirst"
+                | "barstate.islast"
+                | "timeframe.period"
+                | "timeframe.multiplier"
+                | "timeframe.isintraday"
+                | "timeframe.isdaily"
+                | "timeframe.isweekly"
+                | "timeframe.isdwm"
                 | "syminfo.pointvalue"
-                | "alert.freq_all" | "alert.freq_once_per" | "alert.freq_once_per_bar"
+                | "alert.freq_all"
+                | "alert.freq_once_per"
+                | "alert.freq_once_per_bar"
                 | "alert.freq_once_per_bar_close"
-                | "barmerge.gaps_on" | "barmerge.gaps_off"
-                | "barmerge.lookahead_on" | "barmerge.lookahead_off"
-                | "size.auto" | "size.tiny" | "size.small" | "size.normal"
-                | "size.large" | "size.huge"
-                | "strategy.direction.long" | "strategy.direction.short"
-                | "strategy.direction.all" | "strategy.direction.none"
-                | "position.top_right" | "position.top_left" | "position.top_center"
-                | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
-                | "position.middle_right" | "position.middle_left" | "position.middle_center"
+                | "barmerge.gaps_on"
+                | "barmerge.gaps_off"
+                | "barmerge.lookahead_on"
+                | "barmerge.lookahead_off"
+                | "size.auto"
+                | "size.tiny"
+                | "size.small"
+                | "size.normal"
+                | "size.large"
+                | "size.huge"
+                | "strategy.direction.long"
+                | "strategy.direction.short"
+                | "strategy.direction.all"
+                | "strategy.direction.none"
+                | "position.top_right"
+                | "position.top_left"
+                | "position.top_center"
+                | "position.bottom_right"
+                | "position.bottom_left"
+                | "position.bottom_center"
+                | "position.middle_right"
+                | "position.middle_left"
+                | "position.middle_center"
         )
     }
 
@@ -1619,25 +1787,51 @@ fn namespace_const(name: &str) -> Option<Ty> {
         }
         "syminfo.pointvalue" => Some(Ty::Float),
         "timeframe.period" => Some(Ty::String),
-        "extend.none" | "extend.right" | "extend.left" | "extend.both"
-        | "position.top_right" | "position.top_left" | "position.top_center"
-        | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
-        | "position.middle_right" | "position.middle_left" | "position.middle_center"
-        | "size.auto" | "size.tiny" | "size.small" | "size.normal" | "size.large"
-        | "size.huge" | "alert.freq_all" | "alert.freq_once_per" | "alert.freq_once_per_bar"
+        "extend.none"
+        | "extend.right"
+        | "extend.left"
+        | "extend.both"
+        | "position.top_right"
+        | "position.top_left"
+        | "position.top_center"
+        | "position.bottom_right"
+        | "position.bottom_left"
+        | "position.bottom_center"
+        | "position.middle_right"
+        | "position.middle_left"
+        | "position.middle_center"
+        | "size.auto"
+        | "size.tiny"
+        | "size.small"
+        | "size.normal"
+        | "size.large"
+        | "size.huge"
+        | "alert.freq_all"
+        | "alert.freq_once_per"
+        | "alert.freq_once_per_bar"
         | "alert.freq_once_per_bar_close" => Some(Ty::String),
-        "barmerge.gaps_on" | "barmerge.gaps_off" | "barmerge.lookahead_on"
+        "barmerge.gaps_on"
+        | "barmerge.gaps_off"
+        | "barmerge.lookahead_on"
         | "barmerge.lookahead_off" => Some(Ty::String),
-        "strategy.direction.long" | "strategy.direction.short" | "strategy.direction.all"
+        "strategy.direction.long"
+        | "strategy.direction.short"
+        | "strategy.direction.all"
         | "strategy.direction.none" => Some(Ty::String),
         "timeframe.multiplier" => Some(Ty::Float),
         "timeframe.isintraday" | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm" => {
             Some(Ty::Bool)
         }
         "syminfo.ticker" => Some(Ty::String),
-        "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
-        | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades"
-        | "strategy.netprofit" | "strategy.grossprofit" | "strategy.grossloss"
+        "strategy.position_size"
+        | "strategy.position_avg_price"
+        | "strategy.equity"
+        | "strategy.openprofit"
+        | "strategy.closedtrades"
+        | "strategy.wintrades"
+        | "strategy.netprofit"
+        | "strategy.grossprofit"
+        | "strategy.grossloss"
         | "strategy.max_drawdown" => Some(Ty::Float),
         _ => None,
     }
@@ -1697,7 +1891,9 @@ mod tests {
              plus, minus, adx = ta.dmi(14, 14)\n",
         );
         assert!(
-            errors.iter().any(|error| error.message.contains("takes at most 1")),
+            errors
+                .iter()
+                .any(|error| error.message.contains("takes at most 1")),
             "{errors:?}"
         );
     }
@@ -1720,7 +1916,11 @@ mod tests {
             "//@pine_lite version=1\n\
              x = close + true\n",
         );
-        assert!(errs.iter().any(|e| e.message.contains("arithmetic needs numbers")), "{errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("arithmetic needs numbers")),
+            "{errs:?}"
+        );
     }
 
     #[test]
@@ -1730,7 +1930,9 @@ mod tests {
              x = close > open ? close : false\n",
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("ternary branches must have compatible types")),
+            errs.iter().any(|e| e
+                .message
+                .contains("ternary branches must have compatible types")),
             "{errs:?}"
         );
     }
@@ -1744,11 +1946,15 @@ mod tests {
              hline(true)\n",
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("`plot` argument 1 needs a numeric series, got Color")),
+            errs.iter().any(|e| e
+                .message
+                .contains("`plot` argument 1 needs a numeric series, got Color")),
             "{errs:?}"
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("`hline` argument 1 needs a numeric series, got Bool")),
+            errs.iter().any(|e| e
+                .message
+                .contains("`hline` argument 1 needs a numeric series, got Bool")),
             "{errs:?}"
         );
         assert!(
@@ -1765,15 +1971,21 @@ mod tests {
              line.new(1, 2, 3, 4, color=1, typo=2)\n",
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("`ta.sma` parameter `source` expects Series, got Bool")),
+            errs.iter().any(|e| e
+                .message
+                .contains("`ta.sma` parameter `source` expects Series, got Bool")),
             "{errs:?}"
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("`line.new` parameter `color` expects Color, got Float")),
+            errs.iter().any(|e| e
+                .message
+                .contains("`line.new` parameter `color` expects Color, got Float")),
             "{errs:?}"
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("`line.new` has no parameter named `typo`")),
+            errs.iter().any(|e| e
+                .message
+                .contains("`line.new` has no parameter named `typo`")),
             "{errs:?}"
         );
     }
@@ -1793,19 +2005,24 @@ mod tests {
             "bad_call = f(false)\n",
         ));
         assert!(
-            errs.iter().any(|e| e.message.contains("if condition must be bool")),
+            errs.iter()
+                .any(|e| e.message.contains("if condition must be bool")),
             "{errs:?}"
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("while condition must be bool")),
+            errs.iter()
+                .any(|e| e.message.contains("while condition must be bool")),
             "{errs:?}"
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("for-loop bounds and step must be numeric")),
+            errs.iter().any(|e| e
+                .message
+                .contains("for-loop bounds and step must be numeric")),
             "{errs:?}"
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("`f` arguments must be numeric")),
+            errs.iter()
+                .any(|e| e.message.contains("`f` arguments must be numeric")),
             "{errs:?}"
         );
     }
@@ -1822,7 +2039,8 @@ mod tests {
             "bad = Signal.new(1, color.red, close)\n",
         ));
         assert!(
-            errs.iter().any(|e| e.message.contains("field `valid` expects Bool, got Float")),
+            errs.iter()
+                .any(|e| e.message.contains("field `valid` expects Bool, got Float")),
             "{errs:?}"
         );
     }
@@ -1836,15 +2054,21 @@ mod tests {
             "plotcandle(open, high, low, color.red)\n",
         ));
         assert!(
-            errs.iter().any(|e| e.message.contains("`plotshape` argument 1 needs a boolean or numeric series")),
+            errs.iter().any(|e| e
+                .message
+                .contains("`plotshape` argument 1 needs a boolean or numeric series")),
             "{errs:?}"
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("`bgcolor` argument 1 needs a color series")),
+            errs.iter().any(|e| e
+                .message
+                .contains("`bgcolor` argument 1 needs a color series")),
             "{errs:?}"
         );
         assert!(
-            errs.iter().any(|e| e.message.contains("`plotcandle` argument 4 needs a numeric series")),
+            errs.iter().any(|e| e
+                .message
+                .contains("`plotcandle` argument 4 needs a numeric series")),
             "{errs:?}"
         );
     }
@@ -1895,8 +2119,9 @@ mod tests {
             "{errs:?}"
         );
         assert!(
-            errs.iter()
-                .any(|e| e.message.contains("`plot` argument 1 needs a numeric series")),
+            errs.iter().any(|e| e
+                .message
+                .contains("`plot` argument 1 needs a numeric series")),
             "{errs:?}"
         );
     }
@@ -1916,9 +2141,8 @@ mod tests {
             "{errs:?}"
         );
         assert!(
-            errs.iter().any(|e| e
-                .message
-                .contains("`input.string` `defval` expects string")),
+            errs.iter()
+                .any(|e| e.message.contains("`input.string` `defval` expects string")),
             "{errs:?}"
         );
         assert!(
@@ -1938,7 +2162,10 @@ mod tests {
             .find(|e| e.message.contains("`not` needs a bool"))
             .expect("numeric negation is refused");
         assert!(err.message.contains("got Float"), "{err:?}");
-        assert!(err.message.contains("compare numeric values explicitly"), "{err:?}");
+        assert!(
+            err.message.contains("compare numeric values explicitly"),
+            "{err:?}"
+        );
         assert!(err.message.contains("not na(x)"), "{err:?}");
     }
 
@@ -1993,7 +2220,9 @@ mod tests {
     #[test]
     fn vet_end_to_end_refuses_a_type_error() {
         let errs = vet("//@pine_lite version=1\nx = close + true").expect_err("type error");
-        assert!(errs.iter().any(|e| matches!(e.kind, crate::ErrorKind::Type)));
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e.kind, crate::ErrorKind::Type)));
     }
 
     #[test]

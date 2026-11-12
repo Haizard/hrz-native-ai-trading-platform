@@ -10,7 +10,12 @@ use crate::types::Candle;
 /// True Strength Index: 100 × EMA_slow(EMA_fast(m)) / EMA_slow(EMA_fast(|m|)),
 /// m the 1-bar momentum, fast 13, slow 25; the signal is the 7-EMA of it.
 /// (Blau, 1991.)
-pub fn tsi(closes: &[f64], fast: usize, slow: usize, signal: usize) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
+pub fn tsi(
+    closes: &[f64],
+    fast: usize,
+    slow: usize,
+    signal: usize,
+) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
     let n = closes.len();
     let mut momentum = vec![0.0; n];
     for i in 1..n {
@@ -19,9 +24,17 @@ pub fn tsi(closes: &[f64], fast: usize, slow: usize, signal: usize) -> (Vec<Opti
     let abs_momentum: Vec<f64> = momentum.iter().map(|m| m.abs()).collect();
     let smooth = |series: &[f64]| -> Vec<f64> {
         let first = ema(series, fast);
-        let first_filled: Vec<f64> = first.iter().enumerate().map(|(i, v)| v.unwrap_or(series[i])).collect();
+        let first_filled: Vec<f64> = first
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v.unwrap_or(series[i]))
+            .collect();
         let second = ema(&first_filled, slow);
-        let second_filled: Vec<f64> = second.iter().enumerate().map(|(i, v)| v.unwrap_or(first_filled[i])).collect();
+        let second_filled: Vec<f64> = second
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v.unwrap_or(first_filled[i]))
+            .collect();
         second_filled
     };
     let num = smooth(&momentum);
@@ -101,7 +114,10 @@ pub fn mfi(candles: &[Candle], period: usize) -> Vec<Option<f64>> {
     if period == 0 || n < period + 1 {
         return out;
     }
-    let tp: Vec<f64> = candles.iter().map(|c| (c.high + c.low + c.close) / 3.0).collect();
+    let tp: Vec<f64> = candles
+        .iter()
+        .map(|c| (c.high + c.low + c.close) / 3.0)
+        .collect();
     for i in period..n {
         let mut pos = 0.0;
         let mut neg = 0.0;
@@ -139,7 +155,11 @@ pub fn anchored_vwap(candles: &[Candle], anchor: usize) -> Vec<Option<f64>> {
 /// The chandelier exit: the long stop hangs `mult` ATR under the `period`
 /// highest high; the short stop hangs it over the lowest low. (Le Beau,
 /// 1990s.) Returns (long_stop, short_stop).
-pub fn chandelier(candles: &[Candle], period: usize, mult: f64) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
+pub fn chandelier(
+    candles: &[Candle],
+    period: usize,
+    mult: f64,
+) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
     let n = candles.len();
     let (mut long_stop, mut short_stop) = (vec![None; n], vec![None; n]);
     let ranges = atr(candles, period);
@@ -148,8 +168,14 @@ pub fn chandelier(candles: &[Candle], period: usize, mult: f64) -> (Vec<Option<f
     }
     for i in period - 1..n {
         let Some(a) = ranges[i] else { continue };
-        let hi = candles[i + 1 - period..=i].iter().map(|c| c.high).fold(f64::MIN, f64::max);
-        let lo = candles[i + 1 - period..=i].iter().map(|c| c.low).fold(f64::MAX, f64::min);
+        let hi = candles[i + 1 - period..=i]
+            .iter()
+            .map(|c| c.high)
+            .fold(f64::MIN, f64::max);
+        let lo = candles[i + 1 - period..=i]
+            .iter()
+            .map(|c| c.low)
+            .fold(f64::MAX, f64::min);
         long_stop[i] = Some(hi - mult * a);
         short_stop[i] = Some(lo + mult * a);
     }
@@ -159,7 +185,11 @@ pub fn chandelier(candles: &[Candle], period: usize, mult: f64) -> (Vec<Option<f
 /// Historical volatility: the annualization-free standard deviation of log
 /// returns over `period`, and its percentile rank over its own trailing
 /// `rank_window` readings (the regime number traders actually quote).
-pub fn historical_volatility(candles: &[Candle], period: usize, rank_window: usize) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
+pub fn historical_volatility(
+    candles: &[Candle],
+    period: usize,
+    rank_window: usize,
+) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
     let n = candles.len();
     let (mut hv, mut rank) = (vec![None; n], vec![None; n]);
     if period == 0 || n < period + 1 {
@@ -211,10 +241,15 @@ mod tests {
 
     #[test]
     fn the_tsi_is_bounded_momentum() {
-        let closes: Vec<f64> = (0..80).map(|i| 100.0 + (i as f64 / 6.0).sin() * 4.0).collect();
+        let closes: Vec<f64> = (0..80)
+            .map(|i| 100.0 + (i as f64 / 6.0).sin() * 4.0)
+            .collect();
         let (line, signal) = tsi(&closes, 13, 25, 7);
         let last = line.iter().rposition(|v| v.is_some()).expect("tsi");
-        assert!((-100.0..=100.0).contains(&line[last].unwrap()), "a ratio, bounded");
+        assert!(
+            (-100.0..=100.0).contains(&line[last].unwrap()),
+            "a ratio, bounded"
+        );
         assert!(signal[last].is_some(), "the signal line exists");
     }
 
@@ -225,7 +260,17 @@ mod tests {
         let v = awesome(&candles, 5, 34);
         assert!(v[39].unwrap().abs() < 1e-9, "flat is zero");
         // Rising mids: fast over slow.
-        let up: Vec<Candle> = (0..40).map(|i| k(i, 10.0 + i as f64 + 0.5, 10.0 + i as f64 - 0.5, 10.0 + i as f64, 1.0)).collect();
+        let up: Vec<Candle> = (0..40)
+            .map(|i| {
+                k(
+                    i,
+                    10.0 + i as f64 + 0.5,
+                    10.0 + i as f64 - 0.5,
+                    10.0 + i as f64,
+                    1.0,
+                )
+            })
+            .collect();
         assert!(awesome(&up, 5, 34)[39].unwrap() > 0.0);
     }
 
@@ -251,7 +296,17 @@ mod tests {
 
     #[test]
     fn the_mfi_reads_all_up_flow_as_100() {
-        let candles: Vec<Candle> = (0..20).map(|i| k(i, 10.0 + i as f64 + 0.5, 10.0 + i as f64 - 0.5, 10.0 + i as f64, 100.0)).collect();
+        let candles: Vec<Candle> = (0..20)
+            .map(|i| {
+                k(
+                    i,
+                    10.0 + i as f64 + 0.5,
+                    10.0 + i as f64 - 0.5,
+                    10.0 + i as f64,
+                    100.0,
+                )
+            })
+            .collect();
         let v = mfi(&candles, 14);
         assert_eq!(v[19], Some(100.0), "no negative flow is 100");
     }
@@ -270,7 +325,10 @@ mod tests {
         let candles: Vec<Candle> = (0..25).map(|i| k(i, 11.0, 9.0, 10.0, 1.0)).collect();
         let (long_stop, short_stop) = chandelier(&candles, 22, 3.0);
         let (l, s) = (long_stop[24].unwrap(), short_stop[24].unwrap());
-        assert!(l < 11.0 && s > 9.0, "the stops hang off the window's extremes");
+        assert!(
+            l < 11.0 && s > 9.0,
+            "the stops hang off the window's extremes"
+        );
         assert!((s - 9.0) > 0.0 && (11.0 - l) > 0.0);
     }
 
@@ -286,7 +344,14 @@ mod tests {
         let (hv, rank) = historical_volatility(&candles, 20, 30);
         let calm = hv[30].expect("hv");
         let wild = hv[79].expect("hv");
-        assert!(wild > calm * 5.0, "the violent stretch reads volatile: {calm} vs {wild}");
-        assert!(rank[79].unwrap() > 0.9, "and its rank sits at the top: {}", rank[79].unwrap());
+        assert!(
+            wild > calm * 5.0,
+            "the violent stretch reads volatile: {calm} vs {wild}"
+        );
+        assert!(
+            rank[79].unwrap() > 0.9,
+            "and its rank sits at the top: {}",
+            rank[79].unwrap()
+        );
     }
 }

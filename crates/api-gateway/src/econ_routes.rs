@@ -26,9 +26,12 @@ fn api_key() -> String {
 #[derive(Debug, Default, Clone)]
 pub struct EconStore {
     /// The releases, newest-first per kind.
-    pub releases: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, Vec<econ::EconRelease>>>>,
+    pub releases: std::sync::Arc<
+        std::sync::RwLock<std::collections::HashMap<String, Vec<econ::EconRelease>>>,
+    >,
     /// Operator overrides: `{kind}:{period}` -> (forecast, source).
-    pub overrides: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, (f64, String)>>>,
+    pub overrides:
+        std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, (f64, String)>>>,
     /// The newest scored headlines, newest-first.
     pub news: std::sync::Arc<std::sync::RwLock<Vec<market_data::news::NewsItem>>>,
 }
@@ -47,13 +50,23 @@ pub async fn refresh_releases(store: &EconStore, kind: &str) -> Result<usize, St
     };
     let points = econ::fetch_series(&client, &key, series_id, 36).await?;
     if points.len() < 14 {
-        return Err(format!("BLS returned {} points for {series_id}", points.len()));
+        return Err(format!(
+            "BLS returned {} points for {series_id}",
+            points.len()
+        ));
     }
     // The values, oldest-first for the change math.
     let mut values: Vec<(String, f64)> = points
         .iter()
         .rev()
-        .filter_map(|p| econ::point_value(p).map(|v| (format!("{}-{}", p.year, p.period.trim_start_matches('M')), v)))
+        .filter_map(|p| {
+            econ::point_value(p).map(|v| {
+                (
+                    format!("{}-{}", p.year, p.period.trim_start_matches('M')),
+                    v,
+                )
+            })
+        })
         .collect();
     // The monthly changes (for change-series): actual and its trailing stats.
     let mut releases = Vec::new();
@@ -79,9 +92,17 @@ pub async fn refresh_releases(store: &EconStore, kind: &str) -> Result<usize, St
     for i in 12..values.len() - 1 {
         let (period, value) = &values[i + 1];
         let (_prev_period, prev_value) = &values[i];
-        let actual = if headline_is_change { value - prev_value } else { *value };
+        let actual = if headline_is_change {
+            value - prev_value
+        } else {
+            *value
+        };
         let trailing = &changes[i.saturating_sub(12).max(1) - 1..i.saturating_sub(1).max(1)];
-        let forecast_default = if trailing.is_empty() { 0.0 } else { trailing.iter().sum::<f64>() / trailing.len() as f64 };
+        let forecast_default = if trailing.is_empty() {
+            0.0
+        } else {
+            trailing.iter().sum::<f64>() / trailing.len() as f64
+        };
         let (forecast, source) = overrides
             .get(&format!("{kind}:{period}"))
             .map(|(f, s)| (*f, s.clone()))
@@ -97,8 +118,14 @@ pub async fn refresh_releases(store: &EconStore, kind: &str) -> Result<usize, St
             let (y, m) = {
                 let mut parts = period.split('-');
                 (
-                    parts.next().and_then(|y| y.parse::<i64>().ok()).unwrap_or(2026),
-                    parts.next().and_then(|m| m.parse::<i64>().ok()).unwrap_or(1),
+                    parts
+                        .next()
+                        .and_then(|y| y.parse::<i64>().ok())
+                        .unwrap_or(2026),
+                    parts
+                        .next()
+                        .and_then(|m| m.parse::<i64>().ok())
+                        .unwrap_or(1),
                 )
             };
             let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
@@ -107,7 +134,9 @@ pub async fn refresh_releases(store: &EconStore, kind: &str) -> Result<usize, St
             let first_friday = (0..7)
                 .find(|d| ((days + d).rem_euclid(7)) == 2) // 2 = Friday for the 1970-01-01 (Thursday) epoch
                 .unwrap_or(0);
-            (days + first_friday) * 3_600_000_000_000 * 24 + 13 * 3_600_000_000_000 + 30 * 60_000_000_000
+            (days + first_friday) * 3_600_000_000_000 * 24
+                + 13 * 3_600_000_000_000
+                + 30 * 60_000_000_000
         };
         releases.push(econ::EconRelease {
             id: format!("{kind}-{period}"),
@@ -115,7 +144,10 @@ pub async fn refresh_releases(store: &EconStore, kind: &str) -> Result<usize, St
             period: period.clone(),
             release_ns,
             actual,
-            unemployment: unemployment.as_ref().and_then(|u| u.first()).and_then(econ::point_value),
+            unemployment: unemployment
+                .as_ref()
+                .and_then(|u| u.first())
+                .and_then(econ::point_value),
             earnings_change: earnings.as_ref().and_then(|e| {
                 let pts: Vec<f64> = e.iter().filter_map(econ::point_value).collect();
                 if pts.len() >= 2 && pts[1] > 0.0 {
@@ -160,7 +192,13 @@ pub async fn refresh_fred(store: &EconStore, kind: &str) -> Result<usize, String
     let mut releases = Vec::new();
     match kind {
         "fomc" => {
-            let points = market_data::fred::fetch_fred(&client, &key, market_data::fred::SERIES_FUNDS_TARGET, 400).await?;
+            let points = market_data::fred::fetch_fred(
+                &client,
+                &key,
+                market_data::fred::SERIES_FUNDS_TARGET,
+                400,
+            )
+            .await?;
             if points.len() < 3 {
                 return Err("FRED returned too few funds points".to_string());
             }
@@ -189,15 +227,22 @@ pub async fn refresh_fred(store: &EconStore, kind: &str) -> Result<usize, String
             }
         }
         "claims" => {
-            let points = market_data::fred::fetch_fred(&client, &key, market_data::fred::SERIES_CLAIMS, 60).await?;
+            let points =
+                market_data::fred::fetch_fred(&client, &key, market_data::fred::SERIES_CLAIMS, 60)
+                    .await?;
             if points.len() < 10 {
                 return Err("FRED returned too few claims points".to_string());
             }
             // The last twelve weekly releases: the sigma needs the history
             // (a store of one release has no trailing to normalize against).
             for (i, p) in points.iter().take(12).enumerate() {
-                let trailing: Vec<f64> = points.iter().skip(i + 1).take(8).map(|q| q.value).collect();
-                let forecast_default = if trailing.is_empty() { p.value } else { trailing.iter().sum::<f64>() / trailing.len() as f64 };
+                let trailing: Vec<f64> =
+                    points.iter().skip(i + 1).take(8).map(|q| q.value).collect();
+                let forecast_default = if trailing.is_empty() {
+                    p.value
+                } else {
+                    trailing.iter().sum::<f64>() / trailing.len() as f64
+                };
                 let (forecast, source) = overrides
                     .get(&format!("claims:{}", p.date))
                     .map(|(f, s)| (*f, s.clone()))
@@ -218,16 +263,31 @@ pub async fn refresh_fred(store: &EconStore, kind: &str) -> Result<usize, String
             }
         }
         "pce" => {
-            let points = market_data::fred::fetch_fred(&client, &key, market_data::fred::SERIES_PCE_LEVEL, 40).await?;
+            let points = market_data::fred::fetch_fred(
+                &client,
+                &key,
+                market_data::fred::SERIES_PCE_LEVEL,
+                40,
+            )
+            .await?;
             if points.len() < 14 {
                 return Err("FRED returned too few PCE points".to_string());
             }
             let yoy: Vec<(String, f64)> = (0..points.len().saturating_sub(12))
-                .map(|i| (points[i].date[..7].to_string(), (points[i].value / points[i + 12].value - 1.0) * 100.0))
+                .map(|i| {
+                    (
+                        points[i].date[..7].to_string(),
+                        (points[i].value / points[i + 12].value - 1.0) * 100.0,
+                    )
+                })
                 .collect();
             for (i, (period, actual)) in yoy.iter().enumerate() {
                 let trailing: Vec<f64> = yoy.iter().skip(i + 1).take(12).map(|(_, v)| *v).collect();
-                let forecast_default = if trailing.is_empty() { *actual } else { trailing.iter().sum::<f64>() / trailing.len() as f64 };
+                let forecast_default = if trailing.is_empty() {
+                    *actual
+                } else {
+                    trailing.iter().sum::<f64>() / trailing.len() as f64
+                };
                 let (forecast, source) = overrides
                     .get(&format!("pce:{period}"))
                     .map(|(f, s)| (*f, s.clone()))
@@ -248,14 +308,26 @@ pub async fn refresh_fred(store: &EconStore, kind: &str) -> Result<usize, String
             }
         }
         "gdp" => {
-            let points = market_data::fred::fetch_fred(&client, &key, market_data::fred::SERIES_REAL_GDP, 12).await?;
+            let points = market_data::fred::fetch_fred(
+                &client,
+                &key,
+                market_data::fred::SERIES_REAL_GDP,
+                12,
+            )
+            .await?;
             if points.len() < 3 {
                 return Err("FRED returned too few GDP points".to_string());
             }
-            let annualized: Vec<f64> = (0..points.len() - 1).map(|i| (points[i].value / points[i + 1].value - 1.0) * 100.0 * 4.0).collect();
+            let annualized: Vec<f64> = (0..points.len() - 1)
+                .map(|i| (points[i].value / points[i + 1].value - 1.0) * 100.0 * 4.0)
+                .collect();
             for (i, actual) in annualized.iter().enumerate() {
                 let trailing: Vec<f64> = annualized.iter().skip(i + 1).take(8).copied().collect();
-                let forecast_default = if trailing.is_empty() { *actual } else { trailing.iter().sum::<f64>() / trailing.len() as f64 };
+                let forecast_default = if trailing.is_empty() {
+                    *actual
+                } else {
+                    trailing.iter().sum::<f64>() / trailing.len() as f64
+                };
                 let period = points[i].date[..7].to_string();
                 let (forecast, source) = overrides
                     .get(&format!("gdp:{period}"))
@@ -293,16 +365,28 @@ pub async fn refresh_fred(store: &EconStore, kind: &str) -> Result<usize, String
 /// `GET /econ/macro`: the Fed's own numbers as one context -- the funds
 /// rate and its direction, the curve, the real yield, the dollar, and the
 /// composite the Quant Brain reads before any instrument.
-pub async fn macro_context(State(_state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+pub async fn macro_context(
+    State(_state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let client = reqwest::Client::new();
     let key = fred_key();
     let f = market_data::fred::fetch_fred;
     let (funds, dgs10, dgs2, dfii10, dollar) = (
-        f(&client, &key, market_data::fred::SERIES_FUNDS_TARGET, 300).await.map_err(ApiError::unavailable)?,
-        f(&client, &key, market_data::fred::SERIES_DGS10, 5).await.map_err(ApiError::unavailable)?,
-        f(&client, &key, market_data::fred::SERIES_DGS2, 5).await.map_err(ApiError::unavailable)?,
-        f(&client, &key, market_data::fred::SERIES_DFII10, 5).await.map_err(ApiError::unavailable)?,
-        f(&client, &key, market_data::fred::SERIES_DOLLAR, 300).await.map_err(ApiError::unavailable)?,
+        f(&client, &key, market_data::fred::SERIES_FUNDS_TARGET, 300)
+            .await
+            .map_err(ApiError::unavailable)?,
+        f(&client, &key, market_data::fred::SERIES_DGS10, 5)
+            .await
+            .map_err(ApiError::unavailable)?,
+        f(&client, &key, market_data::fred::SERIES_DGS2, 5)
+            .await
+            .map_err(ApiError::unavailable)?,
+        f(&client, &key, market_data::fred::SERIES_DFII10, 5)
+            .await
+            .map_err(ApiError::unavailable)?,
+        f(&client, &key, market_data::fred::SERIES_DOLLAR, 300)
+            .await
+            .map_err(ApiError::unavailable)?,
     );
     let ctx = market_data::fred::macro_context(&funds, &dgs10, &dgs2, &dfii10, &dollar)
         .ok_or_else(|| ApiError::unavailable("FRED series too short for the context"))?;
@@ -353,10 +437,18 @@ pub async fn news_latest(
     State(state): State<AppState>,
     Query(query): Query<NewsQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let items = state.econ.news.read().map_err(|e| ApiError::unavailable(e.to_string()))?;
+    let items = state
+        .econ
+        .news
+        .read()
+        .map_err(|e| ApiError::unavailable(e.to_string()))?;
     let limit = query.limit.unwrap_or(20).min(50);
     let filtered: Vec<&market_data::news::NewsItem> = match &query.tag {
-        Some(tag) => items.iter().filter(|i| i.tags.iter().any(|t| t == tag)).take(limit).collect(),
+        Some(tag) => items
+            .iter()
+            .filter(|i| i.tags.iter().any(|t| t == tag))
+            .take(limit)
+            .collect(),
         None => items.iter().take(limit).collect(),
     };
     Ok(Json(serde_json::json!({
@@ -387,18 +479,28 @@ pub async fn news_sentiment(
         .map_err(|e| ApiError::unavailable(e.to_string()))?
         .clone();
     if items.is_empty() {
-        return Err(ApiError::unavailable("the news store is empty (the refresh runs on boot and every 15 minutes)"));
+        return Err(ApiError::unavailable(
+            "the news store is empty (the refresh runs on boot and every 15 minutes)",
+        ));
     }
     // The symbol's tag: BTCUSDT -> btc, DERIV forex gold -> gold, etc.
     let tag = query.symbol.as_deref().map(|s| {
         let u = s.to_uppercase();
-        if u.contains("BTC") { "btc".to_string() }
-        else if u.contains("ETH") { "eth".to_string() }
-        else if u.contains("XAU") || u.contains("GOLD") { "gold".to_string() }
-        else if u.contains("SOL") { "sol".to_string() }
-        else if u.contains("XRP") { "xrp".to_string() }
-        else if u.contains("EUR") || u.contains("USD") || u.contains("DXY") { "dollar".to_string() }
-        else { u.to_lowercase() }
+        if u.contains("BTC") {
+            "btc".to_string()
+        } else if u.contains("ETH") {
+            "eth".to_string()
+        } else if u.contains("XAU") || u.contains("GOLD") {
+            "gold".to_string()
+        } else if u.contains("SOL") {
+            "sol".to_string()
+        } else if u.contains("XRP") {
+            "xrp".to_string()
+        } else if u.contains("EUR") || u.contains("USD") || u.contains("DXY") {
+            "dollar".to_string()
+        } else {
+            u.to_lowercase()
+        }
     });
     let report = market_data::news::sentiment_report(&items, tag.as_deref());
     // Sentiment-price divergence: the context against the instrument's own
@@ -406,7 +508,9 @@ pub async fn news_sentiment(
     let divergence = if let Some(symbol) = &query.symbol {
         let symbol = symbol.to_uppercase();
         let parsed = market_data::broker::VenueSymbol::parse(&symbol);
-        let channels = parsed.channels().unwrap_or(market_data::broker::DataChannels::CANDLES);
+        let channels = parsed
+            .channels()
+            .unwrap_or(market_data::broker::DataChannels::CANDLES);
         if !channels.supports(market_data::broker::DataChannels::MACRO) {
             None // synthetics: no macro read, by taxonomy
         } else {
@@ -420,7 +524,9 @@ pub async fn news_sentiment(
                 .map_err(|e| ApiError::unavailable(format!("no candles for {symbol}: {e}")))?;
             let candles = window.candles;
             if candles.len() >= 2 {
-                let change = (candles.last().expect("c").close / candles.first().expect("c").close - 1.0) * 100.0;
+                let change = (candles.last().expect("c").close / candles.first().expect("c").close
+                    - 1.0)
+                    * 100.0;
                 Some(serde_json::json!({
                     "change_pct_24h": change,
                     "sentiment_mean": report.mean,
@@ -467,10 +573,15 @@ pub struct ReleaseReport {
 }
 
 fn report_for(store: &EconStore, kind: &str) -> Result<ReleaseReport, ApiError> {
-    let releases = store.releases.read().map_err(|e| ApiError::unavailable(e.to_string()))?;
-    let list = releases
-        .get(kind)
-        .ok_or_else(|| ApiError::unavailable(format!("no `{kind}` releases stored yet (the refresh runs on boot and every 6h)")))?;
+    let releases = store
+        .releases
+        .read()
+        .map_err(|e| ApiError::unavailable(e.to_string()))?;
+    let list = releases.get(kind).ok_or_else(|| {
+        ApiError::unavailable(format!(
+            "no `{kind}` releases stored yet (the refresh runs on boot and every 6h)"
+        ))
+    })?;
     let release = list
         .last()
         .ok_or_else(|| ApiError::unavailable(format!("empty `{kind}` release list")))?
@@ -615,15 +726,25 @@ pub async fn latest(
 /// ahead): the decision dates for 2026, at 14:00 ET (18:00 UTC, winter
 /// offset documented). Updated annually, like every calendar.
 const FOMC_2026_DATES: &[&str] = &[
-    "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
-    "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
+    "2026-01-28",
+    "2026-03-18",
+    "2026-04-29",
+    "2026-06-17",
+    "2026-07-29",
+    "2026-09-16",
+    "2026-10-28",
+    "2026-12-09",
 ];
 
 /// The GDP advance estimates' published calendar: the BEA's typical
 /// quarter-end + four weeks at 08:30 ET, kept as a table because a countdown
 /// may approximate and a chart mark may not. Updated annually.
 const GDP_DATES: &[&str] = &[
-    "2026-01-29", "2026-04-29", "2026-07-29", "2026-10-28", "2027-01-28",
+    "2026-01-29",
+    "2026-04-29",
+    "2026-07-29",
+    "2026-10-28",
+    "2027-01-28",
 ];
 
 /// The next of a date-table's entries after `now_ns`, at 18:00 UTC.
@@ -646,7 +767,8 @@ pub async fn next(State(_state): State<AppState>) -> Json<serde_json::Value> {
     let days = now_ns.div_euclid(DAY_NS);
     let weekday = days.rem_euclid(7); // 0 = Thursday for the 1970 epoch
     let days_to_thursday = (7 - weekday) % 7;
-    let claims_next = (days + days_to_thursday) * DAY_NS + 13 * 3_600_000_000_000 + 30 * 60_000_000_000;
+    let claims_next =
+        (days + days_to_thursday) * DAY_NS + 13 * 3_600_000_000_000 + 30 * 60_000_000_000;
     let claims_next = if claims_next > now_ns {
         claims_next
     } else {
@@ -700,14 +822,20 @@ pub async fn forecast_override(
     Json(body): Json<ForecastOverride>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if !(body.forecast.is_finite()) {
-        return Err(ApiError::bad_request("FORECAST_INVALID", "the forecast must be a number"));
+        return Err(ApiError::bad_request(
+            "FORECAST_INVALID",
+            "the forecast must be a number",
+        ));
     }
     state
         .econ
         .overrides
         .write()
         .map_err(|e| ApiError::unavailable(e.to_string()))?
-        .insert(format!("{}:{}", body.kind, body.period), (body.forecast, body.source.clone()));
+        .insert(
+            format!("{}:{}", body.kind, body.period),
+            (body.forecast, body.source.clone()),
+        );
     // Recompute the affected release if it's already stored.
     if let Ok(mut releases) = state.econ.releases.write() {
         if let Some(list) = releases.get_mut(&body.kind) {
@@ -753,7 +881,9 @@ pub async fn reaction(
     // The venue gate, enforced at the engine's edge too: synthetics do not
     // read the BLS (the taxonomy's whole point).
     let parsed = market_data::broker::VenueSymbol::parse(&symbol);
-    let channels = parsed.channels().unwrap_or(market_data::broker::DataChannels::CANDLES);
+    let channels = parsed
+        .channels()
+        .unwrap_or(market_data::broker::DataChannels::CANDLES);
     if !channels.supports(market_data::broker::DataChannels::MACRO) {
         return Err(ApiError::bad_request(
             "MACRO_UNDEFINED",
@@ -803,8 +933,11 @@ pub async fn reaction(
         after_j["change_pct"].as_f64().unwrap_or(0.0),
     );
     let after_delta = after_j["delta"].as_f64().unwrap_or(0.0);
-    let confirms = report.macro_bias.signum() == (-after_change).signum() && after_change.abs() > 0.05;
-    let absorbed = after_change.signum() != 0.0 && after_change.signum() != before_change.signum() && after_delta.signum() == after_change.signum();
+    let confirms =
+        report.macro_bias.signum() == (-after_change).signum() && after_change.abs() > 0.05;
+    let absorbed = after_change.signum() != 0.0
+        && after_change.signum() != before_change.signum()
+        && after_delta.signum() == after_change.signum();
     Ok(Json(serde_json::json!({
         "kind": kind,
         "symbol": symbol,

@@ -65,7 +65,10 @@ fn vm_trades(source: &str, cs: &[Candle]) -> Vec<Trade> {
         .ok()
         .unwrap_or_else(|| panic!("parity script must vet:\n{source}"));
     let output = run_script(&parsed, cs, &Inputs::default()).expect("the parity script runs");
-    let sim = output.simulation.as_ref().expect("a strategy run simulates");
+    let sim = output
+        .simulation
+        .as_ref()
+        .expect("a strategy run simulates");
     let mut trades = Vec::new();
     let mut open: Option<(bool, usize)> = None;
     for order in &sim.orders {
@@ -76,7 +79,11 @@ fn vm_trades(source: &str, cs: &[Candle]) -> Vec<Trade> {
             | pine_lite::sim::OrderKind::Limit
             | pine_lite::sim::OrderKind::Close => {
                 if let Some((long, entry_bar)) = open.take() {
-                    trades.push(Trade { long, entry_bar, exit_bar: order.bar });
+                    trades.push(Trade {
+                        long,
+                        entry_bar,
+                        exit_bar: order.bar,
+                    });
                 }
             }
         }

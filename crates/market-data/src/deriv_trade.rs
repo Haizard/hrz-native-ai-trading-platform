@@ -57,12 +57,7 @@ pub struct ProposalParams {
 impl ProposalParams {
     /// A multiplier proposal (`MULTUP`/`MULTDOWN`).
     #[must_use]
-    pub fn multiplier_up(
-        symbol: &str,
-        stake: f64,
-        leverage: f64,
-        currency: &str,
-    ) -> Self {
+    pub fn multiplier_up(symbol: &str, stake: f64, leverage: f64, currency: &str) -> Self {
         Self {
             contract_type: "MULTUP".to_string(),
             underlying_symbol: symbol.to_string(),
@@ -197,9 +192,8 @@ struct OtpData {
     url: String,
 }
 
-type WsStream = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 impl DerivTradingGateway {
     /// From the environment: `DERIV_APP_ID` (required here -- attribution is
@@ -290,9 +284,8 @@ impl DerivTradingGateway {
                 MarketDataError::Normalization(format!("deriv trading socket: {e}"))
             })?;
             let Message::Text(text) = frame else { continue };
-            let parsed: TradeResponse = serde_json::from_str(&text).map_err(|e| {
-                MarketDataError::Normalization(format!("deriv trading reply: {e}"))
-            })?;
+            let parsed: TradeResponse = serde_json::from_str(&text)
+                .map_err(|e| MarketDataError::Normalization(format!("deriv trading reply: {e}")))?;
             if let Some(err) = &parsed.error {
                 return Err(MarketDataError::from(err));
             }
@@ -373,12 +366,11 @@ impl<'a> TradingSession<'a> {
         let id = self.req_id();
         let body = params.to_request(id);
         let reply = self.gateway.call(&mut self.socket, body).await?;
-        let p = reply
-            .proposal
-            .ok_or_else(|| MarketDataError::Normalization("deriv proposal reply missing".to_string()))?;
-        let proposal: Proposal = serde_json::from_value(p).map_err(|e| {
-            MarketDataError::Normalization(format!("deriv proposal shape: {e}"))
+        let p = reply.proposal.ok_or_else(|| {
+            MarketDataError::Normalization("deriv proposal reply missing".to_string())
         })?;
+        let proposal: Proposal = serde_json::from_value(p)
+            .map_err(|e| MarketDataError::Normalization(format!("deriv proposal shape: {e}")))?;
         Ok(proposal)
     }
 
@@ -386,7 +378,11 @@ impl<'a> TradingSession<'a> {
     ///
     /// # Errors
     /// As [`DerivTradingGateway::otp_url`].
-    pub async fn buy(&mut self, proposal_id: &str, max_price: f64) -> Result<Purchase, MarketDataError> {
+    pub async fn buy(
+        &mut self,
+        proposal_id: &str,
+        max_price: f64,
+    ) -> Result<Purchase, MarketDataError> {
         let id = self.req_id();
         let body = serde_json::json!({
             "buy": proposal_id,
@@ -397,9 +393,8 @@ impl<'a> TradingSession<'a> {
         let b = reply
             .buy
             .ok_or_else(|| MarketDataError::Normalization("deriv buy reply missing".to_string()))?;
-        let purchase: Purchase = serde_json::from_value(b).map_err(|e| {
-            MarketDataError::Normalization(format!("deriv buy shape: {e}"))
-        })?;
+        let purchase: Purchase = serde_json::from_value(b)
+            .map_err(|e| MarketDataError::Normalization(format!("deriv buy shape: {e}")))?;
         Ok(purchase)
     }
 
@@ -411,9 +406,9 @@ impl<'a> TradingSession<'a> {
         let id = self.req_id();
         let body = serde_json::json!({ "portfolio": 1, "req_id": id });
         let reply = self.gateway.call(&mut self.socket, body).await?;
-        let p = reply
-            .portfolio
-            .ok_or_else(|| MarketDataError::Normalization("deriv portfolio reply missing".to_string()))?;
+        let p = reply.portfolio.ok_or_else(|| {
+            MarketDataError::Normalization("deriv portfolio reply missing".to_string())
+        })?;
         let contracts = p
             .get("contracts")
             .and_then(|c| c.as_array())
@@ -421,11 +416,9 @@ impl<'a> TradingSession<'a> {
             .unwrap_or_default();
         let mut out = Vec::new();
         for c in contracts {
-            out.push(
-                serde_json::from_value(c).map_err(|e| {
-                    MarketDataError::Normalization(format!("deriv contract shape: {e}"))
-                })?,
-            );
+            out.push(serde_json::from_value(c).map_err(|e| {
+                MarketDataError::Normalization(format!("deriv contract shape: {e}"))
+            })?);
         }
         Ok(out)
     }
@@ -442,12 +435,12 @@ impl<'a> TradingSession<'a> {
             "req_id": id,
         });
         let reply = self.gateway.call(&mut self.socket, body).await?;
-        let s = reply
-            .sell
-            .ok_or_else(|| MarketDataError::Normalization("deriv sell reply missing".to_string()))?;
-        s.get("sold_for")
-            .and_then(|v| v.as_f64())
-            .ok_or_else(|| MarketDataError::Normalization("deriv sell reply had no price".to_string()))
+        let s = reply.sell.ok_or_else(|| {
+            MarketDataError::Normalization("deriv sell reply missing".to_string())
+        })?;
+        s.get("sold_for").and_then(|v| v.as_f64()).ok_or_else(|| {
+            MarketDataError::Normalization("deriv sell reply had no price".to_string())
+        })
     }
 }
 
@@ -532,9 +525,7 @@ impl ContractOrder {
 // The multiplier PnL model lives in analytics-core so the trading adapter and
 // the strategy simulator share one implementation. Re-exported here so the
 // adapter's imports keep working.
-pub use analytics_core::multiplier::{
-    PathOutcome, multiplier_pnl, path_outcome, stop_out_level,
-};
+pub use analytics_core::multiplier::{multiplier_pnl, path_outcome, stop_out_level, PathOutcome};
 
 #[cfg(test)]
 mod tests {
@@ -578,7 +569,11 @@ mod tests {
 
     #[test]
     fn the_contract_lifecycle_moves_forward_only() {
-        let proposal = Proposal { id: "p1".to_string(), ask_price: 1.0, payout: None };
+        let proposal = Proposal {
+            id: "p1".to_string(),
+            ask_price: 1.0,
+            payout: None,
+        };
         let order = ContractOrder::Quoted(proposal.clone());
         assert!(!order.is_terminal());
         let purchased = order.buy(&Purchase {
@@ -609,7 +604,10 @@ mod tests {
         assert_eq!(req["multiplier"], 100.0);
         assert_eq!(req["req_id"], 7);
         assert_eq!(req["basis"], "stake");
-        assert!(req.get("duration").is_none(), "multipliers do not expire by clock");
+        assert!(
+            req.get("duration").is_none(),
+            "multipliers do not expire by clock"
+        );
         let down = ProposalParams::multiplier_down("R_75", 5.0, 50.0, "USD");
         assert_eq!(down.contract_type, "MULTDOWN");
         let mut with_limits = ProposalParams::multiplier_up("R_75", 10.0, 100.0, "USD");

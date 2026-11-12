@@ -460,7 +460,11 @@ mod tests {
         }
     }
 
-    fn with_options(kind: DrawingKind, points: Vec<Anchor>, options: DrawingOptions) -> DrawingBody {
+    fn with_options(
+        kind: DrawingKind,
+        points: Vec<Anchor>,
+        options: DrawingOptions,
+    ) -> DrawingBody {
         DrawingBody {
             kind,
             points,
@@ -560,7 +564,11 @@ mod tests {
         // ray pointing left becomes one pointing right.
         let prepared = prepare(&body(
             DrawingKind::Channel,
-            vec![point(T3, 46_000.0), point(T2, 45_500.0), point(T1, 45_000.0)],
+            vec![
+                point(T3, 46_000.0),
+                point(T2, 45_500.0),
+                point(T1, 45_000.0),
+            ],
         ))
         .expect("must accept");
 
@@ -591,11 +599,21 @@ mod tests {
         // field nobody remembered to copy is invisible in a struct literal.
         let prepared = prepare(&body(
             DrawingKind::Channel,
-            vec![point(T1, 45_000.0), point(T2, 45_500.0), point(T3, 46_000.0)],
+            vec![
+                point(T1, 45_000.0),
+                point(T2, 45_500.0),
+                point(T3, 46_000.0),
+            ],
         ))
         .expect("must accept");
         assert_eq!(prepared.points.len(), 3);
-        assert_eq!(prepared.points[2], StoredPoint { time: T3, price: 46_000.0 });
+        assert_eq!(
+            prepared.points[2],
+            StoredPoint {
+                time: T3,
+                price: 46_000.0
+            }
+        );
     }
 
     #[test]
@@ -607,11 +625,8 @@ mod tests {
         //
         // Every point is a fraction here: a list that mixed the two units is the
         // engine's own refusal, not this one's.
-        let error = prepare(&body(
-            DrawingKind::Trendline,
-            vec![fraction(), fraction()],
-        ))
-        .expect_err("must refuse");
+        let error = prepare(&body(DrawingKind::Trendline, vec![fraction(), fraction()]))
+            .expect_err("must refuse");
 
         assert_eq!(error.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(error.code(), "DRAWING_INVALID");
@@ -634,11 +649,7 @@ mod tests {
         .expect_err("must refuse");
 
         assert_eq!(error.code(), "DRAWING_INVALID");
-        assert!(
-            error.message().contains("one unit"),
-            "{}",
-            error.message()
-        );
+        assert!(error.message().contains("one unit"), "{}", error.message());
     }
 
     #[test]
@@ -659,8 +670,8 @@ mod tests {
         // The reason is the engine's own, because the rule is: a second copy of it
         // here would be a second thing to keep in step, and the way the two drift
         // apart is a drawing the API accepts and the chart never shows.
-        let error = prepare(&body(DrawingKind::Fib, vec![point(1.0, 2.0)]))
-            .expect_err("must refuse");
+        let error =
+            prepare(&body(DrawingKind::Fib, vec![point(1.0, 2.0)])).expect_err("must refuse");
         assert_eq!(error.code(), "DRAWING_INVALID");
         assert!(error.message().contains("fib"), "{}", error.message());
         assert!(
@@ -715,16 +726,17 @@ mod tests {
         // silently never appeared.
         let error = prepare(&body(DrawingKind::Trendline, vec![])).expect_err("must refuse");
         assert_eq!(error.code(), "DRAWING_INVALID");
-        assert!(error.message().contains("this has 0"), "{}", error.message());
+        assert!(
+            error.message().contains("this has 0"),
+            "{}",
+            error.message()
+        );
     }
 
     #[test]
     fn a_horizontal_line_is_accepted_with_one_point() {
-        let prepared = prepare(&body(
-            DrawingKind::Hline,
-            vec![point(T1, 45_000.0)],
-        ))
-        .expect("must accept");
+        let prepared =
+            prepare(&body(DrawingKind::Hline, vec![point(T1, 45_000.0)])).expect("must accept");
         assert_eq!(prepared.kind, "hline");
         assert_eq!(prepared.points.len(), 1);
     }
@@ -735,8 +747,8 @@ mod tests {
         // drawing would be absent with nothing anywhere saying why. Refusing it at
         // the door is the only place the reason can be given.
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let error = prepare(&body(DrawingKind::Hline, vec![point(bad, 1.0)]))
-                .expect_err("must refuse");
+            let error =
+                prepare(&body(DrawingKind::Hline, vec![point(bad, 1.0)])).expect_err("must refuse");
             assert_eq!(error.code(), "DRAWING_INVALID", "{bad}");
         }
     }
@@ -876,7 +888,10 @@ mod tests {
             vec![point(T1, 45_000.0), point(T2, 45_500.0)],
             "every point comes back, in order, as an absolute anchor"
         );
-        assert_eq!(described.label.as_deref(), Some("the range I keep watching"));
+        assert_eq!(
+            described.label.as_deref(),
+            Some("the range I keep watching")
+        );
     }
 
     #[test]
@@ -917,7 +932,11 @@ mod tests {
         let wire = serde_json::to_value(DrawingResponse {
             id: "8f3a".into(),
             kind: DrawingKind::Channel,
-            points: vec![point(T1, 45_000.0), point(T2, 45_500.0), point(T3, 46_000.0)],
+            points: vec![
+                point(T1, 45_000.0),
+                point(T2, 45_500.0),
+                point(T3, 46_000.0),
+            ],
             label: Some("watch this".into()),
             options: DrawingOptions {
                 extend: Some(Extend::Left),
@@ -958,14 +977,16 @@ mod tests {
         // Not a bare anchor and not `null`: the shell reads `points` the same way
         // for every kind, and a level whose response is spelled differently is a
         // branch in the restore code that only runs on Tuesdays.
-        let wire = serde_json::to_value(describe(&stored(
-            "hline",
-            vec![StoredPoint {
-                time: T1,
-                price: 45_000.0,
-            }],
-        ))
-        .expect("a known kind"))
+        let wire = serde_json::to_value(
+            describe(&stored(
+                "hline",
+                vec![StoredPoint {
+                    time: T1,
+                    price: 45_000.0,
+                }],
+            ))
+            .expect("a known kind"),
+        )
         .expect("serializes");
         assert_eq!(wire["points"].as_array().map(Vec::len), Some(1));
     }

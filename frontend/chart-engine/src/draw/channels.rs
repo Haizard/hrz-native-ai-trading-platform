@@ -192,8 +192,8 @@ fn stretched(geometry: Geometry<'_>, default: Extend, from: f64, to: f64) -> (f6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drawing::DrawingOptions;
     use crate::draw::Stage;
+    use crate::drawing::DrawingOptions;
 
     fn segments(
         geometry: Geometry<'_>,
@@ -202,13 +202,7 @@ mod tests {
         kind(geometry)
             .into_iter()
             .filter_map(|part| match part {
-                DrawingPart::Segment {
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    ..
-                } => Some((x1, y1, x2, y2)),
+                DrawingPart::Segment { x1, y1, x2, y2, .. } => Some((x1, y1, x2, y2)),
                 _ => None,
             })
             .collect()
@@ -394,7 +388,10 @@ mod tests {
             (drawn[0].3 - drawn[0].1) > 0.0,
             "price falling left-to-right is a line falling on screen"
         );
-        assert_eq!(drawn, mirrored, "the drag's direction cannot change the band");
+        assert_eq!(
+            drawn, mirrored,
+            "the drag's direction cannot change the band"
+        );
     }
 
     #[test]

@@ -173,11 +173,7 @@ fn swing_slopes(points: &[SwingPoint], count: usize) -> Option<(f64, f64)> {
 
 /// The last `count` swings of one kind, oldest first.
 fn recent(points: &[SwingPoint], kind: SwingKind, count: usize) -> Vec<SwingPoint> {
-    let mut swings: Vec<SwingPoint> = points
-        .iter()
-        .filter(|p| p.kind == kind)
-        .copied()
-        .collect();
+    let mut swings: Vec<SwingPoint> = points.iter().filter(|p| p.kind == kind).copied().collect();
     if swings.len() > count {
         swings.drain(..swings.len() - count);
     }
@@ -271,7 +267,11 @@ fn detect_inverse_head_and_shoulders(
     })
 }
 
-fn detect_double(points: &[SwingPoint], kind: SwingKind, cfg: &PatternConfig) -> Option<PatternMatch> {
+fn detect_double(
+    points: &[SwingPoint],
+    kind: SwingKind,
+    cfg: &PatternConfig,
+) -> Option<PatternMatch> {
     let extremes = recent(points, kind, 2);
     if extremes.len() < 2 {
         return None;
@@ -330,7 +330,11 @@ fn detect_double(points: &[SwingPoint], kind: SwingKind, cfg: &PatternConfig) ->
             pattern_kind.name(),
             first.price,
             second.price,
-            if kind == SwingKind::High { "valley" } else { "peak" },
+            if kind == SwingKind::High {
+                "valley"
+            } else {
+                "peak"
+            },
             middle.price
         ),
     })
@@ -447,7 +451,10 @@ fn detect_flag(points: &[SwingPoint], candles: &[Candle]) -> Option<PatternMatch
     }
     let highs = recent(points, SwingKind::High, 2);
     let lows = recent(points, SwingKind::Low, 2);
-    let top = highs.iter().map(|p| p.price).fold(f64::NEG_INFINITY, f64::max);
+    let top = highs
+        .iter()
+        .map(|p| p.price)
+        .fold(f64::NEG_INFINITY, f64::max);
     let bottom = lows.iter().map(|p| p.price).fold(f64::INFINITY, f64::min);
     let entry = if bullish { top } else { bottom };
     Some(PatternMatch {
@@ -498,8 +505,9 @@ pub fn detect_patterns(
             PatternKind::InverseHeadAndShoulders => detect_inverse_head_and_shoulders(points, cfg),
             PatternKind::DoubleTop => detect_double(points, SwingKind::High, cfg),
             PatternKind::DoubleBottom => detect_double(points, SwingKind::Low, cfg),
-            PatternKind::Triangle | PatternKind::Wedge => detect_coil(points, cfg)
-                .filter(|m| m.kind == k),
+            PatternKind::Triangle | PatternKind::Wedge => {
+                detect_coil(points, cfg).filter(|m| m.kind == k)
+            }
             PatternKind::Flag => detect_flag(points, candles),
         };
         if let Some(m) = found {

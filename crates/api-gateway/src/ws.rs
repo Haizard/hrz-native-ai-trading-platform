@@ -762,8 +762,12 @@ where
 
     let mut ask = ai_agent::AskRequest::new(&request.symbol, &request.question);
     ask = ask.with_teaching(request.teaching);
-    if let Err(reason) = crate::agent_routes::validate_registry_concept_states(&request.concept_states) {
-        return Some(Frame::Notice { message: format!("concept states could not be used: {reason}") });
+    if let Err(reason) =
+        crate::agent_routes::validate_registry_concept_states(&request.concept_states)
+    {
+        return Some(Frame::Notice {
+            message: format!("concept states could not be used: {reason}"),
+        });
     }
     ask = ask.with_concept_states(request.concept_states.clone());
     if request.indicator_context.len() > 4
@@ -782,7 +786,9 @@ where
                 })
         })
     {
-        return Some(Frame::Notice { message: "indicator context was invalid or too large".into() });
+        return Some(Frame::Notice {
+            message: "indicator context was invalid or too large".into(),
+        });
     }
     ask = ask.with_indicator_context(request.indicator_context.clone());
     if let Some(skill) = request.skill_id {
@@ -911,9 +917,11 @@ where
     // The socket is the transport used by the actual chat UI, so expose the
     // same concept registry and cross-family composition tools as HTTP ask.
     ask = ask.with_concept_catalog(std::sync::Arc::new(crate::research::RegistryConceptCatalog));
-    ask = ask.with_compositions(std::sync::Arc::new(crate::research::GatewayCompositionRunner {
-        windows: state.windows.clone(),
-    }));
+    ask = ask.with_compositions(std::sync::Arc::new(
+        crate::research::GatewayCompositionRunner {
+            windows: state.windows.clone(),
+        },
+    ));
 
     // Web search, exactly as `POST /agent/ask` attaches it: the socket is the
     // path the chat UI actually uses, so it is where an unconfigured

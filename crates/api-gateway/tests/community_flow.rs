@@ -49,7 +49,11 @@ async fn workspace_with_revision(h: &common::Harness, token: &str) -> (String, S
             Some(token),
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "revision create failed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "revision create failed: {body}"
+    );
     (workspace_id, body["id"].as_str().unwrap().to_string())
 }
 
@@ -133,10 +137,15 @@ async fn the_author_chooses_public_or_private_and_can_switch_later() {
     // A private item is invisible to strangers, but the author still sees it
     // and manages it under "published by me".
     let (status, body) = h
-        .get(&format!("/community/indicators/{slug}"), Some(&stranger.token))
+        .get(
+            &format!("/community/indicators/{slug}"),
+            Some(&stranger.token),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
-    let mine = h.ok("/community/indicators/mine", Some(&author.token)).await;
+    let mine = h
+        .ok("/community/indicators/mine", Some(&author.token))
+        .await;
     assert!(
         mine["items"]
             .as_array()
@@ -157,7 +166,10 @@ async fn the_author_chooses_public_or_private_and_can_switch_later() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "listed");
     let detail = h
-        .ok(&format!("/community/indicators/{slug}"), Some(&stranger.token))
+        .ok(
+            &format!("/community/indicators/{slug}"),
+            Some(&stranger.token),
+        )
         .await;
     assert_eq!(detail["slug"], slug);
 

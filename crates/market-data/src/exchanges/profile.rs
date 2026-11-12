@@ -156,7 +156,8 @@ mod tests {
         let rest = candles.rest.expect("a REST channel");
         assert_eq!(rest.split, SplitQuality::Attributed);
         assert!(
-            rest.note.is_some_and(|note| note.contains("not a measurement")),
+            rest.note
+                .is_some_and(|note| note.contains("not a measurement")),
             "the attribution caveat is the honesty mechanism; it must exist"
         );
         // And the live channel is better: trade-built candles.

@@ -3058,6 +3058,7 @@ dependencies = [
  "clap",
  "db",
  "dotenvy",
+ "pine-lite",
  "serde_json",
  "strategy-dsl",
  "strategy-runtime",

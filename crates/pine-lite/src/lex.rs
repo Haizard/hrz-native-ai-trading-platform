@@ -101,7 +101,10 @@ pub fn lex(source: &str) -> Result<(Header, Vec<Token>), Vec<ScriptError>> {
         errors.push(err(
             1,
             1,
-            "a script must start with the `//@pine_lite version=1` annotation",
+            &format!(
+                "a script must start with the `//@pine_lite version={}` annotation",
+                crate::LANGUAGE_VERSION
+            ),
         ));
     }
     if errors.is_empty() {
@@ -217,11 +220,14 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
     for (key, value) in merged {
         match key.as_str() {
             "version" => match value.parse::<u32>() {
-                Ok(v) if v == 1 => header.version = v,
+                Ok(v) if v == crate::LANGUAGE_VERSION => header.version = v,
                 _ => errors.push(err(
                     line,
                     1,
-                    &format!("unsupported pine_lite version `{value}`; only 1 exists"),
+                    &format!(
+                        "unsupported pine_lite version `{value}`; only {} exists",
+                        crate::LANGUAGE_VERSION
+                    ),
                 )),
             },
             "overlay" => match value.as_str() {

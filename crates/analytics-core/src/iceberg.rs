@@ -218,10 +218,7 @@ fn current_visible(
     price: f64,
     side: Side,
 ) -> Option<f64> {
-    let snapshot = snapshots
-        .iter()
-        .rev()
-        .find(|s| s.timestamp <= ts)?;
+    let snapshot = snapshots.iter().rev().find(|s| s.timestamp <= ts)?;
     let levels = match side {
         Side::Buy => &snapshot.bids,
         Side::Sell => &snapshot.asks,
@@ -241,7 +238,10 @@ mod tests {
         OrderBookSnapshot {
             symbol: "TEST".into(),
             timestamp: ts,
-            bids: vec![OrderBookLevel { price, quantity: qty }],
+            bids: vec![OrderBookLevel {
+                price,
+                quantity: qty,
+            }],
             asks: vec![],
         }
     }
@@ -269,10 +269,7 @@ mod tests {
             bid_snapshot(1_000, 99.0, 5.0),
             bid_snapshot(3_000, 99.0, 2.0),
         ];
-        let trades = vec![
-            sell_trade(2_000, 99.0, 10.0),
-            sell_trade(4_000, 99.0, 20.0),
-        ];
+        let trades = vec![sell_trade(2_000, 99.0, 10.0), sell_trade(4_000, 99.0, 20.0)];
 
         let events = detect_icebergs(&snapshots, &trades, IcebergConfig::default());
         assert_eq!(events.len(), 1);

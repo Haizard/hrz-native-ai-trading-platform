@@ -391,8 +391,16 @@ mod tests {
         }
     }
 
-    fn drawing(kind: &str, p1: f64, p2: Option<f64>, label: Option<&str>) -> db::drawings::DrawingRow {
-        let mut points = vec![db::drawings::StoredPoint { time: 0.0, price: p1 }];
+    fn drawing(
+        kind: &str,
+        p1: f64,
+        p2: Option<f64>,
+        label: Option<&str>,
+    ) -> db::drawings::DrawingRow {
+        let mut points = vec![db::drawings::StoredPoint {
+            time: 0.0,
+            price: p1,
+        }];
         if let Some(price) = p2 {
             points.push(db::drawings::StoredPoint { time: 1.0, price });
         }

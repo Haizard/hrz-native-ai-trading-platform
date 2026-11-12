@@ -10,7 +10,9 @@ use analytics_core::types::Candle;
 use pine_lite::Inputs;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::args().nth(1).expect("usage: run_generated <script-file> [bos|tl]");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: run_generated <script-file> [bos|tl]");
     let scenario = std::env::args().nth(2).unwrap_or_else(|| "bos".to_string());
     let source = std::fs::read_to_string(path)?;
     let (_header, script) = pine_lite::vet(&source).map_err(|errs| {
@@ -45,11 +47,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // (~bar 42), a CHoCH down (~75), a CHoCH up (~105) that a 4h
             // downtrend filter must REJECT, then drift.
             match i {
-                0..=39 => 100.0 + i as f64 * 0.075 + 0.3 * (i as f64 * std::f64::consts::TAU / 16.0).sin(),
+                0..=39 => {
+                    100.0 + i as f64 * 0.075 + 0.3 * (i as f64 * std::f64::consts::TAU / 16.0).sin()
+                }
                 40..=68 => 103.0 + (i - 39) as f64 * 0.245,
                 69..=98 => 110.1 - (i - 68) as f64 * 0.2,
                 99..=130 => 104.1 + (i - 98) as f64 * 0.09,
-                _ => 107.0 - (i - 130) as f64 * 0.045 + 0.3 * ((i - 130) as f64 * std::f64::consts::TAU / 20.0).sin(),
+                _ => {
+                    107.0 - (i - 130) as f64 * 0.045
+                        + 0.3 * ((i - 130) as f64 * std::f64::consts::TAU / 20.0).sin()
+                }
             }
         } else if scenario == "smt" {
             // BTC for SMT divergence: higher swing high at 60 (106 vs 105 at
@@ -63,7 +70,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 76..=100 => 102.0 - (i - 75) as f64 * 0.16,
                 101..=115 => 98.0 + (i - 100) as f64 * 0.1333,
                 116..=130 => 100.0 - (i - 115) as f64 * 0.1667,
-                _ => 97.5 + 0.5 * ((i - 130) as f64 * std::f64::consts::TAU / 24.0).sin() + (i - 130) as f64 * 0.05,
+                _ => {
+                    97.5 + 0.5 * ((i - 130) as f64 * std::f64::consts::TAU / 24.0).sin()
+                        + (i - 130) as f64 * 0.05
+                }
             }
         } else if scenario == "sweep" {
             // Liquidity sweep + CHoCH: equal highs at 103.3 (bars 8, 24),
@@ -94,7 +104,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // down candle (the order block at bar 71), a pullback into the
             // overlap at ~100.3, then the rally leg that pays 2R.
             match i {
-                0..=59 => 110.0 - i as f64 * 0.17 + 1.2 * (i as f64 * std::f64::consts::TAU / 18.0).sin(),
+                0..=59 => {
+                    110.0 - i as f64 * 0.17 + 1.2 * (i as f64 * std::f64::consts::TAU / 18.0).sin()
+                }
                 60..=70 => 99.5 - (i - 59) as f64 * 0.045,
                 71 => 100.0,
                 72 => 100.6,
@@ -141,11 +153,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if scenario == "tl" {
             match i {
                 // Rising trend, ascending swing lows (a support line forms).
-                0..=99 => 90.0 + i as f64 * 0.35 + 2.5 * (i as f64 * std::f64::consts::TAU / 22.0).sin(),
+                0..=99 => {
+                    90.0 + i as f64 * 0.35 + 2.5 * (i as f64 * std::f64::consts::TAU / 22.0).sin()
+                }
                 // Shallow dip that breaks DOWN through the rising line.
                 100..=119 => 124.0 - (i - 99) as f64 * 0.8,
                 // Downtrend, descending swing highs (a resistance line forms).
-                120..=159 => 108.0 - (i - 119) as f64 * 0.4 + 2.5 * ((i - 119) as f64 * std::f64::consts::TAU / 22.0).sin(),
+                120..=159 => {
+                    108.0 - (i - 119) as f64 * 0.4
+                        + 2.5 * ((i - 119) as f64 * std::f64::consts::TAU / 22.0).sin()
+                }
                 // Rally that breaks UP through the falling line.
                 _ => 92.0 + (i - 159) as f64 * 1.1,
             }
@@ -237,17 +254,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .enumerate()
             .map(|(i, _)| {
                 let epoch = i / 8;
-                if epoch % 2 == 0 { 0.0001 } else { -0.0002 }
+                if epoch % 2 == 0 {
+                    0.0001
+                } else {
+                    -0.0002
+                }
             })
             .collect();
         data_series.insert("BTCUSDT.funding".to_string(), funding);
-        pine_lite::interp::Inputs { series_pool, data_series, ..Inputs::default() }
+        pine_lite::interp::Inputs {
+            series_pool,
+            data_series,
+            ..Inputs::default()
+        }
     } else if scenario == "smt" {
-        pine_lite::interp::Inputs { security: build_eth_path(&candles), ..Inputs::default() }
+        pine_lite::interp::Inputs {
+            security: build_eth_path(&candles),
+            ..Inputs::default()
+        }
     } else {
         Inputs::default()
     };
-    let inputs = pine_lite::interp::Inputs { mintick: Some(0.01), ..inputs };
+    let inputs = pine_lite::interp::Inputs {
+        mintick: Some(0.01),
+        ..inputs
+    };
     let out = pine_lite::run(&script, &candles, &inputs)?;
     if out.strategy_used {
         println!("STRATEGY intents: {}", out.intents.len());
@@ -276,19 +307,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    println!("objects: {} (truncated: {})", out.objects.len(), out.objects_truncated);
+    println!(
+        "objects: {} (truncated: {})",
+        out.objects.len(),
+        out.objects_truncated
+    );
     for a in &out.alerts {
         println!("ALERT bar={} text={:?}", a.bar, a.text);
     }
     for (i, obj) in out.objects.iter().enumerate() {
         match obj {
-            pine_lite::ScriptObject::Line { bar1, price1, bar2, price2, .. } => {
+            pine_lite::ScriptObject::Line {
+                bar1,
+                price1,
+                bar2,
+                price2,
+                ..
+            } => {
                 println!("[{i}] LINE ({bar1}, {price1:.2}) -> ({bar2}, {price2:.2})");
             }
-            pine_lite::ScriptObject::Label { bar, price, text, .. } => {
+            pine_lite::ScriptObject::Label {
+                bar, price, text, ..
+            } => {
                 println!("[{i}] LABEL ({bar}, {price:.2}) \"{text}\"");
             }
-            pine_lite::ScriptObject::Box { left, top, right, bottom, .. } => {
+            pine_lite::ScriptObject::Box {
+                left,
+                top,
+                right,
+                bottom,
+                ..
+            } => {
                 println!("[{i}] BOX ({left}, {top:.2}) -> ({right}, {bottom:.2})");
             }
             other => println!("[{i}] {other:?}"),
@@ -297,13 +346,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for plot in &out.plots {
         let sample: Vec<String> = [58usize, 100, 103, 104, 105, 190]
             .iter()
-            .map(|&b| format!("{}={:.2}", b, plot.values.get(b).copied().unwrap_or(f64::NAN)))
+            .map(|&b| {
+                format!(
+                    "{}={:.2}",
+                    b,
+                    plot.values.get(b).copied().unwrap_or(f64::NAN)
+                )
+            })
             .collect();
         println!("PLOT '{}' samples: {}", plot.title, sample.join(" "));
     }
     println!("plotshape glyphs across window: {}", out.shapes.len());
     for shape in out.shapes.iter() {
-        println!("  SHAPE bar={} value={:.2} glyph={}", shape.bar, shape.value, shape.glyph);
+        println!(
+            "  SHAPE bar={} value={:.2} glyph={}",
+            shape.bar, shape.value, shape.glyph
+        );
     }
     Ok(())
 }
@@ -391,7 +449,10 @@ fn build_eth_path(chart: &[Candle]) -> Vec<Candle> {
                 76..=100 => 100.0 - (i - 75) as f64 * 0.08,
                 101..=115 => 98.0 + (i - 100) as f64 * 0.1333,
                 116..=130 => 100.0 - (i - 115) as f64 * 0.12,
-                _ => 98.2 + 0.4 * ((i - 130) as f64 * std::f64::consts::TAU / 24.0).sin() + (i - 130) as f64 * 0.04,
+                _ => {
+                    98.2 + 0.4 * ((i - 130) as f64 * std::f64::consts::TAU / 24.0).sin()
+                        + (i - 130) as f64 * 0.04
+                }
             };
             Candle {
                 symbol: "ETHUSDT".to_string(),

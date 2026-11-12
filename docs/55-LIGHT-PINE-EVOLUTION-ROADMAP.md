@@ -1,9 +1,9 @@
 # Light Pine Evolution — Engineering Roadmap
 
-- **Status:** Phases 0, 1, and 2 complete. The audit, host-data contract,
-  runtime baseline, isolation boundary, and evidence-based language
-  architecture decision are recorded. No runtime or dependency change is
-  approved by that decision.
+- **Status:** Phases 0–3 complete; Phase 4 is next. The audit,
+  host-data contract, runtime baseline, isolation boundary, and
+  evidence-based language architecture decision are recorded. No dependency
+  change is approved by that decision.
 - **Scope owner:** QUANTERA platform
 - **Implementation rule:** ship one reviewable, tested capability per phase
 
@@ -324,12 +324,21 @@ isolation gaps are carried into the next phases with explicit tests and limits.
   trade-level, and order-book-dependent capabilities must be distinguished.
 - Add functions in small families with signatures, warm-up/`na` behavior,
   parameter bounds, multi-output behavior, and numerical fixtures.
+- **Complete — quantitative standard library:** every advertised `ta.*`
+  builtin has complete signatures/defaults, host-data and runtime metadata,
+  numeric coverage, and AI-reference discovery. The audit corrected full
+  lookback warm-up behavior and `ta.rising`/`ta.falling` semantics, added
+  `ta.cmf(length)` and `ta.ao()`, and consolidated compatible CCI, MFI, DMI,
+  Keltner, Bollinger, and A/D calculations with `analytics-core`. MACD retains
+  its Pine-specific earlier line warm-up because the shared point API only
+  emits after its signal line is ready. Unsupported order-flow inputs remain
+  unadvertised because the host does not supply trade/footprint data.
 
 **Exit gate**
 
-- Each advertised function is executable, documented, numerically tested, and
-  categorized by required input data; no placeholder or unsupported API
-  appears in AI capability discovery.
+- **Exit: Phase 3 complete.** Every advertised function is executable,
+  documented, numerically tested, and categorized by required input data; no
+  placeholder or unsupported API appears in AI capability discovery.
 
 ### Phase 4 — Charting contract
 
@@ -395,6 +404,14 @@ report](./58-LIGHT-PINE-PERFORMANCE-BASELINE.md).
 
 ### Phase 7 — AI Developer Kit and quality gates
 
+**Status: Complete.** `GET /scripts/capabilities` exposes the lexer language
+version and compiler-owned builtin catalog; provider/data capabilities remain
+available from `GET /capabilities`. The prompt and repair cheatsheet consume
+the same builtin registry, diagnostics have stable codes and spans, and the
+generation path vets, previews, repairs runtime failures, and persists only a
+successful preview. The prompt's reference script now has a candle-fixture
+execution test, and the language guide documents version and migration policy.
+
 **Work**
 
 - Generate authoritative machine-readable syntax/API/type/data/drawing
@@ -405,8 +422,9 @@ report](./58-LIGHT-PINE-PERFORMANCE-BASELINE.md).
 
 **Exit gate**
 
-- AI-facing capabilities match what runtime executes; generated scripts pass
-  vetting, run against fixtures, and receive actionable errors before install.
+- **Exit: Phase 7 complete.** The compiler registry is discoverable without a
+  duplicated API description, generated examples are vetted and executed,
+  repair errors are actionable, and runtime preview gates persistence.
 
 ## Cross-phase acceptance checklist
 

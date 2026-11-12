@@ -48,7 +48,13 @@ impl Placement<'_> {
 
     /// Canvas y of a price.
     pub fn py(&self, price: f64) -> f64 {
-        crate::scene::price_to_y(price, self.frame.price_min, self.frame.price_max, &self.frame.plot, self.frame.scale)
+        crate::scene::price_to_y(
+            price,
+            self.frame.price_min,
+            self.frame.price_max,
+            &self.frame.plot,
+            self.frame.scale,
+        )
     }
 }
 
@@ -75,7 +81,10 @@ pub fn position(placement: &Placement, name: &str, object: &ScriptObject) -> Vec
 }
 
 /// The registry. One row per primitive the VM can construct.
-pub const PRIMITIVES: &[Primitive] = &[Primitive { name: "fib", position: position_fib }];
+pub const PRIMITIVES: &[Primitive] = &[Primitive {
+    name: "fib",
+    position: position_fib,
+}];
 
 /// The retracement ratios and their label texts, in price order from the
 /// second anchor toward the first: 0 sits ON the second anchor (the swing's
@@ -95,7 +104,14 @@ const FIB_LEVELS: [(f64, &str); 7] = [
 /// the anchors themselves — are solid; the retracement levels dashed, the
 /// TradingView reading.
 fn position_fib(placement: &Placement, object: &ScriptObject) -> Vec<ScriptDraw> {
-    let ScriptObject::Fib { bar1, price1, bar2, price2, color } = object else {
+    let ScriptObject::Fib {
+        bar1,
+        price1,
+        bar2,
+        price2,
+        color,
+    } = object
+    else {
         return Vec::new();
     };
     if ![bar1, price1, bar2, price2].iter().all(|v| v.is_finite()) {
@@ -143,13 +159,18 @@ mod tests {
         // A 100-bar 5-minute window, prices 90..110, so the mapping math is
         // checkable by hand.
         let frame = Frame {
-            plot: Plot { x: 0.0, y: 0.0, w: 1000.0, h: 500.0 },
+            plot: Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 1000.0,
+                h: 500.0,
+            },
             from: 1_700_000_000_000_000_000,
             to: 1_700_000_000_000_000_000 + 100 * 300_000_000_000,
             price_min: 90.0,
             price_max: 110.0,
             bar_nanos: 300_000_000_000,
-        scale: crate::scene::ScaleMap::Linear,
+            scale: crate::scene::ScaleMap::Linear,
         };
         (frame, 10.0)
     }
@@ -157,7 +178,10 @@ mod tests {
     #[test]
     fn a_fib_decomposes_into_seven_positioned_levels_and_labels() {
         let (frame, slot) = placement();
-        let placement = Placement { frame: &frame, slot };
+        let placement = Placement {
+            frame: &frame,
+            slot,
+        };
         let fib = ScriptObject::Fib {
             bar1: 10.0,
             price1: 100.0,
@@ -169,7 +193,14 @@ mod tests {
         let lines: Vec<_> = parts
             .iter()
             .filter_map(|p| match p {
-                ScriptDraw::Line { x1, y1, x2, y2, style, .. } => Some((*x1, *y1, *x2, *y2, style)),
+                ScriptDraw::Line {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    style,
+                    ..
+                } => Some((*x1, *y1, *x2, *y2, style)),
                 _ => None,
             })
             .collect();
@@ -193,7 +224,10 @@ mod tests {
         // out-of-range drawing does. Level 100 sits on the first (100):
         // y = (110 - 100) / 20 * 500 = 250.
         let y100 = lines[6].1;
-        assert!((y100 - 250.0).abs() < 1e-9, "the 100 line at the swing start");
+        assert!(
+            (y100 - 250.0).abs() < 1e-9,
+            "the 100 line at the swing start"
+        );
         // The 61.8% level: 120 - 20 * 0.618 = 107.64 -> y = (110 - 107.64)/20*500.
         let y618 = lines[4].1;
         let expect618 = (110.0 - (120.0 - 20.0 * 0.618)) / 20.0 * 500.0;
@@ -209,7 +243,10 @@ mod tests {
     #[test]
     fn a_fib_with_a_hole_decomposes_to_nothing() {
         let (frame, slot) = placement();
-        let placement = Placement { frame: &frame, slot };
+        let placement = Placement {
+            frame: &frame,
+            slot,
+        };
         let fib = ScriptObject::Fib {
             bar1: 10.0,
             price1: f64::NAN,

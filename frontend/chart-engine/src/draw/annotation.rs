@@ -241,7 +241,9 @@ mod tests {
         g.text = Some("W!");
         let parts = callout(g);
         assert!(parts.len() >= 3);
-        assert!(parts.iter().any(|p| matches!(p, DrawingPart::Segment { .. })));
+        assert!(parts
+            .iter()
+            .any(|p| matches!(p, DrawingPart::Segment { .. })));
         assert!(matches!(&parts[parts.len()-1], DrawingPart::Text { text, .. } if text == "W!"));
     }
 
@@ -267,7 +269,9 @@ mod tests {
         let parts = flag_mark(g);
         assert_eq!(parts.len(), 2);
         assert!(matches!(parts[0], DrawingPart::Segment { .. }));
-        assert!(matches!(&parts[1], DrawingPart::Polygon { filled: true, points } if points.len() == 3));
+        assert!(
+            matches!(&parts[1], DrawingPart::Polygon { filled: true, points } if points.len() == 3)
+        );
     }
 
     #[test]
@@ -279,7 +283,10 @@ mod tests {
         g.text = Some("A");
         let parts = icon_mark(g);
         assert_eq!(parts.len(), 2);
-        assert!(matches!(parts[0], DrawingPart::Ellipse { filled: true, .. }));
+        assert!(matches!(
+            parts[0],
+            DrawingPart::Ellipse { filled: true, .. }
+        ));
         assert!(matches!(&parts[1], DrawingPart::Text { text, .. } if text == "A"));
     }
 }

@@ -520,24 +520,24 @@ pub fn pane_from_output(
                 .show_last
                 .map(|n| p.values.len().saturating_sub(n.max(0.0) as usize));
             ScriptPlot {
-            title: p.title.clone(),
-            points: p
-                .values
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| v.is_finite())
-                .filter(|(bar, _)| cutoff.is_none_or(|c| *bar >= c))
-                .map(|(bar, v)| crate::scene::Point {
-                    x: plot.x + slot * (bar as f64 + 0.5 + p.offset),
-                    y: y_at(*v),
-                })
-                .collect(),
-            color: p.color,
-            linewidth: p.linewidth,
-            // docs/32: the legend's value is the last FINITE one -- a
-            // trailing `na` is a hole the polyline already skips, and the
-            // legend must not show a hole either.
-            last_value: p.values.iter().rev().find(|v| v.is_finite()).copied(),
+                title: p.title.clone(),
+                points: p
+                    .values
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.is_finite())
+                    .filter(|(bar, _)| cutoff.is_none_or(|c| *bar >= c))
+                    .map(|(bar, v)| crate::scene::Point {
+                        x: plot.x + slot * (bar as f64 + 0.5 + p.offset),
+                        y: y_at(*v),
+                    })
+                    .collect(),
+                color: p.color,
+                linewidth: p.linewidth,
+                // docs/32: the legend's value is the last FINITE one -- a
+                // trailing `na` is a hole the polyline already skips, and the
+                // legend must not show a hole either.
+                last_value: p.values.iter().rev().find(|v| v.is_finite()).copied(),
             }
         })
         .collect();
@@ -561,7 +561,11 @@ pub fn pane_from_output(
             // A shape without `location_value=` has no absolute value: anchor
             // it just above the pane's bottom edge -- the pane-adapted form of
             // Pine's below-bar markers, so plotshape() always renders.
-            y: if s.value.is_finite() { y_at(s.value) } else { plot.y + plot.h - 6.0 },
+            y: if s.value.is_finite() {
+                y_at(s.value)
+            } else {
+                plot.y + plot.h - 6.0
+            },
             glyph: s.glyph.clone(),
             color: s.color,
             bar: s.bar,
@@ -596,7 +600,13 @@ pub fn scene_overlay_plots(
     frame: &crate::scene::Frame,
 ) -> Vec<ScriptPlot> {
     let price_to_y = |v: f64| {
-        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot, frame.scale)
+        crate::scene::price_to_y(
+            v,
+            frame.price_min,
+            frame.price_max,
+            &frame.plot,
+            frame.scale,
+        )
     };
     output
         .plots
@@ -608,24 +618,24 @@ pub fn scene_overlay_plots(
                 .show_last
                 .map(|n| p.values.len().saturating_sub(n.max(0.0) as usize));
             ScriptPlot {
-            title: p.title.clone(),
-            points: p
-                .values
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| v.is_finite())
-                .filter(|(bar, _)| cutoff.is_none_or(|c| *bar >= c))
-                .map(|(bar, v)| crate::scene::Point {
-                    // `offset=` shifts the plot in bar units -- presentation
-                    // only, the values stay in bar order (Pine's rule).
-                    x: frame.plot.x + slot * (bar as f64 + 0.5 + p.offset),
-                    y: price_to_y(*v),
-                })
-                .collect(),
-            color: p.color,
-            linewidth: p.linewidth,
-            // docs/32: same legend contract as the pane path.
-            last_value: p.values.iter().rev().find(|v| v.is_finite()).copied(),
+                title: p.title.clone(),
+                points: p
+                    .values
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.is_finite())
+                    .filter(|(bar, _)| cutoff.is_none_or(|c| *bar >= c))
+                    .map(|(bar, v)| crate::scene::Point {
+                        // `offset=` shifts the plot in bar units -- presentation
+                        // only, the values stay in bar order (Pine's rule).
+                        x: frame.plot.x + slot * (bar as f64 + 0.5 + p.offset),
+                        y: price_to_y(*v),
+                    })
+                    .collect(),
+                color: p.color,
+                linewidth: p.linewidth,
+                // docs/32: same legend contract as the pane path.
+                last_value: p.values.iter().rev().find(|v| v.is_finite()).copied(),
             }
         })
         .collect()
@@ -648,7 +658,11 @@ pub fn scene_overlay_shapes(
         .shapes
         .iter()
         .map(|s| {
-            let value = if s.value.is_finite() { s.value } else { lo + (hi - lo) * 0.04 };
+            let value = if s.value.is_finite() {
+                s.value
+            } else {
+                lo + (hi - lo) * 0.04
+            };
             ScriptShape {
                 x: frame.plot.x + slot * (s.bar as f64 + 0.5),
                 y: crate::scene::price_to_y(value, lo, hi, &frame.plot, frame.scale),
@@ -671,7 +685,13 @@ pub fn scene_overlay_polylines(
     frame: &crate::scene::Frame,
 ) -> Vec<ScriptDraw> {
     let py = |v: f64| {
-        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot, frame.scale)
+        crate::scene::price_to_y(
+            v,
+            frame.price_min,
+            frame.price_max,
+            &frame.plot,
+            frame.scale,
+        )
     };
     output
         .polylines
@@ -700,21 +720,39 @@ pub fn scene_overlay_linefills(
     frame: &crate::scene::Frame,
 ) -> Vec<ScriptDraw> {
     let py = |v: f64| {
-        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot, frame.scale)
+        crate::scene::price_to_y(
+            v,
+            frame.price_min,
+            frame.price_max,
+            &frame.plot,
+            frame.scale,
+        )
     };
     let seg = |o: &pine_lite::interp::ScriptObject| -> Option<((f64, f64), (f64, f64))> {
         match o {
-            pine_lite::interp::ScriptObject::Line { bar1, price1, bar2, price2, .. }
-                if bar1.is_finite() && bar2.is_finite() && price1.is_finite() && price2.is_finite() =>
+            pine_lite::interp::ScriptObject::Line {
+                bar1,
+                price1,
+                bar2,
+                price2,
+                ..
+            } if bar1.is_finite()
+                && bar2.is_finite()
+                && price1.is_finite()
+                && price2.is_finite() =>
             {
                 Some((
                     (frame.plot.x + slot * (*bar1 + 0.5), py(*price1)),
                     (frame.plot.x + slot * (*bar2 + 0.5), py(*price2)),
                 ))
             }
-            pine_lite::interp::ScriptObject::LineTime { t1, price1, t2, price2, .. }
-                if t1.is_finite() && t2.is_finite() && price1.is_finite() && price2.is_finite() =>
-            {
+            pine_lite::interp::ScriptObject::LineTime {
+                t1,
+                price1,
+                t2,
+                price2,
+                ..
+            } if t1.is_finite() && t2.is_finite() && price1.is_finite() && price2.is_finite() => {
                 Some((
                     (frame.x_at_nanos(*t1 as i64), py(*price1)),
                     (frame.x_at_nanos(*t2 as i64), py(*price2)),
@@ -732,7 +770,10 @@ pub fn scene_overlay_linefills(
             if (a1.0 - a2.0).abs() < f64::EPSILON || (b1.0 - b2.0).abs() < f64::EPSILON {
                 return None; // a vertical line has no slope to fill against
             }
-            let (lo, hi) = (a1.0.min(a2.0).max(b1.0.min(b2.0)), a1.0.max(a2.0).min(b1.0.max(b2.0)));
+            let (lo, hi) = (
+                a1.0.min(a2.0).max(b1.0.min(b2.0)),
+                a1.0.max(a2.0).min(b1.0.max(b2.0)),
+            );
             if hi - lo < f64::EPSILON {
                 return None; // the lines never share an x
             }
@@ -797,10 +838,7 @@ fn project_extend(
 /// Position every `table.new` panel against the plot rect: the position
 /// constant picks the corner (center variants center the panel), and cells
 /// keep their grid coordinates for the shell to lay out.
-pub fn scene_overlay_tables(
-    output: &Output,
-    frame: &crate::scene::Frame,
-) -> Vec<ScriptDraw> {
+pub fn scene_overlay_tables(output: &Output, frame: &crate::scene::Frame) -> Vec<ScriptDraw> {
     const CELL_W: f64 = 96.0;
     const CELL_H: f64 = 18.0;
     output
@@ -835,7 +873,13 @@ pub fn scene_overlay_tables(
                 })
                 .collect();
             cells.sort_by_key(|c| (c.row, c.col));
-            ScriptDraw::Table { x, y, cell_w: CELL_W, cell_h: CELL_H, cells }
+            ScriptDraw::Table {
+                x,
+                y,
+                cell_w: CELL_W,
+                cell_h: CELL_H,
+                cells,
+            }
         })
         .collect()
 }
@@ -850,7 +894,13 @@ pub fn scene_overlay_tints(
     frame: &crate::scene::Frame,
 ) -> Vec<ScriptDraw> {
     let py = |v: f64| {
-        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot, frame.scale)
+        crate::scene::price_to_y(
+            v,
+            frame.price_min,
+            frame.price_max,
+            &frame.plot,
+            frame.scale,
+        )
     };
     let mut draws = Vec::new();
     for tint in &output.tints {
@@ -921,7 +971,13 @@ pub fn scene_overlay_candles(
     frame: &crate::scene::Frame,
 ) -> Vec<ScriptDraw> {
     let py = |v: f64| {
-        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot, frame.scale)
+        crate::scene::price_to_y(
+            v,
+            frame.price_min,
+            frame.price_max,
+            &frame.plot,
+            frame.scale,
+        )
     };
     let mut draws = Vec::new();
     for plot in &output.plots {
@@ -1010,7 +1066,8 @@ pub fn scene_overlay_objects(
         let idx = if bar < 0.0 { last + bar } else { bar };
         frame.plot.x + slot * (idx + 0.5)
     };
-    let py = |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot, frame.scale) };
+    let py =
+        |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot, frame.scale) };
     output
         .objects
         .iter()
@@ -1019,8 +1076,21 @@ pub fn scene_overlay_objects(
         // seven labels. The built-in shapes keep their one-to-one shape as a
         // one-element Vec.
         .flat_map(|o| match o {
-            pine_lite::interp::ScriptObject::Line { bar1, price1, bar2, price2, color, style, width, extend } => {
-                if !bar1.is_finite() || !bar2.is_finite() || !price1.is_finite() || !price2.is_finite() {
+            pine_lite::interp::ScriptObject::Line {
+                bar1,
+                price1,
+                bar2,
+                price2,
+                color,
+                style,
+                width,
+                extend,
+            } => {
+                if !bar1.is_finite()
+                    || !bar2.is_finite()
+                    || !price1.is_finite()
+                    || !price2.is_finite()
+                {
                     return Vec::new();
                 }
                 let (x1, y1, x2, y2) = (bx(*bar1), py(*price1), bx(*bar2), py(*price2));
@@ -1036,14 +1106,37 @@ pub fn scene_overlay_objects(
                     extend: extend.clone(),
                 }]
             }
-            pine_lite::interp::ScriptObject::Label { bar, price, text, color } => {
+            pine_lite::interp::ScriptObject::Label {
+                bar,
+                price,
+                text,
+                color,
+            } => {
                 if !bar.is_finite() || !price.is_finite() {
                     return Vec::new();
                 }
-                vec![ScriptDraw::Label { x: bx(*bar), y: py(*price), text: text.clone(), color: *color }]
+                vec![ScriptDraw::Label {
+                    x: bx(*bar),
+                    y: py(*price),
+                    text: text.clone(),
+                    color: *color,
+                }]
             }
-            pine_lite::interp::ScriptObject::Box { left, top, right, bottom, color, border_color, border_width, border_style } => {
-                if !left.is_finite() || !right.is_finite() || !top.is_finite() || !bottom.is_finite() {
+            pine_lite::interp::ScriptObject::Box {
+                left,
+                top,
+                right,
+                bottom,
+                color,
+                border_color,
+                border_width,
+                border_style,
+            } => {
+                if !left.is_finite()
+                    || !right.is_finite()
+                    || !top.is_finite()
+                    || !bottom.is_finite()
+                {
                     return Vec::new();
                 }
                 vec![ScriptDraw::Box {
@@ -1064,8 +1157,18 @@ pub fn scene_overlay_objects(
             // so an HTF zone lands exactly where its bars sit on this chart's
             // axis. An anchor outside the window maps off-plot and the canvas
             // clips, exactly as a bar-index object does.
-            pine_lite::interp::ScriptObject::LineTime { t1, price1, t2, price2, color, style, width, extend } => {
-                if !t1.is_finite() || !t2.is_finite() || !price1.is_finite() || !price2.is_finite() {
+            pine_lite::interp::ScriptObject::LineTime {
+                t1,
+                price1,
+                t2,
+                price2,
+                color,
+                style,
+                width,
+                extend,
+            } => {
+                if !t1.is_finite() || !t2.is_finite() || !price1.is_finite() || !price2.is_finite()
+                {
                     return Vec::new();
                 }
                 let (x1, y1, x2, y2) = (
@@ -1086,7 +1189,12 @@ pub fn scene_overlay_objects(
                     extend: extend.clone(),
                 }]
             }
-            pine_lite::interp::ScriptObject::LabelTime { nanos, price, text, color } => {
+            pine_lite::interp::ScriptObject::LabelTime {
+                nanos,
+                price,
+                text,
+                color,
+            } => {
                 if !nanos.is_finite() || !price.is_finite() {
                     return Vec::new();
                 }
@@ -1097,8 +1205,21 @@ pub fn scene_overlay_objects(
                     color: *color,
                 }]
             }
-            pine_lite::interp::ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color, border_color, border_width, border_style } => {
-                if !left_nanos.is_finite() || !right_nanos.is_finite() || !top.is_finite() || !bottom.is_finite() {
+            pine_lite::interp::ScriptObject::BoxTime {
+                left_nanos,
+                top,
+                right_nanos,
+                bottom,
+                color,
+                border_color,
+                border_width,
+                border_style,
+            } => {
+                if !left_nanos.is_finite()
+                    || !right_nanos.is_finite()
+                    || !top.is_finite()
+                    || !bottom.is_finite()
+                {
                     return Vec::new();
                 }
                 vec![ScriptDraw::Box {
@@ -1226,7 +1347,8 @@ pub fn scene_strategy_layer(
 ) -> Option<ScriptStrategyLayer> {
     let sim = output.simulation.as_ref()?;
     let (lo, hi) = (frame.price_min, frame.price_max);
-    let py = |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot, frame.scale) };
+    let py =
+        |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot, frame.scale) };
     let fill = |o: &pine_lite::sim::SimOrder| ScriptFill {
         // The sim's `bar` is the decision bar; the fill is the next open, so
         // the marker sits one slot right, on the bar that actually filled.
@@ -1353,7 +1475,12 @@ mod tests {
     }
 
     fn plot_rect() -> crate::scene::Plot {
-        crate::scene::Plot { x: 10.0, y: 20.0, w: 380.0, h: 90.0 }
+        crate::scene::Plot {
+            x: 10.0,
+            y: 20.0,
+            w: 380.0,
+            h: 90.0,
+        }
     }
 
     const RSI_SCRIPT: &str = "//@pine_lite version=1 overlay=false title=\"RSI\"\n\
@@ -1364,9 +1491,17 @@ mod tests {
 
     #[test]
     fn an_rsi_script_yields_a_positioned_pane() {
-        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0 + ((i % 7) as f64))).collect();
+        let candles: Vec<Candle> = (0..40)
+            .map(|i| candle(i, 100.0 + ((i % 7) as f64)))
+            .collect();
         let pane = script_pane(
-            &ScriptSpec { source: RSI_SCRIPT.into(), inputs: Default::default(), security: Vec::new(), series_pool: Default::default(), data_series: Default::default() },
+            &ScriptSpec {
+                source: RSI_SCRIPT.into(),
+                inputs: Default::default(),
+                security: Vec::new(),
+                series_pool: Default::default(),
+                data_series: Default::default(),
+            },
             &candles,
             10.0,
             &plot_rect(),
@@ -1377,7 +1512,11 @@ mod tests {
         // One polyline per hline too? No: hlines are levels, not plots. But
         // the shell's own debug caught a real bug here once -- the two
         // `hline()` calls must land as two levels.
-        assert_eq!(pane.levels.len(), 2, "hline(70) and hline(30) are two levels");
+        assert_eq!(
+            pane.levels.len(),
+            2,
+            "hline(70) and hline(30) are two levels"
+        );
         // `analytics_core::rsi` produces its first value at index `period`
         // (14), so bars 0..13 are na and absent from the polyline.
         assert_eq!(pane.plots[0].points.len(), 40 - 14);
@@ -1409,12 +1548,26 @@ mod tests {
         let output = run(&parsed, &candles, &Inputs::default()).expect("run");
         let pane = pane_from_output(&header, &output, 10.0, &plot_rect()).expect("pane");
         assert_eq!(pane.plots.len(), 2);
-        assert_eq!(pane.plots[0].last_value, Some(100.0), "the last finite value, not the na tail");
-        assert_eq!(pane.plots[0].points.len(), 35, "the polyline stops where the values do");
-        assert_eq!(pane.plots[1].last_value, None, "an all-na plot has nothing to show");
+        assert_eq!(
+            pane.plots[0].last_value,
+            Some(100.0),
+            "the last finite value, not the na tail"
+        );
+        assert_eq!(
+            pane.plots[0].points.len(),
+            35,
+            "the polyline stops where the values do"
+        );
+        assert_eq!(
+            pane.plots[1].last_value, None,
+            "an all-na plot has nothing to show"
+        );
         let json = serde_json::to_value(&pane).expect("serializes");
         assert_eq!(json["plots"][0]["last_value"], 100.0);
-        assert!(json["plots"][1].get("last_value").is_none(), "the key is omitted, not null");
+        assert!(
+            json["plots"][1].get("last_value").is_none(),
+            "the key is omitted, not null"
+        );
         let old = serde_json::json!({"title": "t", "points": [], "color": 1u32, "linewidth": 1.0});
         let parsed_old: ScriptPlot = serde_json::from_value(old).expect("old scenes still parse");
         assert_eq!(parsed_old.last_value, None);
@@ -1457,7 +1610,10 @@ mod tests {
             10.0,
             &plot_rect(),
         );
-        assert!(err.is_err(), "an all-na series must refuse, not draw an empty pane");
+        assert!(
+            err.is_err(),
+            "an all-na series must refuse, not draw an empty pane"
+        );
     }
 
     #[test]
@@ -1500,7 +1656,11 @@ mod tests {
         assert_eq!(pane.plots.len(), 1);
         // The pooled close at bar 20 is 60.0, not the chart's 100.0: the
         // pane's value range must span the pair, not the chart.
-        assert!(pane.value_max < 70.0, "max={} (pair, not chart)", pane.value_max);
+        assert!(
+            pane.value_max < 70.0,
+            "max={} (pair, not chart)",
+            pane.value_max
+        );
     }
 
     #[test]
@@ -1585,7 +1745,11 @@ mod tests {
         }))
         .expect("the wire shape deserializes");
         let pane = script_pane(&spec, &candles, 10.0, &plot_rect()).expect("pane");
-        assert!(pane.value_max < 150.0, "max={} -- a wrong-typed input was coerced", pane.value_max);
+        assert!(
+            pane.value_max < 150.0,
+            "max={} -- a wrong-typed input was coerced",
+            pane.value_max
+        );
     }
 
     #[test]
@@ -1598,7 +1762,7 @@ mod tests {
             price_min: 99.0,
             price_max: 101.0,
             bar_nanos: 60_000_000_000,
-        scale: crate::scene::ScaleMap::Linear,
+            scale: crate::scene::ScaleMap::Linear,
         };
         let (header, parsed) =
             pine_lite::vet("//@pine_lite version=1 overlay=true\nplot(close)\n").expect("vet");
@@ -1608,7 +1772,11 @@ mod tests {
         assert_eq!(plots.len(), 1);
         // close=100 is the middle of 99..101, so y is the plot's middle.
         let mid = plot_rect().y + plot_rect().h / 2.0;
-        assert!((plots[0].points[20].y - mid).abs() < 1.0, "{}", plots[0].points[20].y);
+        assert!(
+            (plots[0].points[20].y - mid).abs() < 1.0,
+            "{}",
+            plots[0].points[20].y
+        );
         let _ = header;
     }
 
@@ -1624,7 +1792,7 @@ mod tests {
             price_min: 99.0,
             price_max: 101.0,
             bar_nanos: 60_000_000_000,
-        scale: crate::scene::ScaleMap::Linear,
+            scale: crate::scene::ScaleMap::Linear,
         };
         let src = "//@pine_lite version=1 overlay=true\nplot(close)\nmark = close == close\nplotshape(mark, color=color.green, location_value=high)\n";
         let (_, parsed) = pine_lite::vet(src).expect("vet");
@@ -1634,7 +1802,11 @@ mod tests {
         assert_eq!(shapes.len(), 40, "one marker per bar");
         // high=101 is the top of the 99..101 frame, so it maps to the plot's
         // own top edge.
-        assert!((shapes[20].y - plot_rect().y).abs() < 1.0, "high=101 is the top: {}", shapes[20].y);
+        assert!(
+            (shapes[20].y - plot_rect().y).abs() < 1.0,
+            "high=101 is the top: {}",
+            shapes[20].y
+        );
         // The bar index rides along: the shell pulses only markers on the
         // freshest bars, so "which bar is this marker on" must survive.
         assert_eq!(shapes[20].bar, 20, "marker i sits on bar i");
@@ -1651,7 +1823,7 @@ mod tests {
             price_min: 99.0,
             price_max: 111.0,
             bar_nanos: 60_000_000_000,
-        scale: crate::scene::ScaleMap::Linear,
+            scale: crate::scene::ScaleMap::Linear,
         };
         let src = concat!(
             "//@pine_lite version=1 overlay=true\n",
@@ -1755,12 +1927,7 @@ mod tests {
             "BTCUSDT@1H".into(),
             aligned_pool(
                 12,
-                &[
-                    (100.0, 90.0),
-                    (110.0, 95.0),
-                    (115.0, 105.0),
-                    (120.0, 110.0),
-                ],
+                &[(100.0, 90.0), (110.0, 95.0), (115.0, 105.0), (120.0, 110.0)],
             ),
         );
         let spec = ScriptSpec {
@@ -1771,8 +1938,8 @@ mod tests {
             data_series: Default::default(),
         };
         let (header, parsed) = pine_lite::vet(SOURCE).expect("fixture vets");
-        let output = run(&parsed, &candles, &inputs_from_spec(&spec, "BTCUSDT"))
-            .expect("fixture runs");
+        let output =
+            run(&parsed, &candles, &inputs_from_spec(&spec, "BTCUSDT")).expect("fixture runs");
         assert!(header.overlay, "the output is an overlay");
 
         let frame = crate::scene::Frame {
@@ -1799,7 +1966,11 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(boxes.len(), 2, "one positioned zone for each timeframe: {draws:?}");
+        assert_eq!(
+            boxes.len(),
+            2,
+            "one positioned zone for each timeframe: {draws:?}"
+        );
         assert_eq!(labels, ["15m FVG", "1h FVG"]);
         for (x1, y1, x2, y2) in boxes {
             assert!(x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite());
@@ -1843,7 +2014,10 @@ mod tests {
         match &objects[0] {
             ScriptDraw::Box { x1, x2, .. } => {
                 let rect = plot_rect();
-                assert!(*x1 > rect.x && *x1 < rect.x + rect.w, "left edge on-plot: {x1}");
+                assert!(
+                    *x1 > rect.x && *x1 < rect.x + rect.w,
+                    "left edge on-plot: {x1}"
+                );
                 // -1 counts back from the last bar: the right edge lands at
                 // the window's right side, not millions of pixels past it.
                 let right_edge = rect.x + rect.w;
@@ -1869,7 +2043,7 @@ mod tests {
             price_min: 99.0,
             price_max: 111.0,
             bar_nanos: 60_000_000_000,
-        scale: crate::scene::ScaleMap::Linear,
+            scale: crate::scene::ScaleMap::Linear,
         };
         let src = concat!(
             "//@pine_lite version=1 overlay=true\n",
@@ -1885,16 +2059,26 @@ mod tests {
         assert_eq!(objects.len(), 2);
         let json = serde_json::to_value(&objects).expect("serializes");
         let first = &json[0]["Box"];
-        assert!(first["border_color"].is_u64(), "the border rides the wire when set: {first}");
+        assert!(
+            first["border_color"].is_u64(),
+            "the border rides the wire when set: {first}"
+        );
         assert_eq!(first["border_width"], 2.0);
         assert_eq!(first["border_style"], "dotted");
         let second = &json[1]["Box"];
-        assert!(second.get("border_color").is_none(), "borderless boxes omit the key: {second}");
+        assert!(
+            second.get("border_color").is_none(),
+            "borderless boxes omit the key: {second}"
+        );
         // And the old shape still deserializes into the new struct.
         let old = serde_json::json!({"Box": {"x1": 1.0, "y1": 2.0, "x2": 3.0, "y2": 4.0, "color": 4294925568u32}});
         let parsed_old: ScriptDraw = serde_json::from_value(old).expect("old scenes still parse");
         match parsed_old {
-            ScriptDraw::Box { border_color, border_width, .. } => {
+            ScriptDraw::Box {
+                border_color,
+                border_width,
+                ..
+            } => {
                 assert_eq!(border_color, None);
                 assert_eq!(border_width, 1.0);
             }
@@ -1958,7 +2142,10 @@ mod tests {
         let x18 = rect.x + (18.0 / 40.0) * rect.w;
         match &objects[0] {
             ScriptDraw::Box { x1, y1, x2, y2, .. } => {
-                assert!((x1 - x8).abs() < 1.0, "left edge at bar 8's open: {x1} vs {x8}");
+                assert!(
+                    (x1 - x8).abs() < 1.0,
+                    "left edge at bar 8's open: {x1} vs {x8}"
+                );
                 assert!(*x2 > rect.x + rect.w, "the far edge maps off-plot: {x2}");
                 assert!(*y1 < *y2, "top above bottom in canvas y");
             }
@@ -1982,12 +2169,18 @@ mod tests {
 
     #[test]
     fn a_log_scale_pane_spaces_ratios_evenly() {
-        let plot = crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 };
+        let plot = crate::scene::Plot {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 200.0,
+        };
         let spec = ScriptSpec {
             source: concat!(
                 "//@pine_lite version=1 overlay=false scale=scale.log\n",
                 "plot(close)\n",
-            ).to_string(),
+            )
+            .to_string(),
             inputs: std::collections::HashMap::new(),
             security: Vec::new(),
             series_pool: std::collections::HashMap::new(),
@@ -2004,14 +2197,22 @@ mod tests {
         let pts = &pane.plots[0].points;
         let d1 = (pts[1].y - pts[0].y).abs(); // 10 -> 100 (one decade)
         let d2 = (pts[2].y - pts[1].y).abs(); // 100 -> 1000 (one decade)
-        assert!((d1 - d2).abs() < 1e-6, "equal ratios, equal spacing: {d1} vs {d2}");
+        assert!(
+            (d1 - d2).abs() < 1e-6,
+            "equal ratios, equal spacing: {d1} vs {d2}"
+        );
         assert!(d1 > 50.0, "two decades span real height: {d1}");
     }
 
     #[test]
     fn chart_points_feed_the_pine_form_polyline() {
         let frame = crate::scene::Frame {
-            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            plot: crate::scene::Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 200.0,
+            },
             from: 0,
             to: 40 * 60_000_000_000,
             price_min: 90.0,
@@ -2035,13 +2236,19 @@ mod tests {
         let output = run(&parsed, &candles, &Inputs::default()).expect("run");
         assert_eq!(output.polylines.len(), 1, "one path");
         let pl = &output.polylines[0];
-        assert_eq!(pl.points, vec![(2.0, 95.0), (10.0, 110.0), (18.0, 100.0)],
-            "handles from earlier bars resolve at polyline.new time");
+        assert_eq!(
+            pl.points,
+            vec![(2.0, 95.0), (10.0, 110.0), (18.0, 100.0)],
+            "handles from earlier bars resolve at polyline.new time"
+        );
         let draws = scene_overlay_polylines(&output, 10.0, &frame);
-        let d = draws.iter().find_map(|d| match d {
-            ScriptDraw::Polyline { points, width, .. } => Some((points.len(), *width)),
-            _ => None,
-        }).expect("one polyline draw");
+        let d = draws
+            .iter()
+            .find_map(|d| match d {
+                ScriptDraw::Polyline { points, width, .. } => Some((points.len(), *width)),
+                _ => None,
+            })
+            .expect("one polyline draw");
         assert_eq!(d.0, 3);
         assert!((d.1 - 2.0).abs() < 1e-9, "line_width rides");
     }
@@ -2049,7 +2256,12 @@ mod tests {
     #[test]
     fn a_polyline_maps_its_vertices_and_delete_clears_it() {
         let frame = crate::scene::Frame {
-            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            plot: crate::scene::Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 200.0,
+            },
             from: 0,
             to: 40 * 60_000_000_000,
             price_min: 90.0,
@@ -2077,12 +2289,19 @@ mod tests {
         assert_eq!(output.polylines.len(), 1);
         assert_eq!(output.polylines[0].points.len(), 3, "three vertices");
         let draws = scene_overlay_polylines(&output, 10.0, &frame);
-        let pl = draws.iter().find_map(|d| match d {
-            ScriptDraw::Polyline { points, closed, fill_color, width, .. } => {
-                Some((points.len(), *closed, *fill_color, *width))
-            }
-            _ => None,
-        }).expect("one polyline draw");
+        let pl = draws
+            .iter()
+            .find_map(|d| match d {
+                ScriptDraw::Polyline {
+                    points,
+                    closed,
+                    fill_color,
+                    width,
+                    ..
+                } => Some((points.len(), *closed, *fill_color, *width)),
+                _ => None,
+            })
+            .expect("one polyline draw");
         assert_eq!(pl.0, 3);
         assert!(pl.1, "closed rides");
         // fill alpha from color.new(purple, 80): round(255 * 0.2) = 51 = 0x33.
@@ -2102,7 +2321,12 @@ mod tests {
     #[test]
     fn a_linefill_resolves_to_the_overlap_quad_and_follows_setters() {
         let frame = crate::scene::Frame {
-            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            plot: crate::scene::Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 200.0,
+            },
             from: 0,
             to: 40 * 60_000_000_000,
             price_min: 90.0,
@@ -2122,13 +2346,21 @@ mod tests {
         let output = run(&parsed, &candles, &Inputs::default()).expect("run");
         assert_eq!(output.linefills.len(), 1, "one fill");
         let draws = scene_overlay_linefills(&output, 10.0, &frame);
-        let quad = draws.iter().find_map(|d| match d {
-            ScriptDraw::Polygon { points, fill_alpha, .. } => Some((*points, *fill_alpha)),
-            _ => None,
-        }).expect("one polygon");
+        let quad = draws
+            .iter()
+            .find_map(|d| match d {
+                ScriptDraw::Polygon {
+                    points, fill_alpha, ..
+                } => Some((*points, *fill_alpha)),
+                _ => None,
+            })
+            .expect("one polygon");
         // Lines span bars 0..20: x from slot*0.5 to slot*20.5.
-        assert!((quad.0[0].0 - 5.0).abs() < 1e-9 && (quad.0[1].0 - 205.0).abs() < 1e-9,
-            "the overlap spans the shared range: {:?}", quad.0);
+        assert!(
+            (quad.0[0].0 - 5.0).abs() < 1e-9 && (quad.0[1].0 - 205.0).abs() < 1e-9,
+            "the overlap spans the shared range: {:?}",
+            quad.0
+        );
         // The top line is flat at 110 (y near the plot top); the bottom
         // rises 100 -> 104, so the quad's bottom edge slopes.
         assert!((quad.0[0].1 - quad.0[1].1).abs() < 1e-9, "top edge flat");
@@ -2147,13 +2379,21 @@ mod tests {
         );
         let (_, parsed2) = pine_lite::vet(src2).expect("vet 2");
         let output2 = run(&parsed2, &candles, &Inputs::default()).expect("run 2");
-        assert!(output2.linefills.is_empty(), "a deleted line drops the fill");
+        assert!(
+            output2.linefills.is_empty(),
+            "a deleted line drops the fill"
+        );
     }
 
     #[test]
     fn plotshape_carries_size_and_per_bar_text() {
         let frame = crate::scene::Frame {
-            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            plot: crate::scene::Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 200.0,
+            },
             from: 0,
             to: 40 * 60_000_000_000,
             price_min: 90.0,
@@ -2171,7 +2411,10 @@ mod tests {
         let mut cs: Vec<Candle> = (0..20).map(|i| candle(i, 100.0 - i as f64)).collect();
         cs.extend((20..40).map(|i| candle(i, 82.0 + (i - 20) as f64)));
         let output = run(&parsed, &cs, &Inputs::default()).expect("run");
-        assert!(!output.shapes.is_empty(), "the V-shape crosses up somewhere");
+        assert!(
+            !output.shapes.is_empty(),
+            "the V-shape crosses up somewhere"
+        );
         let shapes = scene_overlay_shapes(&output, 10.0, &frame);
         let m = &shapes[0];
         assert_eq!(m.size, "large", "size= maps through");
@@ -2184,7 +2427,12 @@ mod tests {
     #[test]
     fn show_last_keeps_only_the_tail_of_a_plot() {
         let frame = crate::scene::Frame {
-            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            plot: crate::scene::Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 200.0,
+            },
             from: 0,
             to: 40 * 60_000_000_000,
             price_min: 90.0,
@@ -2206,7 +2454,10 @@ mod tests {
         assert_eq!(plots[1].points.len(), 5, "only the last five bars draw");
         // The tail starts at bar 35: x = slot * (35 + 0.5).
         let first_x = plots[1].points[0].x;
-        assert!((first_x - 355.0).abs() < 1e-9, "tail starts at bar 35: {first_x}");
+        assert!(
+            (first_x - 355.0).abs() < 1e-9,
+            "tail starts at bar 35: {first_x}"
+        );
     }
 
     #[test]
@@ -2225,16 +2476,24 @@ mod tests {
         let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
         let output = run(&parsed, &candles, &Inputs::default()).expect("run");
         // color.new(teal, 90): teal 0xFF2DD4BF, alpha = round(255 * 0.1) = 26 = 0x1A.
-        let box_color = output.objects.iter().find_map(|o| match o {
-            pine_lite::interp::ScriptObject::Box { color, .. } => Some(*color),
-            _ => None,
-        }).expect("the box");
+        let box_color = output
+            .objects
+            .iter()
+            .find_map(|o| match o {
+                pine_lite::interp::ScriptObject::Box { color, .. } => Some(*color),
+                _ => None,
+            })
+            .expect("the box");
         assert_eq!(box_color, 0x1A_2D_D4_BF, "translucent teal packs AARRGGBB");
         // color.rgb(255, 200, 50) with no transparency: 0xFF_FF_C8_32.
-        let label_color = output.objects.iter().find_map(|o| match o {
-            pine_lite::interp::ScriptObject::Label { color, .. } => Some(*color),
-            _ => None,
-        }).expect("the label");
+        let label_color = output
+            .objects
+            .iter()
+            .find_map(|o| match o {
+                pine_lite::interp::ScriptObject::Label { color, .. } => Some(*color),
+                _ => None,
+            })
+            .expect("the label");
         assert_eq!(label_color, 0xFF_FF_C8_32, "rgb channels pack in order");
         // The gradient tint: RSI of flat closes is na (no gains/losses) ->
         // the bar-20 tint is None, and no panic. Use a rising series instead
@@ -2246,13 +2505,21 @@ mod tests {
         // All-gains RSI = 100 -> top of the gradient -> red.
         let r = (tint >> 16) & 0xFF;
         let g = (tint >> 8) & 0xFF;
-        assert!(r > 200 && g < 120, "RSI 100 lands at the red end: {tint:#x}");
+        assert!(
+            r > 200 && g < 120,
+            "RSI 100 lands at the red end: {tint:#x}"
+        );
     }
 
     #[test]
     fn a_dashboard_table_anchors_top_right_with_its_last_writes() {
         let frame = crate::scene::Frame {
-            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            plot: crate::scene::Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 200.0,
+            },
             from: 0,
             to: 40 * 60_000_000_000,
             price_min: 90.0,
@@ -2275,12 +2542,25 @@ mod tests {
         assert_eq!(output.tables.len(), 1, "one panel");
         assert_eq!(output.tables[0].cells.len(), 2, "two written cells");
         let draws = scene_overlay_tables(&output, &frame);
-        let table = draws.iter().find_map(|d| match d {
-            ScriptDraw::Table { x, y, cells, cell_w, .. } => Some((*x, *y, cells.len(), *cell_w)),
-            _ => None,
-        }).expect("one table draw");
+        let table = draws
+            .iter()
+            .find_map(|d| match d {
+                ScriptDraw::Table {
+                    x,
+                    y,
+                    cells,
+                    cell_w,
+                    ..
+                } => Some((*x, *y, cells.len(), *cell_w)),
+                _ => None,
+            })
+            .expect("one table draw");
         // 2 columns * 96 = 192 wide; top_right anchors at plot.w - 192.
-        assert!((table.0 - (400.0 - 192.0)).abs() < 1e-9, "right-anchored: {}", table.0);
+        assert!(
+            (table.0 - (400.0 - 192.0)).abs() < 1e-9,
+            "right-anchored: {}",
+            table.0
+        );
         assert_eq!(table.1, 0.0, "top-anchored");
         assert_eq!(table.2, 2, "both cells ride");
         // The per-bar update won: cell (1,0) shows the LAST close.
@@ -2288,7 +2568,10 @@ mod tests {
             ScriptDraw::Table { cells, .. } => cells,
             _ => unreachable!(),
         };
-        let val = cells.iter().find(|c| c.col == 1 && c.row == 0).expect("value cell");
+        let val = cells
+            .iter()
+            .find(|c| c.col == 1 && c.row == 0)
+            .expect("value cell");
         assert_eq!(val.text, "139.00", "the last bar's write stands");
         assert_eq!(val.text_color, cells[1].text_color);
     }
@@ -2296,7 +2579,12 @@ mod tests {
     #[test]
     fn fills_and_tints_decompose_into_zero_border_boxes() {
         let frame = crate::scene::Frame {
-            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            plot: crate::scene::Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 200.0,
+            },
             from: 0,
             to: 40 * 60_000_000_000,
             price_min: 90.0,
@@ -2322,13 +2610,24 @@ mod tests {
         assert_eq!(output.barcolors.len(), 1, "one barcolor array");
         let draws = scene_overlay_tints(&output, 10.0, &frame);
         let (tints, bands) = draws.iter().fold((0usize, 0usize), |(t, b), d| match d {
-            ScriptDraw::Box { fill_alpha: Some(a), border_width, .. } if *border_width == 0.0 => {
-                if (*a - 0.10).abs() < 1e-9 { (t + 1, b) } else { (t, b + 1) }
+            ScriptDraw::Box {
+                fill_alpha: Some(a),
+                border_width,
+                ..
+            } if *border_width == 0.0 => {
+                if (*a - 0.10).abs() < 1e-9 {
+                    (t + 1, b)
+                } else {
+                    (t, b + 1)
+                }
             }
             _ => (t, b),
         });
         assert_eq!(tints, 10, "ten tinted bars (bar_index < 10)");
-        assert!(bands >= 19, "the fill band covers the EMA overlap (warmup 21): {bands}");
+        assert!(
+            bands >= 19,
+            "the fill band covers the EMA overlap (warmup 21): {bands}"
+        );
         // barcolor merge: last finite write wins per bar.
         let merged = overlay_barcolors(&output, 40);
         assert!(merged.iter().any(|c| c.is_some()), "some bars recolored");
@@ -2337,7 +2636,12 @@ mod tests {
     #[test]
     fn a_plotcandle_decomposes_into_wicks_and_solid_bodies() {
         let frame = crate::scene::Frame {
-            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            plot: crate::scene::Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 200.0,
+            },
             from: 0,
             to: 40 * 60_000_000_000,
             price_min: 90.0,
@@ -2355,7 +2659,10 @@ mod tests {
         assert_eq!(output.plots.len(), 1);
         assert!(output.plots[0].candles.is_some(), "the VM carries OHLC");
         let draws = scene_overlay_candles(&output, 10.0, &frame);
-        let wicks = draws.iter().filter(|d| matches!(d, ScriptDraw::Line { .. })).count();
+        let wicks = draws
+            .iter()
+            .filter(|d| matches!(d, ScriptDraw::Line { .. }))
+            .count();
         let bodies: Vec<_> = draws
             .iter()
             .filter_map(|d| match d {
@@ -2367,17 +2674,29 @@ mod tests {
         assert_eq!(bodies.len(), 40, "one body per bar");
         assert!(bodies.iter().all(|a| *a == Some(1.0)), "bodies fill solid");
         // Bar 0's wick centers in slot 0: x = slot * 0.5.
-        let wick = draws.iter().find_map(|d| match d {
-            ScriptDraw::Line { x1, x2, .. } if x1 == x2 => Some((*x1, *x2)),
-            _ => None,
-        }).expect("a vertical wick");
-        assert!((wick.0 - 5.0).abs() < 1e-9, "wick at slot center: {}", wick.0);
+        let wick = draws
+            .iter()
+            .find_map(|d| match d {
+                ScriptDraw::Line { x1, x2, .. } if x1 == x2 => Some((*x1, *x2)),
+                _ => None,
+            })
+            .expect("a vertical wick");
+        assert!(
+            (wick.0 - 5.0).abs() < 1e-9,
+            "wick at slot center: {}",
+            wick.0
+        );
     }
 
     #[test]
     fn a_plot_offset_shifts_points_in_bar_units() {
         let frame = crate::scene::Frame {
-            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            plot: crate::scene::Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 200.0,
+            },
             from: 0,
             to: 40 * 60_000_000_000,
             price_min: 90.0,
@@ -2402,7 +2721,12 @@ mod tests {
     #[test]
     fn an_extend_right_line_projects_its_far_end_to_the_plot_edge() {
         let frame = crate::scene::Frame {
-            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            plot: crate::scene::Plot {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 200.0,
+            },
             from: 0,
             to: 40 * 60_000_000_000,
             price_min: 90.0,
@@ -2423,7 +2747,14 @@ mod tests {
         let line = objects
             .iter()
             .find_map(|o| match o {
-                ScriptDraw::Line { x1, y1, x2, y2, extend, .. } => Some((*x1, *y1, *x2, *y2, extend)),
+                ScriptDraw::Line {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    extend,
+                    ..
+                } => Some((*x1, *y1, *x2, *y2, extend)),
                 _ => None,
             })
             .expect("one line");
@@ -2439,7 +2770,10 @@ mod tests {
         // from x1 to the edge, keeps the line's angle.
         let slope = (y2 - y1) / (x2 - x1);
         let y_at_edge = y1 + slope * (rect.x + rect.w - x1);
-        assert!((y2 - y_at_edge).abs() < 1e-6, "the extension stays on the slope");
+        assert!(
+            (y2 - y_at_edge).abs() < 1e-6,
+            "the extension stays on the slope"
+        );
     }
 
     #[test]
@@ -2451,7 +2785,7 @@ mod tests {
             price_min: 99.0,
             price_max: 101.0,
             bar_nanos: 60_000_000_000,
-        scale: crate::scene::ScaleMap::Linear,
+            scale: crate::scene::ScaleMap::Linear,
         };
         let src = "//@pine_lite version=1 overlay=true\nplot(close)\nmark = close == close\nplotshape(mark, color=color.green)\n";
         let (_, parsed) = pine_lite::vet(src).expect("vet");
@@ -2460,8 +2794,16 @@ mod tests {
         let shapes = scene_overlay_shapes(&output, 10.0, &frame);
         assert_eq!(shapes.len(), 40);
         // Anchored near the bottom of the price range, inside the plot.
-        assert!(shapes[0].y > plot_rect().y + plot_rect().h * 0.85, "{}", shapes[0].y);
-        assert!(shapes[0].y <= plot_rect().y + plot_rect().h, "{}", shapes[0].y);
+        assert!(
+            shapes[0].y > plot_rect().y + plot_rect().h * 0.85,
+            "{}",
+            shapes[0].y
+        );
+        assert!(
+            shapes[0].y <= plot_rect().y + plot_rect().h,
+            "{}",
+            shapes[0].y
+        );
     }
 
     // -- docs/24 S2: strategy positioning --------------------------------
@@ -2478,7 +2820,9 @@ mod tests {
     );
 
     fn strat_candles(n: usize) -> Vec<Candle> {
-        (0..n).map(|i| candle(i, 100.0 + ((i % 7) as f64))).collect()
+        (0..n)
+            .map(|i| candle(i, 100.0 + ((i % 7) as f64)))
+            .collect()
     }
 
     fn strat_frame() -> crate::scene::Frame {
@@ -2489,7 +2833,7 @@ mod tests {
             price_min: 99.0,
             price_max: 108.0,
             bar_nanos: 60_000_000_000,
-        scale: crate::scene::ScaleMap::Linear,
+            scale: crate::scene::ScaleMap::Linear,
         }
     }
 
@@ -2497,14 +2841,23 @@ mod tests {
     fn a_strategy_script_positions_fills_trades_and_report() {
         let (_, parsed) = pine_lite::vet(STRAT_SCRIPT).expect("vet");
         let output = run(&parsed, &strat_candles(40), &Inputs::default()).expect("run");
-        let layer = scene_strategy_layer("Strat", &output, 10.0, &strat_frame()).expect("strategy layer");
+        let layer =
+            scene_strategy_layer("Strat", &output, 10.0, &strat_frame()).expect("strategy layer");
         assert_eq!(layer.id, "script:Strat");
         assert!(!layer.trades.is_empty(), "the cycling fixture trades");
         for t in &layer.trades {
             for f in [&t.entry, &t.exit] {
                 // Fill markers map through the price frame, like every plot.
-                assert!(f.x >= plot_rect().x && f.x <= plot_rect().x + plot_rect().w, "{}", f.x);
-                assert!(f.y >= plot_rect().y && f.y <= plot_rect().y + plot_rect().h, "{}", f.y);
+                assert!(
+                    f.x >= plot_rect().x && f.x <= plot_rect().x + plot_rect().w,
+                    "{}",
+                    f.x
+                );
+                assert!(
+                    f.y >= plot_rect().y && f.y <= plot_rect().y + plot_rect().h,
+                    "{}",
+                    f.y
+                );
             }
             // Next-open rule: the fill bar is the decision bar's successor.
             assert!(t.exit.bar > t.entry.bar, "{} > {}", t.exit.bar, t.entry.bar);
@@ -2513,7 +2866,11 @@ mod tests {
         // The trades' pnl must sum to the report's net profit -- the pairing
         // reconstructs exactly the round trips the sim counted.
         let summed: f64 = layer.trades.iter().map(|t| t.pnl).sum();
-        assert!((summed - layer.report.net_profit).abs() < 1e-6, "{summed} vs {}", layer.report.net_profit);
+        assert!(
+            (summed - layer.report.net_profit).abs() < 1e-6,
+            "{summed} vs {}",
+            layer.report.net_profit
+        );
         assert_eq!(layer.report.total_trades, layer.trades.len());
     }
 
@@ -2527,7 +2884,11 @@ mod tests {
         // One point per bar of the window, all inside the pane's slice.
         assert_eq!(pane.points.len(), 40);
         for p in &pane.points {
-            assert!(p.y >= plot_rect().y && p.y <= plot_rect().y + plot_rect().h, "{}", p.y);
+            assert!(
+                p.y >= plot_rect().y && p.y <= plot_rect().y + plot_rect().h,
+                "{}",
+                p.y
+            );
         }
         // The curve brackets the initial capital (the sim starts there).
         assert!(pane.value_min <= 10_000.0 && pane.value_max >= 10_000.0);
@@ -2543,16 +2904,21 @@ mod tests {
         );
         let (_, parsed) = pine_lite::vet(src).expect("vet");
         let output = run(&parsed, &strat_candles(40), &Inputs::default()).expect("run");
-        let layer = scene_strategy_layer("Held", &output, 10.0, &strat_frame()).expect("strategy layer");
+        let layer =
+            scene_strategy_layer("Held", &output, 10.0, &strat_frame()).expect("strategy layer");
         assert!(layer.trades.is_empty(), "never closed");
-        let open = layer.open_position.expect("the position survives the window");
+        let open = layer
+            .open_position
+            .expect("the position survives the window");
         assert!(open.long);
         assert!(open.y >= plot_rect().y && open.y <= plot_rect().y + plot_rect().h);
     }
 
     #[test]
     fn an_indicator_script_yields_no_strategy_layer_or_equity() {
-        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0 + ((i % 7) as f64))).collect();
+        let candles: Vec<Candle> = (0..40)
+            .map(|i| candle(i, 100.0 + ((i % 7) as f64)))
+            .collect();
         let (_, parsed) = pine_lite::vet(RSI_SCRIPT).expect("vet");
         let output = run(&parsed, &candles, &Inputs::default()).expect("run");
         assert!(scene_strategy_layer("RSI", &output, 10.0, &strat_frame()).is_none());

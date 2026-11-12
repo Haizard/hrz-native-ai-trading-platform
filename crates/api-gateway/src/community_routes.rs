@@ -108,9 +108,7 @@ fn clean_tags(tags: &[String]) -> Result<Vec<String>, ApiError> {
     for tag in tags {
         let tag = tag.trim().to_ascii_lowercase();
         if tag.is_empty() || tag.chars().count() > MAX_TAG_CHARS {
-            return Err(metadata(format!(
-                "a tag is 1-{MAX_TAG_CHARS} characters"
-            )));
+            return Err(metadata(format!("a tag is 1-{MAX_TAG_CHARS} characters")));
         }
         if !out.contains(&tag) {
             out.push(tag);
@@ -181,9 +179,10 @@ fn revet(
         strategy_dsl::parse_and_validate(source)
             .map_err(|error| source_invalid(vec![error.to_string()]))?;
     }
-    let output: chart_engine::IndicatorOutput = serde_json::from_value(preview.clone()).map_err(
-        |error| source_invalid(vec![format!("the preview is not a chart output: {error}")]),
-    )?;
+    let output: chart_engine::IndicatorOutput =
+        serde_json::from_value(preview.clone()).map_err(|error| {
+            source_invalid(vec![format!("the preview is not a chart output: {error}")])
+        })?;
     output
         .validate()
         .map_err(|error| source_invalid(vec![error]))?;
@@ -520,11 +519,7 @@ pub async fn publish(
             revision.source.len()
         )]));
     }
-    revet(
-        &revision.source,
-        &revision.validation,
-        &revision.preview,
-    )?;
+    revet(&revision.source, &revision.validation, &revision.preview)?;
 
     let title = clean_title(&body.title)?;
     let summary = clean_summary(body.summary.as_deref().unwrap_or(revision.summary.as_str()))?;
@@ -604,13 +599,10 @@ pub async fn add_version(
             "a removed indicator cannot gain versions",
         ));
     }
-    let count = db::list_community_versions(
-        database.pool(),
-        item.id,
-        MAX_VERSIONS_PER_INDICATOR + 1,
-    )
-    .await?
-    .len() as i64;
+    let count =
+        db::list_community_versions(database.pool(), item.id, MAX_VERSIONS_PER_INDICATOR + 1)
+            .await?
+            .len() as i64;
     if count >= MAX_VERSIONS_PER_INDICATOR {
         return Err(conflict(
             "COMMUNITY_VERSION_LIMIT_REACHED",
@@ -620,12 +612,15 @@ pub async fn add_version(
     let workspace = db::get_indicator_workspace(database.pool(), user.user_id, body.workspace_id)
         .await?
         .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
-    let revision_id = body.revision_id.or(workspace.active_revision_id).ok_or_else(|| {
-        conflict(
-            "COMMUNITY_REVISION_NOT_VALIDATED",
-            "the workspace has no revision to publish",
-        )
-    })?;
+    let revision_id = body
+        .revision_id
+        .or(workspace.active_revision_id)
+        .ok_or_else(|| {
+            conflict(
+                "COMMUNITY_REVISION_NOT_VALIDATED",
+                "the workspace has no revision to publish",
+            )
+        })?;
     let revision =
         db::get_indicator_revision(database.pool(), user.user_id, workspace.id, revision_id)
             .await?
@@ -641,11 +636,7 @@ pub async fn add_version(
             "the source exceeds {MAX_COMMUNITY_SOURCE_BYTES} bytes"
         )]));
     }
-    revet(
-        &revision.source,
-        &revision.validation,
-        &revision.preview,
-    )?;
+    revet(&revision.source, &revision.validation, &revision.preview)?;
     let summary = clean_summary(body.summary.as_deref().unwrap_or(revision.summary.as_str()))?;
     db::create_community_version(
         database.pool(),
@@ -834,8 +825,14 @@ pub async fn update(
         "Updated to {}'s {} v{}",
         item.author_name, item.title, version.version_number
     );
-    match db::update_community_install(database.pool(), user.user_id, item.id, &version, &provenance)
-        .await?
+    match db::update_community_install(
+        database.pool(),
+        user.user_id,
+        item.id,
+        &version,
+        &provenance,
+    )
+    .await?
     {
         db::UpdateOutcome::Updated {
             workspace_id,
@@ -904,9 +901,8 @@ pub async fn report(
             format!("a report note is at most {MAX_REPORT_NOTE_CHARS} characters"),
         ));
     }
-    let new =
-        db::report_community_indicator(database.pool(), user.user_id, item.id, &reason, note)
-            .await?;
+    let new = db::report_community_indicator(database.pool(), user.user_id, item.id, &reason, note)
+        .await?;
     Ok(Json(serde_json::json!({
         "reported": true,
         "already_reported": !new,

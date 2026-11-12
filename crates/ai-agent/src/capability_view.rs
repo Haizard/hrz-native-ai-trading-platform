@@ -40,7 +40,9 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use analytics_core::MarketState;
-use capabilities::{Availability, DataKind, DataScope, Provider, Registry, SplitQuality, SymbolClass};
+use capabilities::{
+    Availability, DataKind, DataScope, Provider, Registry, SplitQuality, SymbolClass,
+};
 
 use crate::skills::{FallbackAccept, Skill};
 
@@ -175,10 +177,7 @@ impl CapabilityView {
         for need in &requirements.preferred {
             let resolution = self.resolve(need.capability.as_str(), symbol);
             if resolution.availability != Availability::Available {
-                gaps.push(format!(
-                    "{}: {}",
-                    need.capability, resolution.explanation
-                ));
+                gaps.push(format!("{}: {}", need.capability, resolution.explanation));
             }
         }
 
@@ -259,7 +258,9 @@ impl CapabilityView {
             }
         }
         if !notes.is_empty() {
-            let why = block["why"].as_array_mut().expect("observed block has a why list");
+            let why = block["why"]
+                .as_array_mut()
+                .expect("observed block has a why list");
             why.extend(notes.into_iter().map(Value::from));
         }
         block
@@ -440,7 +441,8 @@ mod tests {
         assert_eq!(block["sections"]["imbalance"], "unavailable");
         let why = block["why"].as_array().expect("a why list").clone();
         assert!(
-            why.iter().any(|w| w.as_str().is_some_and(|s| s.contains("no trades"))),
+            why.iter()
+                .any(|w| w.as_str().is_some_and(|s| s.contains("no trades"))),
             "{why:?}"
         );
     }
@@ -599,12 +601,18 @@ mod tests {
 
         // No fallback: refused, in words.
         let verdict = view.check_skill(&skill(&["delta"], &[]), "BTCUSDT");
-        assert!(matches!(verdict, SkillVerdict::Refused { .. }), "{verdict:?}");
+        assert!(
+            matches!(verdict, SkillVerdict::Refused { .. }),
+            "{verdict:?}"
+        );
 
         // The document opts in: eligible — and now its own rules must treat
         // the number as the estimate it is.
         let verdict = view.check_skill(
-            &skill(&["delta"], &[("delta", crate::skills::FallbackAccept::Derived)]),
+            &skill(
+                &["delta"],
+                &[("delta", crate::skills::FallbackAccept::Derived)],
+            ),
             "BTCUSDT",
         );
         assert_eq!(verdict, SkillVerdict::Eligible { gaps: Vec::new() });
@@ -621,8 +629,7 @@ mod tests {
             panic!("a preferred miss must not refuse")
         };
         assert!(
-            gaps.iter()
-                .any(|gap| gap.contains("orderbook_snapshots")),
+            gaps.iter().any(|gap| gap.contains("orderbook_snapshots")),
             "{gaps:?}"
         );
     }

@@ -191,13 +191,12 @@ struct Position {
 /// Book one exit leg -- possibly a fraction of the position -- and shrink
 /// the remainder. Returns (closed_qty, pnl). Fees are pro-rata per leg, so
 /// a three-leg scale-out pays the same total commission as one full exit.
-fn close_leg(
-    pos: &mut Position,
-    frac: f64,
-    price: f64,
-    knobs: &StrategyHeader,
-) -> (f64, f64) {
-    let closed_qty = if frac >= 1.0 { pos.qty } else { pos.qty * frac.max(0.0) };
+fn close_leg(pos: &mut Position, frac: f64, price: f64, knobs: &StrategyHeader) -> (f64, f64) {
+    let closed_qty = if frac >= 1.0 {
+        pos.qty
+    } else {
+        pos.qty * frac.max(0.0)
+    };
     if knobs.contracts {
         // Contract mode: qty IS the stake; the move scales by the
         // multiplier, the loss caps at the stake. The round-trip commission
@@ -219,7 +218,8 @@ fn close_leg(
     } else {
         (pos.entry_price - price) * closed_qty * knobs.pointvalue
     };
-    let fees = commission(knobs, closed_qty * pos.entry_price) + commission(knobs, closed_qty * price);
+    let fees =
+        commission(knobs, closed_qty * pos.entry_price) + commission(knobs, closed_qty * price);
     pos.qty -= closed_qty;
     (closed_qty, gross - fees)
 }
@@ -243,7 +243,11 @@ pub fn stop_fill_price(long: bool, open: f64, stop: f64) -> f64 {
 /// limit, or at the open when the bar GAPPED past it (the better price).
 #[must_use]
 pub fn limit_fill_price(long: bool, open: f64, limit: f64) -> f64 {
-    if long { open.max(limit) } else { open.min(limit) }
+    if long {
+        open.max(limit)
+    } else {
+        open.min(limit)
+    }
 }
 
 #[must_use]
@@ -251,8 +255,16 @@ pub fn default_stop(candles: &[Candle], bar: usize, long: bool) -> Option<f64> {
     let candle = candles.get(bar)?;
     let atr14 = crate::ta::ta_atr(candles, 14.0);
     let atr = atr14.get(bar).copied().unwrap_or(f64::NAN);
-    let distance = if atr.is_finite() { 2.0 * atr } else { candle.close * 0.02 };
-    Some(if long { candle.close - distance } else { candle.close + distance })
+    let distance = if atr.is_finite() {
+        2.0 * atr
+    } else {
+        candle.close * 0.02
+    };
+    Some(if long {
+        candle.close - distance
+    } else {
+        candle.close + distance
+    })
 }
 
 /// Fill price for a market order at `open`: slippage moves against the
@@ -293,7 +305,11 @@ fn open_pnl(pos: &Position, price: f64, knobs: &StrategyHeader) -> f64 {
 /// Simulate one run's intents over the candles. Deterministic, order-only —
 /// no user code runs here, so no fuel is metered.
 #[must_use]
-pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &StrategyHeader) -> Simulation {
+pub fn simulate(
+    intents: &[(usize, Intent)],
+    candles: &[Candle],
+    knobs: &StrategyHeader,
+) -> Simulation {
     let mut sim = Simulation::default();
     let mut position: Option<Position> = None;
     let mut realized = 0.0;
@@ -364,9 +380,9 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
             match intent {
                 Intent::Entry { long, qty, .. }
                     if position.is_none()
-                        || position.as_ref().is_some_and(|p| {
-                            p.long == long && p.legs < 1 + knobs.pyramiding
-                        }) =>
+                        || position
+                            .as_ref()
+                            .is_some_and(|p| p.long == long && p.legs < 1 + knobs.pyramiding) =>
                 {
                     // The risk layer's guards: NEW risk halts here; an open
                     // position is managed to its end regardless.
@@ -380,7 +396,9 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                     let equity_mark = knobs.initial_capital + realized;
                     let qty = qty.unwrap_or_else(|| match knobs.default_qty_type {
                         QtyType::Fixed => knobs.default_qty_value,
-                        QtyType::PercentOfEquity => equity_mark * knobs.default_qty_value / 100.0 / price,
+                        QtyType::PercentOfEquity => {
+                            equity_mark * knobs.default_qty_value / 100.0 / price
+                        }
                     });
                     // strategy.risk.max_position_size caps the order.
                     let qty = risk_max_qty.map_or(qty, |cap| qty.min(cap));
@@ -391,8 +409,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                             // bracket armed with THIS leg replaces the old
                             // one (the fresh leg's exit plan wins).
                             let new_qty = pos.qty + qty;
-                            pos.entry_price =
-                                (pos.qty * pos.entry_price + qty * price) / new_qty;
+                            pos.entry_price = (pos.qty * pos.entry_price + qty * price) / new_qty;
                             pos.qty = new_qty;
                             pos.legs += 1;
                             if pending_stop.is_some() {
@@ -404,7 +421,10 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                             if pending_pct.is_some() {
                                 pos.exit_pct = pending_pct.take();
                             }
-                            if pending_trail.0.is_some() || pending_trail.1.is_some() || pending_trail.2.is_some() {
+                            if pending_trail.0.is_some()
+                                || pending_trail.1.is_some()
+                                || pending_trail.2.is_some()
+                            {
                                 pos.trail_points = pending_trail.0.take();
                                 pos.trail_price = pending_trail.1.take();
                                 pos.trail_offset = pending_trail.2.take();
@@ -449,11 +469,17 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         // The CLOSING trade's side: exiting a long is a sell
                         // (fill slips down), exiting a short is a buy.
                         let price = fill_price(exit_ref, !pos.long, knobs.slippage_pct);
-                        let frac = qty_percent.map(|p| (p / 100.0).clamp(0.0, 1.0)).unwrap_or(1.0);
+                        let frac = qty_percent
+                            .map(|p| (p / 100.0).clamp(0.0, 1.0))
+                            .unwrap_or(1.0);
                         let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
                         realized += pnl;
                         closed += 1.0;
-                        if pnl > 0.0 { risk_state.consecutive_losses = 0; } else { risk_state.consecutive_losses += 1; }
+                        if pnl > 0.0 {
+                            risk_state.consecutive_losses = 0;
+                        } else {
+                            risk_state.consecutive_losses += 1;
+                        }
                         if pnl > 0.0 {
                             wins += 1.0;
                             gross_win += pnl;
@@ -486,7 +512,11 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                 let offset = pos.trail_offset.unwrap_or(0.0);
                 let activate_at = pos.trail_price.unwrap_or_else(|| {
                     let d = pos.trail_points.unwrap_or(0.0);
-                    if pos.long { pos.entry_price + d } else { pos.entry_price - d }
+                    if pos.long {
+                        pos.entry_price + d
+                    } else {
+                        pos.entry_price - d
+                    }
                 });
                 if pos.long {
                     pos.trail_peak = pos.trail_peak.max(c.high);
@@ -514,12 +544,20 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                     knobs.multiplier,
                     pos.long,
                 );
-                let hit = if pos.long { c.low <= stop_out } else { c.high >= stop_out };
+                let hit = if pos.long {
+                    c.low <= stop_out
+                } else {
+                    c.high >= stop_out
+                };
                 if hit {
                     let (closed_qty, pnl) = close_leg(&mut pos, 1.0, stop_out, knobs);
                     realized += pnl;
                     closed += 1.0;
-                    if pnl > 0.0 { risk_state.consecutive_losses = 0; } else { risk_state.consecutive_losses += 1; }
+                    if pnl > 0.0 {
+                        risk_state.consecutive_losses = 0;
+                    } else {
+                        risk_state.consecutive_losses += 1;
+                    }
                     gross_loss -= pnl;
                     sim.orders.push(SimOrder {
                         bar,
@@ -543,15 +581,26 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         //    bar's queued intent activates NEXT bar, like any order).
         if let Some(pos) = &position {
             if let Some(stop) = pos.stop {
-                let hit = if pos.long { c.low <= stop } else { c.high >= stop };
+                let hit = if pos.long {
+                    c.low <= stop
+                } else {
+                    c.high >= stop
+                };
                 if hit {
                     let mut pos = position.take().expect("checked above");
                     let price = stop_fill_price(pos.long, c.open, stop);
-                    let frac = pos.exit_pct.map(|p| (p / 100.0).clamp(0.0, 1.0)).unwrap_or(1.0);
+                    let frac = pos
+                        .exit_pct
+                        .map(|p| (p / 100.0).clamp(0.0, 1.0))
+                        .unwrap_or(1.0);
                     let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
                     realized += pnl;
                     closed += 1.0;
-                    if pnl > 0.0 { risk_state.consecutive_losses = 0; } else { risk_state.consecutive_losses += 1; }
+                    if pnl > 0.0 {
+                        risk_state.consecutive_losses = 0;
+                    } else {
+                        risk_state.consecutive_losses += 1;
+                    }
                     if pnl > 0.0 {
                         wins += 1.0;
                         gross_win += pnl;
@@ -585,15 +634,26 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         // conservative read, since nothing about the bar's path is known.
         if let Some(pos) = &position {
             if let Some(limit) = pos.limit {
-                let hit = if pos.long { c.high >= limit } else { c.low <= limit };
+                let hit = if pos.long {
+                    c.high >= limit
+                } else {
+                    c.low <= limit
+                };
                 if hit {
                     let mut pos = position.take().expect("checked above");
                     let price = limit_fill_price(pos.long, c.open, limit);
-                    let frac = pos.exit_pct.map(|p| (p / 100.0).clamp(0.0, 1.0)).unwrap_or(1.0);
+                    let frac = pos
+                        .exit_pct
+                        .map(|p| (p / 100.0).clamp(0.0, 1.0))
+                        .unwrap_or(1.0);
                     let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
                     realized += pnl;
                     closed += 1.0;
-                    if pnl > 0.0 { risk_state.consecutive_losses = 0; } else { risk_state.consecutive_losses += 1; }
+                    if pnl > 0.0 {
+                        risk_state.consecutive_losses = 0;
+                    } else {
+                        risk_state.consecutive_losses += 1;
+                    }
                     if pnl > 0.0 {
                         wins += 1.0;
                         gross_win += pnl;
@@ -630,7 +690,11 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         if let Some(pos) = &mut position {
             let mut hit_idx: Option<usize> = None;
             for (i, (limit, _)) in pos.partials.iter().enumerate() {
-                let hit = if pos.long { c.high >= *limit } else { c.low <= *limit };
+                let hit = if pos.long {
+                    c.high >= *limit
+                } else {
+                    c.low <= *limit
+                };
                 if hit {
                     hit_idx = Some(i);
                     break;
@@ -645,7 +709,11 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                 let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
                 realized += pnl;
                 closed += 1.0;
-                if pnl > 0.0 { risk_state.consecutive_losses = 0; } else { risk_state.consecutive_losses += 1; }
+                if pnl > 0.0 {
+                    risk_state.consecutive_losses = 0;
+                } else {
+                    risk_state.consecutive_losses += 1;
+                }
                 if pnl > 0.0 {
                     wins += 1.0;
                     gross_win += pnl;
@@ -669,14 +737,20 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         }
 
         // 3. Mark the account at this close.
-        let open_pnl_mark = position.as_ref().map_or(0.0, |p| open_pnl(p, c.close, knobs));
+        let open_pnl_mark = position
+            .as_ref()
+            .map_or(0.0, |p| open_pnl(p, c.close, knobs));
         let equity = knobs.initial_capital + realized + open_pnl_mark;
         peak = peak.max(equity);
         if peak > 0.0 {
             max_dd = max_dd.max((peak - equity) / peak);
         }
         let (pos_size, avg, op) = position.as_ref().map_or((0.0, 0.0, open_pnl_mark), |p| {
-            (if p.long { p.qty } else { -p.qty }, p.entry_price, open_pnl_mark)
+            (
+                if p.long { p.qty } else { -p.qty },
+                p.entry_price,
+                open_pnl_mark,
+            )
         });
         // strategy.risk halts: max_intraday_loss resets each calendar day,
         // max_drawdown is permanent once breached.
@@ -704,11 +778,20 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         // own entry context: break-even, then the ATR trail -- a stop that
         // only ever tightens.
         if let (Some(rules), Some(pos)) = (&knobs.management, position.as_mut()) {
-            let atr_value = analytics_core::indicators::atr::atr(&candles[..=bar], 14)[bar].unwrap_or(0.0);
+            let atr_value =
+                analytics_core::indicators::atr::atr(&candles[..=bar], 14)[bar].unwrap_or(0.0);
             let favorable = if pos.long {
-                candles[..=bar].iter().map(|k| k.high).fold(f64::MIN, f64::max).max(c.close)
+                candles[..=bar]
+                    .iter()
+                    .map(|k| k.high)
+                    .fold(f64::MIN, f64::max)
+                    .max(c.close)
             } else {
-                candles[..=bar].iter().map(|k| k.low).fold(f64::MAX, f64::min).min(c.close)
+                candles[..=bar]
+                    .iter()
+                    .map(|k| k.low)
+                    .fold(f64::MAX, f64::min)
+                    .min(c.close)
             };
             // The trade's own R: entry to its CURRENT stop (the sim has no
             // initial-stop field; the current stop before management IS the
@@ -747,7 +830,11 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         // with a stop ARMS the standing stop (Pine semantics: the position
         // closes only when price touches it) and carries for the next entry;
         // a stop-less exit and every close/close_all are market exits.
-        let bar_intents: Vec<&Intent> = intents.iter().filter(|(b, _)| *b == bar).map(|(_, i)| i).collect();
+        let bar_intents: Vec<&Intent> = intents
+            .iter()
+            .filter(|(b, _)| *b == bar)
+            .map(|(_, i)| i)
+            .collect();
         // A market close beats an entry the same bar -- but an exit that
         // only ARMS (a stop, a limit, or a trailing stop) is no close at
         // all, so the trail knobs count as arming here.
@@ -767,7 +854,15 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         });
         for intent in &bar_intents {
             match intent {
-                Intent::Exit { stop, limit, qty_percent, trail_points, trail_price, trail_offset, .. } => {
+                Intent::Exit {
+                    stop,
+                    limit,
+                    qty_percent,
+                    trail_points,
+                    trail_price,
+                    trail_offset,
+                    ..
+                } => {
                     let mut armed = false;
                     // The stacked partial: a limit with a fraction and no
                     // stop is one rung of the partial ladder, not the
@@ -782,66 +877,82 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         armed = true;
                     }
                     if !armed {
-                    if let Some(s) = stop {
-                        if let Some(pos) = &mut position {
-                            pos.stop = Some(*s);
+                        if let Some(s) = stop {
+                            if let Some(pos) = &mut position {
+                                pos.stop = Some(*s);
+                            }
+                            pending_stop = Some(*s);
+                            armed = true;
                         }
-                        pending_stop = Some(*s);
-                        armed = true;
-                    }
-                    if let Some(l) = limit {
-                        if let Some(pos) = &mut position {
-                            pos.limit = Some(*l);
+                        if let Some(l) = limit {
+                            if let Some(pos) = &mut position {
+                                pos.limit = Some(*l);
+                            }
+                            pending_limit = Some(*l);
+                            armed = true;
                         }
-                        pending_limit = Some(*l);
-                        armed = true;
-                    }
-                    if trail_points.is_some() || trail_price.is_some() || trail_offset.is_some() {
-                        if let Some(pos) = &mut position {
-                            pos.trail_points = *trail_points;
-                            pos.trail_price = *trail_price;
-                            pos.trail_offset = *trail_offset;
+                        if trail_points.is_some() || trail_price.is_some() || trail_offset.is_some()
+                        {
+                            if let Some(pos) = &mut position {
+                                pos.trail_points = *trail_points;
+                                pos.trail_price = *trail_price;
+                                pos.trail_offset = *trail_offset;
+                            }
+                            pending_trail = (*trail_points, *trail_price, *trail_offset);
+                            armed = true;
                         }
-                        pending_trail = (*trail_points, *trail_price, *trail_offset);
-                        armed = true;
-                    }
-                    if armed {
-                        // The fraction rides the bracket it armed.
-                        if let Some(pos) = &mut position {
-                            pos.exit_pct = *qty_percent;
+                        if armed {
+                            // The fraction rides the bracket it armed.
+                            if let Some(pos) = &mut position {
+                                pos.exit_pct = *qty_percent;
+                            }
+                            pending_pct = *qty_percent;
                         }
-                        pending_pct = *qty_percent;
-                    }
                     }
                     if !armed {
-                        pending = Some(Intent::Close { id: None, qty_percent: *qty_percent });
+                        pending = Some(Intent::Close {
+                            id: None,
+                            qty_percent: *qty_percent,
+                        });
                     }
                 }
                 Intent::Close { qty_percent, .. } => {
-                    pending = Some(Intent::Close { id: None, qty_percent: *qty_percent });
+                    pending = Some(Intent::Close {
+                        id: None,
+                        qty_percent: *qty_percent,
+                    });
                 }
-                Intent::RiskLimit { kind, value } => {
-                    match kind {
-                        RiskLimitKind::MaxPositionSize => risk_max_qty = Some(*value),
-                        RiskLimitKind::MaxIntradayLoss => risk_max_day_loss = Some(*value),
-                        RiskLimitKind::MaxDrawdown => risk_max_dd = Some(*value),
-                    }
-                }
-                Intent::RiskDirection { allow_long, allow_short } => {
+                Intent::RiskLimit { kind, value } => match kind {
+                    RiskLimitKind::MaxPositionSize => risk_max_qty = Some(*value),
+                    RiskLimitKind::MaxIntradayLoss => risk_max_day_loss = Some(*value),
+                    RiskLimitKind::MaxDrawdown => risk_max_dd = Some(*value),
+                },
+                Intent::RiskDirection {
+                    allow_long,
+                    allow_short,
+                } => {
                     risk_allow = (*allow_long, *allow_short);
                 }
                 Intent::Entry { long, qty, .. } if !close_wins => {
                     // Pine/TV: an entry while a position is open is refused
                     // past the pyramiding budget (0 = a single leg); a
                     // same-direction entry within the budget stacks.
-                    let stacking = position.as_ref().is_some_and(|p| {
-                        p.long == *long && p.legs < 1 + knobs.pyramiding
-                    });
+                    let stacking = position
+                        .as_ref()
+                        .is_some_and(|p| p.long == *long && p.legs < 1 + knobs.pyramiding);
                     // strategy.risk gates: the direction must be allowed and
                     // no halt may be active.
                     let direction_ok = if *long { risk_allow.0 } else { risk_allow.1 };
-                    if (position.is_none() || stacking) && direction_ok && !risk_dd_halted && !risk_day_halted {
-                        pending = Some(Intent::Entry { id: String::new(), long: *long, qty: *qty });
+                    if (position.is_none() || stacking)
+                        && direction_ok
+                        && !risk_dd_halted
+                        && !risk_day_halted
+                    {
+                        pending = Some(Intent::Entry {
+                            id: String::new(),
+                            long: *long,
+                            qty: *qty,
+                        });
                     }
                 }
                 Intent::Entry { .. } => {}
@@ -897,45 +1008,85 @@ mod partial_tests {
             k(2, 105.5, 111.0, 105.0, 110.5), // the second rung touches
         ];
         let intents = vec![
-            (0, Intent::Entry { id: "C".to_string(), long: true, qty: None }),
-            (0, Intent::Exit {
-                id: "C".to_string(),
-                stop: Some(95.0),
-                limit: None,
-                trail_points: None,
-                trail_offset: None,
-                trail_price: None,
-                qty_percent: None,
-            }),
-            (0, Intent::Exit {
-                id: "C".to_string(),
-                stop: None,
-                limit: Some(105.0),
-                trail_points: None,
-                trail_offset: None,
-                trail_price: None,
-                qty_percent: Some(50.0),
-            }),
-            (0, Intent::Exit {
-                id: "C".to_string(),
-                stop: None,
-                limit: Some(110.0),
-                trail_points: None,
-                trail_offset: None,
-                trail_price: None,
-                qty_percent: Some(50.0),
-            }),
+            (
+                0,
+                Intent::Entry {
+                    id: "C".to_string(),
+                    long: true,
+                    qty: None,
+                },
+            ),
+            (
+                0,
+                Intent::Exit {
+                    id: "C".to_string(),
+                    stop: Some(95.0),
+                    limit: None,
+                    trail_points: None,
+                    trail_offset: None,
+                    trail_price: None,
+                    qty_percent: None,
+                },
+            ),
+            (
+                0,
+                Intent::Exit {
+                    id: "C".to_string(),
+                    stop: None,
+                    limit: Some(105.0),
+                    trail_points: None,
+                    trail_offset: None,
+                    trail_price: None,
+                    qty_percent: Some(50.0),
+                },
+            ),
+            (
+                0,
+                Intent::Exit {
+                    id: "C".to_string(),
+                    stop: None,
+                    limit: Some(110.0),
+                    trail_points: None,
+                    trail_offset: None,
+                    trail_price: None,
+                    qty_percent: Some(50.0),
+                },
+            ),
         ];
         let knobs = StrategyHeader::default();
         let sim = simulate(&intents, &candles, &knobs);
-        let limits: Vec<_> = sim.orders.iter().filter(|o| o.kind == OrderKind::Limit).collect();
-        assert_eq!(limits.len(), 2, "both rungs filled: {:?}", sim.orders.iter().map(|o| (o.kind, o.qty)).collect::<Vec<_>>());
+        let limits: Vec<_> = sim
+            .orders
+            .iter()
+            .filter(|o| o.kind == OrderKind::Limit)
+            .collect();
+        assert_eq!(
+            limits.len(),
+            2,
+            "both rungs filled: {:?}",
+            sim.orders
+                .iter()
+                .map(|o| (o.kind, o.qty))
+                .collect::<Vec<_>>()
+        );
         assert!(limits[0].qty > 0.0 && limits[1].qty > 0.0);
         // Each rung closed half of the ORIGINAL quantity.
-        let entry = sim.orders.iter().find(|o| o.kind == OrderKind::Entry).expect("entry");
+        let entry = sim
+            .orders
+            .iter()
+            .find(|o| o.kind == OrderKind::Entry)
+            .expect("entry");
         let half = entry.qty / 2.0;
-        assert!((limits[0].qty - half).abs() < 1e-9, "the first rung closed half the entry: {} vs {half}", limits[0].qty);
-        assert!((limits[1].qty - half).abs() < 1e-9, "the second rung closed the other half: {} vs {half}", limits[1].qty);
+        assert!(
+            (limits[0].qty - half).abs() < 1e-9,
+            "the first rung closed half the entry: {} vs {half}",
+            limits[0].qty
+        );
+        assert!(
+            (limits[1].qty - half).abs() < 1e-9,
+            "the second rung closed the other half: {} vs {half}",
+            limits[1].qty
+        );
         assert_eq!(sim.report.total_trades, 2.0, "two partial closes");
     }
 }
@@ -961,11 +1112,24 @@ mod tests {
     }
 
     fn entry(bar: usize, long: bool) -> (usize, Intent) {
-        (bar, Intent::Entry { id: "e".into(), long, qty: None })
+        (
+            bar,
+            Intent::Entry {
+                id: "e".into(),
+                long,
+                qty: None,
+            },
+        )
     }
 
     fn close(bar: usize) -> (usize, Intent) {
-        (bar, Intent::Close { id: None, qty_percent: None })
+        (
+            bar,
+            Intent::Close {
+                id: None,
+                qty_percent: None,
+            },
+        )
     }
 
     #[test]
@@ -998,9 +1162,29 @@ mod tests {
             (110.0, 92.0, 108.0), // 4: recovery never trades
         ]);
         let intents = vec![
-            (0, Intent::Entry { id: "L".into(), long: true, qty: Some(1.0) }),
-            (0, Intent::RiskLimit { kind: RiskLimitKind::MaxDrawdown, value: 6.0 }),
-            (2, Intent::Entry { id: "L2".into(), long: true, qty: Some(1.0) }),
+            (
+                0,
+                Intent::Entry {
+                    id: "L".into(),
+                    long: true,
+                    qty: Some(1.0),
+                },
+            ),
+            (
+                0,
+                Intent::RiskLimit {
+                    kind: RiskLimitKind::MaxDrawdown,
+                    value: 6.0,
+                },
+            ),
+            (
+                2,
+                Intent::Entry {
+                    id: "L2".into(),
+                    long: true,
+                    qty: Some(1.0),
+                },
+            ),
         ];
         let knobs = StrategyHeader {
             default_qty_type: QtyType::Fixed,
@@ -1010,8 +1194,17 @@ mod tests {
             ..StrategyHeader::default()
         };
         let sim = simulate(&intents, &cs, &knobs);
-        let entries: Vec<&SimOrder> = sim.orders.iter().filter(|o| o.kind == OrderKind::Entry).collect();
-        assert_eq!(entries.len(), 1, "the breach bars the second entry: {:?}", sim.orders);
+        let entries: Vec<&SimOrder> = sim
+            .orders
+            .iter()
+            .filter(|o| o.kind == OrderKind::Entry)
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "the breach bars the second entry: {:?}",
+            sim.orders
+        );
     }
 
     #[test]
@@ -1047,17 +1240,34 @@ mod tests {
         // Ride to a good exit: 101 -> 102 is +0.99% at 100x = +99% of the
         // 10 stake = +9.90 (the multiplier mark, not the spot mark of +0.99).
         let cs = candles(&[
-            (101.0, 99.0, 100.0), // 0: entry signal
+            (101.0, 99.0, 100.0),  // 0: entry signal
             (102.0, 100.0, 101.0), // 1: fills at open 100-ish (slippage 0 -> open)
             (103.0, 101.5, 102.0), // 2: exit signal
             (103.0, 101.0, 102.0), // 3: fills the close at open 102
         ]);
         let intents = vec![
-            (0, Intent::Entry { id: "L".into(), long: true, qty: Some(10.0) }),
-            (2, Intent::Close { id: None, qty_percent: None }),
+            (
+                0,
+                Intent::Entry {
+                    id: "L".into(),
+                    long: true,
+                    qty: Some(10.0),
+                },
+            ),
+            (
+                2,
+                Intent::Close {
+                    id: None,
+                    qty_percent: None,
+                },
+            ),
         ];
         let sim = simulate(&intents, &cs, &knobs);
-        let exit = sim.orders.iter().find(|o| o.pnl.is_some()).expect("a closing leg");
+        let exit = sim
+            .orders
+            .iter()
+            .find(|o| o.pnl.is_some())
+            .expect("a closing leg");
         assert!(
             (exit.pnl.unwrap() - 9.900990099009901).abs() < 1e-9,
             "the multiplier mark at the close: {}",
@@ -1071,15 +1281,30 @@ mod tests {
             (100.5, 98.0, 99.0),  // 1: fills at open 100, low 98 breaches the 99.0 stop-out
             (102.0, 97.0, 98.0),  // 2: the dead position must NOT sell again
         ]);
-        let intents = vec![(0, Intent::Entry { id: "L".into(), long: true, qty: Some(10.0) })];
+        let intents = vec![(
+            0,
+            Intent::Entry {
+                id: "L".into(),
+                long: true,
+                qty: Some(10.0),
+            },
+        )];
         let sim = simulate(&intents, &cs, &knobs);
         let stop = sim
             .orders
             .iter()
             .find(|o| o.kind == OrderKind::Stop)
             .expect("the stop-out fires");
-        assert!((stop.pnl.unwrap() + 10.0).abs() < 1e-9, "the stake is gone: {}", stop.pnl.unwrap());
-        assert_eq!(sim.orders.iter().filter(|o| o.pnl.is_some()).count(), 1, "no double close");
+        assert!(
+            (stop.pnl.unwrap() + 10.0).abs() < 1e-9,
+            "the stake is gone: {}",
+            stop.pnl.unwrap()
+        );
+        assert_eq!(
+            sim.orders.iter().filter(|o| o.pnl.is_some()).count(),
+            1,
+            "no double close"
+        );
     }
 
     #[test]
@@ -1108,24 +1333,34 @@ mod tests {
         // bar 4's 108 ratchets again (stop 107) -- whose own low of 105
         // then triggers it, banking +6 at the stop.
         let cs = candles(&[
-            (101.0, 99.0, 100.0),   // 0: signal bar
-            (102.0, 100.0, 101.0),  // 1: entry fills at open 101; high 102 < 104
-            (105.0, 104.5, 104.8),  // 2: activates; stop 104, low holds
-            (107.0, 106.5, 106.8),  // 3: ratchets; stop 106, low holds
-            (108.0, 105.0, 106.0),  // 4: stop 107; the bar's own low breaks it
-            (110.0, 105.0, 108.0),  // 5: (post-exit rally the trade misses)
+            (101.0, 99.0, 100.0),  // 0: signal bar
+            (102.0, 100.0, 101.0), // 1: entry fills at open 101; high 102 < 104
+            (105.0, 104.5, 104.8), // 2: activates; stop 104, low holds
+            (107.0, 106.5, 106.8), // 3: ratchets; stop 106, low holds
+            (108.0, 105.0, 106.0), // 4: stop 107; the bar's own low breaks it
+            (110.0, 105.0, 108.0), // 5: (post-exit rally the trade misses)
         ]);
         let intents = vec![
-            (0, Intent::Entry { id: "L".into(), long: true, qty: Some(1.0) }),
-            (0, Intent::Exit {
-                id: "x".into(),
-                stop: None,
-                limit: None,
-                qty_percent: None,
-                trail_points: Some(3.0),
-                trail_price: None,
-                trail_offset: Some(1.0),
-            }),
+            (
+                0,
+                Intent::Entry {
+                    id: "L".into(),
+                    long: true,
+                    qty: Some(1.0),
+                },
+            ),
+            (
+                0,
+                Intent::Exit {
+                    id: "x".into(),
+                    stop: None,
+                    limit: None,
+                    qty_percent: None,
+                    trail_points: Some(3.0),
+                    trail_price: None,
+                    trail_offset: Some(1.0),
+                },
+            ),
         ];
         let knobs = StrategyHeader {
             default_qty_type: QtyType::Fixed,
@@ -1135,14 +1370,31 @@ mod tests {
             ..StrategyHeader::default()
         };
         let sim = simulate(&intents, &cs, &knobs);
-        let stops: Vec<&SimOrder> = sim.orders.iter().filter(|o| o.kind == OrderKind::Stop).collect();
-        assert_eq!(stops.len(), 1, "exactly one trailing-stop fill: {:?}", sim.orders);
+        let stops: Vec<&SimOrder> = sim
+            .orders
+            .iter()
+            .filter(|o| o.kind == OrderKind::Stop)
+            .collect();
+        assert_eq!(
+            stops.len(),
+            1,
+            "exactly one trailing-stop fill: {:?}",
+            sim.orders
+        );
         assert_eq!(stops[0].bar, 4, "the stop fills on the bar that breaks 107");
         // The bar opens at 106 -- through the 107 stop -- so the gap rule
         // fills at the open, the worse (honest) price.
-        assert!((stops[0].price - 106.0).abs() < 1e-9, "the gap rule fills at the open: {}", stops[0].price);
+        assert!(
+            (stops[0].price - 106.0).abs() < 1e-9,
+            "the gap rule fills at the open: {}",
+            stops[0].price
+        );
         // PnL: entry 101, exit 106 -> +5.
-        assert!((stops[0].pnl.unwrap() - 5.0).abs() < 1e-9, "the run banks the trend: {:?}", stops[0].pnl);
+        assert!(
+            (stops[0].pnl.unwrap() - 5.0).abs() < 1e-9,
+            "the run banks the trend: {:?}",
+            stops[0].pnl
+        );
     }
 
     #[test]
@@ -1150,13 +1402,20 @@ mod tests {
         // Closes 100..110 rising; entry decided on bar 2 fills at open[3]
         // (100-based fixture: open == close of each bar).
         let candles: Vec<Candle> = (0..10).map(|i| candle(i, 100.0 + i as f64)).collect();
-        let knobs = StrategyHeader { commission_value: 0.0, slippage_pct: 0.0, ..Default::default() };
+        let knobs = StrategyHeader {
+            commission_value: 0.0,
+            slippage_pct: 0.0,
+            ..Default::default()
+        };
         let sim = simulate(&[entry(2, true), close(5)], &candles, &knobs);
         assert_eq!(sim.orders.len(), 2);
         assert_eq!(sim.orders[0].kind, OrderKind::Entry);
         assert_eq!(sim.orders[0].bar, 3, "fill bar is the next open");
         assert_eq!(sim.orders[0].price, 103.0);
-        assert_eq!(sim.orders[1].price, 106.0, "close decided on 5 fills at open[6]");
+        assert_eq!(
+            sim.orders[1].price, 106.0,
+            "close decided on 5 fills at open[6]"
+        );
         // Fixed sizing would need a knob; default is 10% of equity.
         let qty = sim.orders[0].qty;
         let expected = 10_000.0 * 10.0 / 100.0 / 103.0;
@@ -1173,11 +1432,32 @@ mod tests {
     fn a_stop_fills_intrabar_at_its_level_or_the_gap_open() {
         // Position long from open 100 with stop 95; bar 3 dips to 94.
         let mut candles: Vec<Candle> = (0..6).map(|i| candle(i, 100.0)).collect();
-        candles[3] = Candle { low: 94.0, ..candle(3, 100.0) };
-        let knobs = StrategyHeader { commission_value: 0.0, ..Default::default() };
-        let stop_intent = (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: None, qty_percent: None, trail_points: None, trail_price: None, trail_offset: None });
+        candles[3] = Candle {
+            low: 94.0,
+            ..candle(3, 100.0)
+        };
+        let knobs = StrategyHeader {
+            commission_value: 0.0,
+            ..Default::default()
+        };
+        let stop_intent = (
+            1,
+            Intent::Exit {
+                id: "x".into(),
+                stop: Some(95.0),
+                limit: None,
+                qty_percent: None,
+                trail_points: None,
+                trail_price: None,
+                trail_offset: None,
+            },
+        );
         let sim = simulate(&[entry(0, true), stop_intent], &candles, &knobs);
-        let stop_order = sim.orders.iter().find(|o| o.kind == OrderKind::Stop).expect("stop filled");
+        let stop_order = sim
+            .orders
+            .iter()
+            .find(|o| o.kind == OrderKind::Stop)
+            .expect("stop filled");
         assert_eq!(stop_order.bar, 3, "the bar that dipped");
         assert_eq!(stop_order.price, 95.0, "fill at the stop, not the low");
         assert!(stop_order.pnl.expect("pnl") < 0.0, "stopped out at a loss");
@@ -1192,8 +1472,26 @@ mod tests {
             .collect();
         let knobs = StrategyHeader::default();
         let intents = vec![
-            (0, Intent::Entry { id: "L".into(), long: true, qty: Some(1.0) }),
-            (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: Some(103.0), qty_percent: None, trail_points: None, trail_price: None, trail_offset: None }),
+            (
+                0,
+                Intent::Entry {
+                    id: "L".into(),
+                    long: true,
+                    qty: Some(1.0),
+                },
+            ),
+            (
+                1,
+                Intent::Exit {
+                    id: "x".into(),
+                    stop: Some(95.0),
+                    limit: Some(103.0),
+                    qty_percent: None,
+                    trail_points: None,
+                    trail_price: None,
+                    trail_offset: None,
+                },
+            ),
         ];
         let sim = simulate(&intents, &candles, &knobs);
         // The long fills at bar 1's open (100); the 103 limit touches when
@@ -1220,8 +1518,16 @@ mod tests {
             ..Default::default()
         };
         let sim = simulate(&[entry(0, true), close(2)], &candles, &knobs);
-        assert!((sim.orders[0].price - 100.5).abs() < 1e-9, "long pays the ask: {}", sim.orders[0].price);
-        assert!((sim.orders[1].price - 99.5).abs() < 1e-9, "long sells into the bid: {}", sim.orders[1].price);
+        assert!(
+            (sim.orders[0].price - 100.5).abs() < 1e-9,
+            "long pays the ask: {}",
+            sim.orders[0].price
+        );
+        assert!(
+            (sim.orders[1].price - 99.5).abs() < 1e-9,
+            "long sells into the bid: {}",
+            sim.orders[1].price
+        );
         let pnl = sim.orders[1].pnl.expect("pnl");
         // Gross (99.5 - 100.5) * 10 = -10; fees = 1% of (10*100.5) + 1% of
         // (10*99.5) = 10.05 + 9.95 = 20.0. Net -30.
@@ -1232,7 +1538,10 @@ mod tests {
     #[test]
     fn an_entry_while_in_a_position_is_skipped_and_close_wins_the_same_bar() {
         let candles: Vec<Candle> = (0..8).map(|i| candle(i, 100.0 + i as f64)).collect();
-        let knobs = StrategyHeader { commission_value: 0.0, ..Default::default() };
+        let knobs = StrategyHeader {
+            commission_value: 0.0,
+            ..Default::default()
+        };
         // Entry decided 0; second entry decided 3 (must skip); close+entry
         // decided 5 on the same bar: the close wins, the entry is dropped.
         let sim = simulate(
@@ -1240,7 +1549,11 @@ mod tests {
             &candles,
             &knobs,
         );
-        let entries: Vec<&SimOrder> = sim.orders.iter().filter(|o| o.kind == OrderKind::Entry).collect();
+        let entries: Vec<&SimOrder> = sim
+            .orders
+            .iter()
+            .filter(|o| o.kind == OrderKind::Entry)
+            .collect();
         assert_eq!(entries.len(), 1, "only the first entry fills: {sim:?}");
     }
 
@@ -1259,10 +1572,22 @@ mod tests {
         };
         let sim = simulate(&[entry(0, true)], &candles, &knobs);
         assert_eq!(sim.orders[0].price, 100.5, "fill at the next open");
-        assert_eq!(sim.equity[3], 10_000.0 + 1.0, "mark: close 101.5 vs entry 100.5");
-        assert_eq!(sim.equity[5], 10_000.0 + 0.5, "mark: close 101 vs entry 100.5");
+        assert_eq!(
+            sim.equity[3],
+            10_000.0 + 1.0,
+            "mark: close 101.5 vs entry 100.5"
+        );
+        assert_eq!(
+            sim.equity[5],
+            10_000.0 + 0.5,
+            "mark: close 101 vs entry 100.5"
+        );
         let peak = 10_001.0;
-        assert!((sim.report.max_drawdown - 0.5 / peak).abs() < 1e-9, "{}", sim.report.max_drawdown);
+        assert!(
+            (sim.report.max_drawdown - 0.5 / peak).abs() < 1e-9,
+            "{}",
+            sim.report.max_drawdown
+        );
         // Snapshots feed the builtins.
         let s3 = &sim.snapshots[3];
         assert_eq!(s3.position_size, 1.0);

@@ -4,8 +4,8 @@
 //! caps the pool, and the VM evaluates the third argument over the pooled
 //! series at the parent's bar.
 
-use pine_lite::{run, vet, Inputs};
 use analytics_core::types::{Candle, Timeframe};
+use pine_lite::{run, vet, Inputs};
 
 fn candle(sym: &str, i: usize, tf: Timeframe, base: f64, step: f64) -> Candle {
     let close = base + (i as f64) * step;
@@ -61,7 +61,8 @@ fn a_non_literal_symbol_is_refused() {
     );
     let errs = vet(src).expect_err("non-literal symbol");
     assert!(
-        errs.iter().any(|e| e.message.contains("quoted string literal")),
+        errs.iter()
+            .any(|e| e.message.contains("quoted string literal")),
         "{errs:?}"
     );
 }
@@ -69,7 +70,10 @@ fn a_non_literal_symbol_is_refused() {
 #[test]
 fn the_pool_is_capped() {
     let mut src = String::from("//@pine_lite version=1\n");
-    for (i, sym) in ["A", "B", "C", "D", "E", "F", "G", "H", "I"].iter().enumerate() {
+    for (i, sym) in ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
+        .iter()
+        .enumerate()
+    {
         src.push_str(&format!(
             "p{i} = request.security(\"{sym}USDT\", \"5m\", request.close())\n"
         ));
@@ -93,11 +97,18 @@ fn security_evaluates_over_the_pooled_series() {
         "plot(pair)\n",
     );
     let (_, parsed) = vet(src).expect("vet");
-    let candles: Vec<Candle> = (0..30).map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0)).collect();
-    let pool: Vec<Candle> = (0..30).map(|i| candle("ETHUSDT", i, Timeframe::M1, 50.0, 0.5)).collect();
+    let candles: Vec<Candle> = (0..30)
+        .map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0))
+        .collect();
+    let pool: Vec<Candle> = (0..30)
+        .map(|i| candle("ETHUSDT", i, Timeframe::M1, 50.0, 0.5))
+        .collect();
     let mut series_pool = std::collections::HashMap::new();
     series_pool.insert("ETHUSDT@1M".to_string(), pool);
-    let inputs = Inputs { series_pool, ..Inputs::default() };
+    let inputs = Inputs {
+        series_pool,
+        ..Inputs::default()
+    };
     let output = run(&parsed, &candles, &inputs).expect("run");
     assert_eq!(output.plots.len(), 1);
     // Bar 20: the pair's close (50 + 20*0.5 = 60), not the chart's 100.
@@ -117,19 +128,23 @@ fn security_composes_with_ta_over_the_pair() {
         "plot(smoothed)\n",
     );
     let (_, parsed) = vet(src).expect("vet");
-    let candles: Vec<Candle> = (0..30).map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0)).collect();
-    let pool: Vec<Candle> = (0..30).map(|i| candle("ETHUSDT", i, Timeframe::M1, 50.0, 0.5)).collect();
+    let candles: Vec<Candle> = (0..30)
+        .map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0))
+        .collect();
+    let pool: Vec<Candle> = (0..30)
+        .map(|i| candle("ETHUSDT", i, Timeframe::M1, 50.0, 0.5))
+        .collect();
     let mut series_pool = std::collections::HashMap::new();
     series_pool.insert("ETHUSDT@1M".to_string(), pool);
-    let inputs = Inputs { series_pool, ..Inputs::default() };
+    let inputs = Inputs {
+        series_pool,
+        ..Inputs::default()
+    };
     let output = run(&parsed, &candles, &inputs).expect("run");
     // Bar 24: SMA of the pair's closes 52.5..62.5 -> wait: closes at bars
     // 20..24 are 60,60.5,61,61.5,62 -> mean 61.4... precisely (60+60.5+61+61.5+62)/5 = 61.
     let got = output.plots[0].values[24];
-    assert!(
-        (got - 61.0).abs() < 1e-9,
-        "got {got}"
-    );
+    assert!((got - 61.0).abs() < 1e-9, "got {got}");
 }
 
 #[test]
@@ -222,13 +237,7 @@ fn gaps_off_carries_the_last_source_value_across_missing_bars() {
     let pool: Vec<Candle> = [0usize, 2]
         .into_iter()
         .map(|bucket| {
-            let mut source = candle(
-                "ETHUSDT",
-                bucket,
-                Timeframe::M5,
-                50.0,
-                10.0,
-            );
+            let mut source = candle("ETHUSDT", bucket, Timeframe::M5, 50.0, 10.0);
             source.open_time = bucket as i64 * Timeframe::M5.nanos();
             source
         })
@@ -308,7 +317,9 @@ fn a_missing_pooled_series_is_an_error_naming_the_key() {
         "plot(pair)\n",
     );
     let (_, parsed) = vet(src).expect("vet");
-    let candles: Vec<Candle> = (0..10).map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0)).collect();
+    let candles: Vec<Candle> = (0..10)
+        .map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0))
+        .collect();
     let inputs = Inputs::default();
     let err = run(&parsed, &candles, &inputs).expect_err("no pool");
     assert!(err.message.contains("ETHUSDT@1M"), "{}", err.message);

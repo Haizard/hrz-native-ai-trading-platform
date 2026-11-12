@@ -33,8 +33,8 @@ use analytics_core::MarketStateConfig;
 use serde_json::json;
 use strategy_dsl::expr::ConceptPart;
 
-use crate::error::AgentError;
 use crate::authoring::{AuthorDocument, AuthorImage};
+use crate::error::AgentError;
 use crate::llm_client::{
     ContentBlock, LlmClient, LlmRequest, Message, ToolCall, ToolChoice, ToolResult, ToolSpec, Usage,
 };
@@ -203,7 +203,10 @@ pub struct SnapshotsContext {
 impl SnapshotsContext {
     /// Bind a snapshot store to one authenticated user.
     #[must_use]
-    pub fn new(store: Arc<dyn crate::snapshots::SnapshotStore>, user_id: impl Into<String>) -> Self {
+    pub fn new(
+        store: Arc<dyn crate::snapshots::SnapshotStore>,
+        user_id: impl Into<String>,
+    ) -> Self {
         Self {
             store,
             user_id: user_id.into(),
@@ -520,7 +523,10 @@ impl AskRequest {
 
     /// Attach the active chart's trader-edited detector states.
     #[must_use]
-    pub fn with_concept_states(mut self, states: Vec<strategy_dsl::schema::RegistryConcept>) -> Self {
+    pub fn with_concept_states(
+        mut self,
+        states: Vec<strategy_dsl::schema::RegistryConcept>,
+    ) -> Self {
         self.concept_states = states;
         self
     }
@@ -670,14 +676,20 @@ impl StrategyRequest {
 
     /// Attach the active chart's exact registry states for strategy generation.
     #[must_use]
-    pub fn with_concept_states(mut self, states: Vec<strategy_dsl::schema::RegistryConcept>) -> Self {
+    pub fn with_concept_states(
+        mut self,
+        states: Vec<strategy_dsl::schema::RegistryConcept>,
+    ) -> Self {
         self.concept_states = states;
         self
     }
 
     /// Attach capabilities for tool availability filtering.
     #[must_use]
-    pub fn with_capabilities(mut self, capabilities: crate::capability_view::CapabilityView) -> Self {
+    pub fn with_capabilities(
+        mut self,
+        capabilities: crate::capability_view::CapabilityView,
+    ) -> Self {
         self.capabilities = Some(capabilities);
         self
     }
@@ -773,7 +785,10 @@ async fn poll_captures(
     outstanding: &mut Vec<CaptureRequest>,
     rounds: usize,
     gap: std::time::Duration,
-) -> Vec<(CaptureRequest, Option<crate::chart_context::ChartScreenshot>)> {
+) -> Vec<(
+    CaptureRequest,
+    Option<crate::chart_context::ChartScreenshot>,
+)> {
     let waiting = std::mem::take(outstanding);
     let mut settled: Vec<Option<crate::chart_context::ChartScreenshot>> =
         (0..waiting.len()).map(|_| None).collect();
@@ -1164,11 +1179,9 @@ impl Agent {
         // candles the user sees -- leftmost visible bar through the newest --
         // so "analyze my chart" and "the chart" name the same data.
         if let Some(chart) = &request.chart {
-            if let (Some(timeframe), Some(from_ns), Some(to_ns)) = (
-                chart.timeframe,
-                chart.visible_from_ns,
-                chart.visible_to_ns,
-            ) {
+            if let (Some(timeframe), Some(from_ns), Some(to_ns)) =
+                (chart.timeframe, chart.visible_from_ns, chart.visible_to_ns)
+            {
                 ctx = ctx.with_viewport(&request.symbol, timeframe, from_ns, to_ns);
             }
         }
@@ -1281,17 +1294,17 @@ impl Agent {
             // any more. The drawings carry the detector's anchors and a reason
             // that says they were auto-rendered, and the model is told, so it
             // can name the objects rather than duplicate them.
-            if answering && can_draw && skill_requires_drawing && !drew_this_run && !auto_draw_attempted {
+            if answering
+                && can_draw
+                && skill_requires_drawing
+                && !drew_this_run
+                && !auto_draw_attempted
+            {
                 auto_draw_attempted = true;
                 if let (Some(writer), Some(user_id)) = (ctx.drawing_writer, ctx.user_id) {
-                    let drew = auto_draw_findings(
-                        &request.symbol,
-                        &findings,
-                        writer,
-                        user_id,
-                        &mut trace,
-                    )
-                    .await;
+                    let drew =
+                        auto_draw_findings(&request.symbol, &findings, writer, user_id, &mut trace)
+                            .await;
                     if drew > 0 {
                         drew_this_run = true;
                         tracing::info!(
@@ -1325,9 +1338,8 @@ impl Agent {
             // answer phase begins is usually the one still needing a drawing.
             // The skill gate below keeps its own skill-specific correction
             // wording -- a lesson with no skill pinned must not borrow it.
-            let drawing_owed = can_draw
-                && !drew_this_run
-                && (skill_requires_drawing || request.teaching);
+            let drawing_owed =
+                can_draw && !drew_this_run && (skill_requires_drawing || request.teaching);
             // Mentor mode owes the second look. A run that drew the zones and
             // then wrote the plan from the plain pictures is the exact failure
             // the two-pass review exists to prevent, and the model will do it:
@@ -1341,10 +1353,8 @@ impl Agent {
             // six frames" -- so the model obeyed, photographed six charts it
             // had drawn on none of, and discharged the review with exactly the
             // false claim the review exists to catch.
-            let marked_review_owed = request.teaching
-                && can_draw
-                && can_look
-                && marked_frames_seen == 0;
+            let marked_review_owed =
+                request.teaching && can_draw && can_look && marked_frames_seen == 0;
             let duties_owed = drawing_owed || marked_review_owed;
             let (turn_tools, tool_choice) = if answering {
                 if duties_owed {
@@ -1498,8 +1508,7 @@ impl Agent {
                     // or the correction asks for a call the phase refuses. The
                     // frames it photographs are the run's own marked charts, so
                     // this is a second look, not fresh data out of habit.
-                    let review_allowed =
-                        marked_review_owed && call.name == "review_marked_charts";
+                    let review_allowed = marked_review_owed && call.name == "review_marked_charts";
                     if !drawing_allowed && !review_allowed {
                         results.push(ToolResult {
                             tool_use_id: call.id.clone(),
@@ -1590,13 +1599,9 @@ impl Agent {
                     // a review card captioned `AI REVIEW ·  · 4h`, which the
                     // shell happened to hide but which is a lie either way.
                     let marked_capture = |command: &serde_json::Value| {
-                        command
-                            .get("action")
-                            .and_then(serde_json::Value::as_str)
+                        command.get("action").and_then(serde_json::Value::as_str)
                             == Some("capture_chart")
-                            && command
-                                .get("marked")
-                                .and_then(serde_json::Value::as_bool)
+                            && command.get("marked").and_then(serde_json::Value::as_bool)
                                 == Some(true)
                     };
                     let marked_total = commands
@@ -1758,8 +1763,7 @@ impl Agent {
                         "thesis submitted without drawing; asking for the chart objects"
                     );
                     progress.report(Progress::Correcting {
-                        reason: "the loaded skill requires its patterns drawn on the chart"
-                            .into(),
+                        reason: "the loaded skill requires its patterns drawn on the chart".into(),
                     });
                     messages.push(Message::tool_results(vec![ToolResult {
                         tool_use_id: call.id.clone(),
@@ -1948,13 +1952,9 @@ impl Agent {
                         captures_used += 1;
                         asks.push(pending);
                     }
-                    for (capture, shot) in poll_captures(
-                        source,
-                        &mut asks,
-                        24,
-                        std::time::Duration::from_millis(250),
-                    )
-                    .await
+                    for (capture, shot) in
+                        poll_captures(source, &mut asks, 24, std::time::Duration::from_millis(250))
+                            .await
                     {
                         let frame = capture.timeframe.to_ascii_uppercase();
                         match shot {
@@ -2021,12 +2021,8 @@ impl Agent {
             .last()
             .map(|f| f.timeframe.to_string())
             .unwrap_or_else(|| "1h".into());
-        let mut thesis = synthesize_stand_aside(
-            &request.symbol,
-            &timeframe,
-            &findings,
-            trace.clone(),
-        );
+        let mut thesis =
+            synthesize_stand_aside(&request.symbol, &timeframe, &findings, trace.clone());
         thesis.skill_used = skill_used.clone();
         Ok(AgentAnswer {
             thesis,
@@ -2246,10 +2242,7 @@ impl Agent {
     ///
     /// # Errors
     /// [`AgentError::Provider`] family errors from the LLM call.
-    pub async fn review_document(
-        &self,
-        request: &ReviewRequest,
-    ) -> Result<String, AgentError> {
+    pub async fn review_document(&self, request: &ReviewRequest) -> Result<String, AgentError> {
         let mut system = String::from(
             "You are reviewing an indicator document YOU generated earlier, on \
              behalf of the user who asked for it. A screenshot of the chart it is \
@@ -2273,9 +2266,7 @@ impl Agent {
              cannot see.\n\n",
         );
         if let Some(original) = &request.original_request {
-            system.push_str(&format!(
-                "The user originally asked for: {original}\n\n"
-            ));
+            system.push_str(&format!("The user originally asked for: {original}\n\n"));
         }
 
         let mut content: Vec<ContentBlock> = Vec::with_capacity(request.images.len() + 2);
@@ -2329,10 +2320,7 @@ impl Agent {
     ///
     /// Returns each skill with its data gaps (preferred/degraded misses), for
     /// the prompt to surface. An empty vec is "no skill governs this answer".
-    fn select_skills(
-        &self,
-        request: &AskRequest,
-    ) -> Result<Vec<(Skill, Vec<String>)>, AgentError> {
+    fn select_skills(&self, request: &AskRequest) -> Result<Vec<(Skill, Vec<String>)>, AgentError> {
         let check = |skill: &Skill| -> Result<Vec<String>, Vec<String>> {
             match &request.capabilities {
                 Some(view) => match view.check_skill(skill, &request.symbol) {
@@ -2387,7 +2375,9 @@ impl Agent {
             }
             match check(candidate) {
                 Ok(gaps) => return Ok(vec![(candidate.clone(), gaps)]),
-                Err(reasons) => refusals.push(format!("{}: {}", candidate.name, reasons.join("; "))),
+                Err(reasons) => {
+                    refusals.push(format!("{}: {}", candidate.name, reasons.join("; ")))
+                }
             }
         }
         if !refusals.is_empty() {
@@ -2743,10 +2733,7 @@ fn ask_system_prompt(
     }
 
     // Capability summary: one line per tool that has a capability requirement
-    let exposed_tools: Vec<&ToolSpec> = tools
-        .iter()
-        .filter(|t| t.exposed_tool.is_some())
-        .collect();
+    let exposed_tools: Vec<&ToolSpec> = tools.iter().filter(|t| t.exposed_tool.is_some()).collect();
     if !exposed_tools.is_empty() {
         out.push_str("## Tool availability\n");
         out.push_str(
@@ -3267,7 +3254,10 @@ async fn try_draw(
 
 /// The auto-draw provenance: every fallback object says, in its reason, both
 /// where its anchors came from and why it was drawn by the orchestrator.
-fn auto_provenance(from: &str, confidence: Option<f64>) -> Option<crate::user_drawings::DrawingProvenance> {
+fn auto_provenance(
+    from: &str,
+    confidence: Option<f64>,
+) -> Option<crate::user_drawings::DrawingProvenance> {
     Some(crate::user_drawings::DrawingProvenance {
         confidence,
         reason: Some(format!(
@@ -3334,9 +3324,15 @@ async fn auto_draw_findings(
                 })
                 .unwrap_or_default();
             let t_min = anchors.iter().map(|a| a.0).fold(f64::INFINITY, f64::min);
-            let t_max = anchors.iter().map(|a| a.0).fold(f64::NEG_INFINITY, f64::max);
+            let t_max = anchors
+                .iter()
+                .map(|a| a.0)
+                .fold(f64::NEG_INFINITY, f64::max);
             let p_min = anchors.iter().map(|a| a.1).fold(f64::INFINITY, f64::min);
-            let p_max = anchors.iter().map(|a| a.1).fold(f64::NEG_INFINITY, f64::max);
+            let p_max = anchors
+                .iter()
+                .map(|a| a.1)
+                .fold(f64::NEG_INFINITY, f64::max);
             if t_max > t_min && p_max > p_min && p_min.is_finite() {
                 drew += usize::from(
                     try_draw(
@@ -3350,7 +3346,10 @@ async fn auto_draw_findings(
                                 AgentPoint::at(t_min, p_min),
                                 AgentPoint::at(t_max, p_max),
                             ],
-                            provenance: auto_provenance(&format!("detect_pattern: {kind}"), confidence),
+                            provenance: auto_provenance(
+                                &format!("detect_pattern: {kind}"),
+                                confidence,
+                            ),
                         },
                         trace,
                     )
@@ -3396,7 +3395,11 @@ async fn auto_draw_findings(
             .and_then(serde_json::Value::as_array)
             .map(|a| a.iter().collect())
             .unwrap_or_default();
-        blocks.sort_by_key(|b| !b.get("fresh").and_then(serde_json::Value::as_bool).unwrap_or(false));
+        blocks.sort_by_key(|b| {
+            !b.get("fresh")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        });
         for block in blocks.into_iter().take(2) {
             if drew >= CAP {
                 break;
@@ -3422,10 +3425,7 @@ async fn auto_draw_findings(
                         crate::user_drawings::NewAgentDrawing {
                             kind: "rect".into(),
                             label: Some(format!("{name} OB")),
-                            points: vec![
-                                AgentPoint::at(from, bottom),
-                                AgentPoint::at(to, top),
-                            ],
+                            points: vec![AgentPoint::at(from, bottom), AgentPoint::at(to, top)],
                             provenance: auto_provenance("detect_zones: order block", None),
                         },
                         trace,
@@ -3447,7 +3447,8 @@ async fn auto_draw_findings(
             let (Some(bottom), Some(top), Some(from)) = (
                 zone.get("bottom").and_then(serde_json::Value::as_f64),
                 zone.get("top").and_then(serde_json::Value::as_f64),
-                zone.get("first_time_ms").and_then(serde_json::Value::as_f64),
+                zone.get("first_time_ms")
+                    .and_then(serde_json::Value::as_f64),
             ) else {
                 continue;
             };
@@ -3468,10 +3469,7 @@ async fn auto_draw_findings(
                         crate::user_drawings::NewAgentDrawing {
                             kind: "rect".into(),
                             label: Some(format!("{kind} ({touches} touches)")),
-                            points: vec![
-                                AgentPoint::at(from, bottom),
-                                AgentPoint::at(now_ms, top),
-                            ],
+                            points: vec![AgentPoint::at(from, bottom), AgentPoint::at(now_ms, top)],
                             provenance: auto_provenance("detect_zones: sr zone", None),
                         },
                         trace,
@@ -3668,13 +3666,25 @@ fn synthesize_stand_aside(
         } else {
             lines.push(format!("Patterns: {} detected.", matches.len()));
             for m in matches.iter().take(3) {
-                let kind = m.get("kind").and_then(serde_json::Value::as_str).unwrap_or("pattern");
-                let direction = m.get("direction").and_then(serde_json::Value::as_str).unwrap_or("neutral");
-                let confidence = m.get("confidence").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+                let kind = m
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("pattern");
+                let direction = m
+                    .get("direction")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("neutral");
+                let confidence = m
+                    .get("confidence")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0);
                 let entry = m.get("entry_level").and_then(serde_json::Value::as_f64);
                 let target = m.get("target").and_then(serde_json::Value::as_f64);
                 let invalidation = m.get("invalidation").and_then(serde_json::Value::as_f64);
-                let summary = m.get("summary").and_then(serde_json::Value::as_str).unwrap_or("");
+                let summary = m
+                    .get("summary")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
                 lines.push(format!(
                     "- {kind} ({direction}, confidence {confidence:.2}): entry {}, target {}, \
                      invalidation {}. {summary}",
@@ -3694,7 +3704,11 @@ fn synthesize_stand_aside(
             .unwrap_or_default();
         let fresh = blocks
             .iter()
-            .filter(|b| b.get("fresh").and_then(serde_json::Value::as_bool).unwrap_or(false))
+            .filter(|b| {
+                b.get("fresh")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            })
             .count();
         if !blocks.is_empty() {
             lines.push(format!(
@@ -3702,7 +3716,10 @@ fn synthesize_stand_aside(
                 blocks.len()
             ));
             for b in blocks.iter().take(2) {
-                let name = b.get("name").and_then(serde_json::Value::as_str).unwrap_or("zone");
+                let name = b
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("zone");
                 let top = b.get("top").and_then(serde_json::Value::as_f64);
                 let bottom = b.get("bottom").and_then(serde_json::Value::as_f64);
                 lines.push(format!(
@@ -3718,8 +3735,14 @@ fn synthesize_stand_aside(
             .map(|a| a.iter().collect())
             .unwrap_or_default();
         for z in sr.iter().take(2) {
-            let kind = z.get("kind").and_then(serde_json::Value::as_str).unwrap_or("level");
-            let touches = z.get("touches").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let kind = z
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("level");
+            let touches = z
+                .get("touches")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
             let top = z.get("top").and_then(serde_json::Value::as_f64);
             let bottom = z.get("bottom").and_then(serde_json::Value::as_f64);
             lines.push(format!(
@@ -3733,7 +3756,9 @@ fn synthesize_stand_aside(
     if let Some(imbalance) = &findings.imbalance {
         if let Some(count) = imbalance.get("count").and_then(serde_json::Value::as_u64) {
             if count > 0 {
-                lines.push(format!("Imbalance: {count} fair-value gap(s) on the window."));
+                lines.push(format!(
+                    "Imbalance: {count} fair-value gap(s) on the window."
+                ));
             }
         }
     }
@@ -4330,12 +4355,10 @@ mod tests {
         // Repeated because a rejected thesis is handed back for correction: the
         // run has to survive every attempt for `expect` below to mean
         // "the level was accepted", not "the loop stopped early".
-        let agent = agent(
-            vec![
-                thesis_call(60_000.0, 59_000.0, 62_000.0);
-                DEFAULT_MAX_TURNS + ANSWER_TURNS
-            ],
-        );
+        let agent = agent(vec![
+            thesis_call(60_000.0, 59_000.0, 62_000.0);
+            DEFAULT_MAX_TURNS + ANSWER_TURNS
+        ]);
         let chart = crate::chart_context::ChartContext {
             price_low: Some(60_000.0),
             price_high: Some(81_000.0),
@@ -4366,12 +4389,10 @@ mod tests {
         // 250_000 is nowhere near the 100k-ish fixture. Repeated because a
         // rejected thesis is now handed back for correction -- so the bad level
         // has to survive every attempt for the last turn to be reached.
-        let agent = agent(
-            vec![
-                thesis_call(250_000.0, 249_000.0, 253_000.0);
-                DEFAULT_MAX_TURNS + ANSWER_TURNS
-            ],
-        );
+        let agent = agent(vec![
+            thesis_call(250_000.0, 249_000.0, 253_000.0);
+            DEFAULT_MAX_TURNS + ANSWER_TURNS
+        ]);
 
         let answer = agent
             .ask(&AskRequest::new("BTCUSDT", "long setup"), &source)
@@ -4752,7 +4773,10 @@ invalidation:
         let first = sent.messages.first().expect("one user message");
         // Image first, source second, note last -- the ordering rule the other
         // image-bearing paths keep.
-        assert!(matches!(first.content.first(), Some(ContentBlock::Image { .. })));
+        assert!(matches!(
+            first.content.first(),
+            Some(ContentBlock::Image { .. })
+        ));
         let text = first
             .content
             .iter()
@@ -5179,9 +5203,12 @@ invalidation: []
             category: "market-structure".into(),
             ..Skill::default()
         };
-        let agent = agent_with(SkillLibrary::from_skills(vec![first.clone(), second.clone()]));
-        let request = AskRequest::new("BTCUSDT", "setup?")
-            .with_skill_ids(vec![first.id(), second.id()]);
+        let agent = agent_with(SkillLibrary::from_skills(vec![
+            first.clone(),
+            second.clone(),
+        ]));
+        let request =
+            AskRequest::new("BTCUSDT", "setup?").with_skill_ids(vec![first.id(), second.id()]);
         let selected = agent.select_skills(&request).expect("both pins resolve");
         let names: Vec<&str> = selected.iter().map(|(s, _)| s.name.as_str()).collect();
         assert_eq!(names, ["Sweep Read", "Structure Read"]);
@@ -5226,8 +5253,7 @@ invalidation: []
 
         let answer = agent
             .ask(
-                &AskRequest::new("BTCUSDT", "setup?")
-                    .with_skill_ids(vec![sweep.id(), zones.id()]),
+                &AskRequest::new("BTCUSDT", "setup?").with_skill_ids(vec![sweep.id(), zones.id()]),
                 &source,
             )
             .await
@@ -5401,7 +5427,12 @@ invalidation: []
             Ok(true)
         }
 
-        async fn delete(&self, _user_id: &str, _symbol: &str, _id: &str) -> Result<bool, AgentError> {
+        async fn delete(
+            &self,
+            _user_id: &str,
+            _symbol: &str,
+            _id: &str,
+        ) -> Result<bool, AgentError> {
             Ok(true)
         }
     }
@@ -5420,8 +5451,7 @@ invalidation: []
     }
 
     fn drawing_request(writer: Arc<RecordingWriter>) -> AskRequest {
-        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user")
-            .with_writer(writer);
+        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer);
         AskRequest::new("BTCUSDT", "draw my zone method setup")
             .with_drawings(drawings)
             .with_skill(drawing_skill().id())
@@ -5511,8 +5541,8 @@ invalidation: []
             SkillLibrary::from_skills(vec![plain.clone()]),
             AgentConfig::default(),
         );
-        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user")
-            .with_writer(writer.clone());
+        let drawings =
+            DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer.clone());
         let request = AskRequest::new("BTCUSDT", "any sweep?")
             .with_drawings(drawings)
             .with_skill(plain.id());
@@ -5728,8 +5758,8 @@ invalidation: []
         let llm = Arc::new(ScriptedClient::new(responses));
         let agent = Agent::new(llm, SkillLibrary::new(), AgentConfig::default());
 
-        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user")
-            .with_writer(writer.clone());
+        let drawings =
+            DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer.clone());
         let request = AskRequest::new("BTCUSDT", "teach me this structure")
             .with_drawings(drawings)
             .with_teaching(true);
@@ -6101,7 +6131,11 @@ invalidation: []
             .expect("the last turn's thesis is accepted, not lost");
 
         let requests = llm.requests();
-        let owed = requests[analysis_turns].tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>();
+        let owed = requests[analysis_turns]
+            .tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>();
         assert!(
             owed.contains(&"review_marked_charts"),
             "a duty with a turn left to discharge it in must offer its tool: {owed:?}"
@@ -6307,7 +6341,10 @@ invalidation: []
             let mut counts = self.counts.lock().expect("lock poisoned");
             let count = counts.entry(capture_id.into()).or_insert(0);
             *count += 1;
-            self.asked.lock().expect("lock poisoned").push(capture_id.into());
+            self.asked
+                .lock()
+                .expect("lock poisoned")
+                .push(capture_id.into());
             if *count > self.needed {
                 return Some(ChartScreenshot {
                     media_type: "image/png".into(),
@@ -6323,23 +6360,32 @@ invalidation: []
     async fn six_captures_are_waited_on_together_not_one_after_another() {
         let source = SlowSource::new(1); // each id lands on its second ask
         let mut outstanding = vec![
-            CaptureRequest { id: "a".into(), timeframe: "1w".into(), marked: true },
-            CaptureRequest { id: "b".into(), timeframe: "1d".into(), marked: true },
+            CaptureRequest {
+                id: "a".into(),
+                timeframe: "1w".into(),
+                marked: true,
+            },
+            CaptureRequest {
+                id: "b".into(),
+                timeframe: "1d".into(),
+                marked: true,
+            },
         ];
-        let settled = poll_captures(
-            &source,
-            &mut outstanding,
-            4,
-            std::time::Duration::ZERO,
-        )
-        .await;
+        let settled = poll_captures(&source, &mut outstanding, 4, std::time::Duration::ZERO).await;
 
         assert_eq!(settled.len(), 2, "both frames settle in one loop");
         assert!(outstanding.is_empty());
-        assert!(settled.iter().all(|(_, shot)| shot.is_some()), "{settled:?}");
+        assert!(
+            settled.iter().all(|(_, shot)| shot.is_some()),
+            "{settled:?}"
+        );
         // Interleaved: a serial poller would read ["a","a","a",.. ,"b",..].
         let order = source.asked.lock().expect("lock poisoned").clone();
-        assert_eq!(order, vec!["a", "b", "a", "b"], "round-robin, not one then the other");
+        assert_eq!(
+            order,
+            vec!["a", "b", "a", "b"],
+            "round-robin, not one then the other"
+        );
     }
 
     #[tokio::test]
@@ -6351,8 +6397,15 @@ invalidation: []
             marked: true,
         }];
         let settled = poll_captures(&source, &mut outstanding, 2, std::time::Duration::ZERO).await;
-        assert_eq!(settled.len(), 1, "the run still owes the model an answer about it");
+        assert_eq!(
+            settled.len(),
+            1,
+            "the run still owes the model an answer about it"
+        );
         assert!(settled[0].1.is_none());
-        assert!(outstanding.is_empty(), "a missed frame is not asked again next turn");
+        assert!(
+            outstanding.is_empty(),
+            "a missed frame is not asked again next turn"
+        );
     }
 }

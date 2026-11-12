@@ -1614,10 +1614,7 @@ impl Drawing {
                 Anchor::Fraction { x, y } => x.is_finite() && y.is_finite(),
             };
             if !ok {
-                return Err(format!(
-                    "point {} is not a usable position",
-                    index + 1
-                ));
+                return Err(format!("point {} is not a usable position", index + 1));
             }
         }
         Ok(())
@@ -2325,7 +2322,10 @@ mod tests {
             .validate_anchors()
             .expect_err("must refuse");
         assert!(error.contains("1 point"), "{error}");
-        assert_eq!(with_points(DrawingKind::Hline, 1).validate_anchors(), Ok(()));
+        assert_eq!(
+            with_points(DrawingKind::Hline, 1).validate_anchors(),
+            Ok(())
+        );
     }
 
     #[test]

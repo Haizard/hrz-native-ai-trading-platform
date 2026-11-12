@@ -1311,7 +1311,10 @@ mod tests {
         .expect("the optional fields are optional");
         assert!(minimal.require.is_empty());
         assert!(minimal.min_band_ratio.is_none());
-        assert!(minimal.shape == ConceptShape::Band, "shape defaults to band");
+        assert!(
+            minimal.shape == ConceptShape::Band,
+            "shape defaults to band"
+        );
         assert_eq!(minimal.label(), "gap");
         validate(&minimal).expect("and it is still valid");
     }
@@ -1322,10 +1325,16 @@ mod tests {
                 "lower":{"low":0},"upper":{"high":2}}"#;
         let mut wide: Concept = serde_json::from_str(&base.replace("%W%", "20")).unwrap();
         wide.shape = ConceptShape::Trendline;
-        assert!(validate(&wide).is_ok(), "a 20-candle trendline window is valid");
+        assert!(
+            validate(&wide).is_ok(),
+            "a 20-candle trendline window is valid"
+        );
         let mut wide_band = wide.clone();
         wide_band.shape = ConceptShape::Band;
-        assert!(validate(&wide_band).is_err(), "the same window as a band is not");
+        assert!(
+            validate(&wide_band).is_err(),
+            "the same window as a band is not"
+        );
     }
 
     #[test]

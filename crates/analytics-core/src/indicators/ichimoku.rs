@@ -39,7 +39,13 @@ fn midpoint(candles: &[Candle], period: usize) -> Vec<Option<f64>> {
 }
 
 /// The classic (9, 26, 52) with the 26-bar projection.
-pub fn ichimoku(candles: &[Candle], tenkan_p: usize, kijun_p: usize, senkou_b_p: usize, projection: usize) -> Ichimoku {
+pub fn ichimoku(
+    candles: &[Candle],
+    tenkan_p: usize,
+    kijun_p: usize,
+    senkou_b_p: usize,
+    projection: usize,
+) -> Ichimoku {
     let n = candles.len();
     let tenkan = midpoint(candles, tenkan_p);
     let kijun = midpoint(candles, kijun_p);
@@ -97,18 +103,33 @@ mod tests {
     #[test]
     fn the_lines_are_the_periods_own_midpoints_shifted() {
         // 60 bars of a steady ramp.
-        let candles: Vec<Candle> = (0..60).map(|i| k(i, 100.0 + i as f64 + 1.0, 100.0 + i as f64 - 1.0, 100.0 + i as f64)).collect();
+        let candles: Vec<Candle> = (0..60)
+            .map(|i| {
+                k(
+                    i,
+                    100.0 + i as f64 + 1.0,
+                    100.0 + i as f64 - 1.0,
+                    100.0 + i as f64,
+                )
+            })
+            .collect();
         let ic = ichimoku(&candles, 9, 26, 52, 26);
         // Tenkan(9) at bar 30: mid of bars 22..30 highs/lows: hi = 131, lo = 121 -> 126.
         let t = ic.tenkan[30].expect("tenkan");
         assert!((t - 126.0).abs() < 1e-9, "the 9-bar midpoint: {t}");
         // Senkou A at bar 30 = (tenkan[4] + kijun[4]) / 2 -- the shift IS
         // the projection (bar 4 has no kijun yet -> None).
-        assert!(ic.senkou_a[30].is_none(), "span A needs a kijun 26 bars back");
+        assert!(
+            ic.senkou_a[30].is_none(),
+            "span A needs a kijun 26 bars back"
+        );
         // Chikou at 30 = close at 56.
         assert_eq!(ic.chikou[30], Some(candles[56].close));
         // Senkou B's warmup is 52 + 26 = 78 bars: at 59 it is honestly
         // absent (the shift of a value that does not exist yet is None).
-        assert!(ic.senkou_b[59].is_none(), "span B warms at 78 bars, not before");
+        assert!(
+            ic.senkou_b[59].is_none(),
+            "span B warms at 78 bars, not before"
+        );
     }
 }

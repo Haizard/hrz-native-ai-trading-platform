@@ -172,7 +172,11 @@ mod tests {
         let points: Vec<Point> = vec![(stage.ms(0), 100.0), (stage.ms(8), 110.0)];
         let opts = DrawingOptions::default();
         let parts = sine(stage.geometry(&points, &opts));
-        assert!(parts.len() > 4, "sine should emit many segments, got {}", parts.len());
+        assert!(
+            parts.len() > 4,
+            "sine should emit many segments, got {}",
+            parts.len()
+        );
     }
 
     #[test]

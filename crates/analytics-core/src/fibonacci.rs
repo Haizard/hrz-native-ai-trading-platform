@@ -79,26 +79,33 @@ fn level_at(swing: &Swing, ratio: f64) -> f64 {
 /// Detect the Fibonacci concepts on the window.
 pub fn detect_fibonacci(candles: &[Candle], symbol: &str, lookback: usize) -> Vec<MarketEvent> {
     let mut out = Vec::new();
-    let Some(last) = candles.last() else { return out };
-    let Some(swing) = newest_swing(candles, lookback) else { return out };
+    let Some(last) = candles.last() else {
+        return out;
+    };
+    let Some(swing) = newest_swing(candles, lookback) else {
+        return out;
+    };
     let bar_time = last.open_time;
     let tf = last.timeframe;
     // The study's rig: the two swing anchors every rung is measured from.
     let anchors = Some((swing.from_time, swing.from, swing.to_time, swing.to));
-    let make = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>| MarketEvent {
-        kind,
-        symbol: symbol.to_string(),
-        timeframe: tf,
-        bar_time,
-        close: last.close,
-        price,
-        side,
-        zone_low: low,
-        zone_high: high,
-        magnitude: None,
-        geometry: None,
-        formed_at: Some(swing.from_time),
-    };
+    let make =
+        |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>| {
+            MarketEvent {
+                kind,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price,
+                side,
+                zone_low: low,
+                zone_high: high,
+                magnitude: None,
+                geometry: None,
+                formed_at: Some(swing.from_time),
+            }
+        };
     let ladder = |rungs: Vec<(f64, f64)>| EventGeometry {
         points: Vec::new(),
         rungs,
@@ -113,7 +120,13 @@ pub fn detect_fibonacci(candles: &[Candle], symbol: &str, lookback: usize) -> Ve
         .map(|ratio| (*ratio, level_at(&swing, *ratio)))
         .collect();
     for (index, ratio) in RETRACEMENTS.iter().enumerate() {
-        let mut event = make(EventKind::FibRetracement, Some(if swing.up { Side::Buy } else { Side::Sell }), level_at(&swing, *ratio), None, None);
+        let mut event = make(
+            EventKind::FibRetracement,
+            Some(if swing.up { Side::Buy } else { Side::Sell }),
+            level_at(&swing, *ratio),
+            None,
+            None,
+        );
         if index == 0 {
             event.geometry = Some(ladder(retracement_rungs.clone()));
         }
@@ -130,7 +143,10 @@ pub fn detect_fibonacci(candles: &[Candle], symbol: &str, lookback: usize) -> Ve
         Some(gp_lo.min(gp_hi)),
         Some(gp_lo.max(gp_hi)),
     );
-    pocket.geometry = Some(ladder(vec![(GOLDEN_POCKET.0, gp_hi), (GOLDEN_POCKET.1, gp_lo)]));
+    pocket.geometry = Some(ladder(vec![
+        (GOLDEN_POCKET.0, gp_hi),
+        (GOLDEN_POCKET.1, gp_lo),
+    ]));
     out.push(pocket);
     // The OTE band: ICT's optimal trade entry, the 0.62-0.79 retracement of
     // the newest swing -- wider than the golden pocket and carrying the
@@ -153,7 +169,13 @@ pub fn detect_fibonacci(candles: &[Candle], symbol: &str, lookback: usize) -> Ve
         .collect();
     for (index, ratio) in EXTENSIONS.iter().enumerate() {
         let level = swing.to + (swing.to - swing.from) * (ratio - 1.0);
-        let mut event = make(EventKind::FibExtension, Some(if swing.up { Side::Buy } else { Side::Sell }), level, None, None);
+        let mut event = make(
+            EventKind::FibExtension,
+            Some(if swing.up { Side::Buy } else { Side::Sell }),
+            level,
+            None,
+            None,
+        );
         if index == 0 {
             event.geometry = Some(ladder(extension_rungs.clone()));
         }
@@ -177,7 +199,13 @@ pub fn detect_fibonacci(candles: &[Candle], symbol: &str, lookback: usize) -> Ve
                 if (l1 - l2).abs() <= l1.abs() * CONFLUENCE_TOL {
                     let lo = l1.min(l2);
                     let hi = l1.max(l2);
-                    out.push(make(EventKind::FibConfluence, None, (lo + hi) / 2.0, Some(lo), Some(hi)));
+                    out.push(make(
+                        EventKind::FibConfluence,
+                        None,
+                        (lo + hi) / 2.0,
+                        Some(lo),
+                        Some(hi),
+                    ));
                 }
             }
         }
@@ -273,8 +301,14 @@ mod tests {
         let golden = ladder[3];
         assert!((golden - 104.584).abs() < 1e-9, "the 0.618: {golden}");
         // The golden pocket bands 0.618..0.65.
-        let gp = events.iter().find(|e| e.kind == EventKind::GoldenPocket).expect("pocket");
-        assert!((gp.zone_low.expect("lo") - 104.2).abs() < 0.01, "the pocket's low edge");
+        let gp = events
+            .iter()
+            .find(|e| e.kind == EventKind::GoldenPocket)
+            .expect("pocket");
+        assert!(
+            (gp.zone_low.expect("lo") - 104.2).abs() < 0.01,
+            "the pocket's low edge"
+        );
         // The 1.272 extension: 112 + 12 * 0.272 = 115.264.
         let ext = events
             .iter()
@@ -287,12 +321,25 @@ mod tests {
     #[test]
     fn the_ote_band_is_the_062_to_079_retracement() {
         let events = detect_fibonacci(&swing_series(), "T", 3);
-        let ote = events.iter().find(|e| e.kind == EventKind::OptimalTradeEntry).expect("the OTE band");
+        let ote = events
+            .iter()
+            .find(|e| e.kind == EventKind::OptimalTradeEntry)
+            .expect("the OTE band");
         // The swing 100 -> 112: 0.62 retrace = 112 - 12*0.62 = 104.56;
         // 0.79 = 112 - 12*0.79 = 102.52.
-        assert!((ote.zone_high.expect("hi") - 104.56).abs() < 0.01, "the 0.62 edge");
-        assert!((ote.zone_low.expect("lo") - 102.52).abs() < 0.01, "the 0.79 edge");
-        assert_eq!(ote.side, Some(crate::types::Side::Buy), "an up-leg's OTE is buy-side");
+        assert!(
+            (ote.zone_high.expect("hi") - 104.56).abs() < 0.01,
+            "the 0.62 edge"
+        );
+        assert!(
+            (ote.zone_low.expect("lo") - 102.52).abs() < 0.01,
+            "the 0.79 edge"
+        );
+        assert_eq!(
+            ote.side,
+            Some(crate::types::Side::Buy),
+            "an up-leg's OTE is buy-side"
+        );
     }
 
     #[test]
@@ -303,15 +350,24 @@ mod tests {
         // A second leg 108 -> 104 (down): its 0.786 retrace = 104 + 4*0.786 = 107.14...
         // and the first swing's 0.618 sits at 104.58, so instead align the
         // second swing's 0.5 at 106 while the first has 0.5 at 106 too.
-        for (i, p) in [108.6, 107.8, 107.0, 106.2, 105.4, 104.6, 104.2].iter().enumerate() {
+        for (i, p) in [108.6, 107.8, 107.0, 106.2, 105.4, 104.6, 104.2]
+            .iter()
+            .enumerate()
+        {
             ks.push(k((12 + i as i64) * h, *p, p + 0.3, p - 0.3, *p));
         }
         let events = detect_fibonacci(&ks, "T", 3);
         // Whether or not the crafted levels align, the concept must answer
         // with its zones when they do and must not crash when they do not.
-        let confluences: Vec<_> = events.iter().filter(|e| e.kind == EventKind::FibConfluence).collect();
+        let confluences: Vec<_> = events
+            .iter()
+            .filter(|e| e.kind == EventKind::FibConfluence)
+            .collect();
         for c in confluences {
-            assert!(c.zone_low.is_some() && c.zone_high.is_some(), "a confluence is a band");
+            assert!(
+                c.zone_low.is_some() && c.zone_high.is_some(),
+                "a confluence is a band"
+            );
         }
     }
 

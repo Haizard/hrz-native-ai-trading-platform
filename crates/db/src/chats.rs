@@ -117,12 +117,10 @@ fn derive_title(question: &str) -> String {
 /// # Errors
 /// Returns [`DbError::Pool`] if the insert fails.
 pub async fn create_conversation(pool: &PgPool, user_id: Uuid) -> Result<Uuid, DbError> {
-    let row = sqlx::query(
-        "INSERT INTO chat_conversations (user_id) VALUES ($1) RETURNING id",
-    )
-    .bind(user_id)
-    .fetch_one(pool)
-    .await?;
+    let row = sqlx::query("INSERT INTO chat_conversations (user_id) VALUES ($1) RETURNING id")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await?;
     Ok(row.try_get("id")?)
 }
 
@@ -164,13 +162,11 @@ pub async fn conversation_owned(
     user_id: Uuid,
     conversation_id: Uuid,
 ) -> Result<bool, DbError> {
-    let row = sqlx::query(
-        "SELECT 1 AS one FROM chat_conversations WHERE id = $1 AND user_id = $2",
-    )
-    .bind(conversation_id)
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await?;
+    let row = sqlx::query("SELECT 1 AS one FROM chat_conversations WHERE id = $1 AND user_id = $2")
+        .bind(conversation_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
     Ok(row.is_some())
 }
 
@@ -291,12 +287,10 @@ pub async fn delete_conversation(
     user_id: Uuid,
     conversation_id: Uuid,
 ) -> Result<bool, DbError> {
-    let result = sqlx::query(
-        "DELETE FROM chat_conversations WHERE id = $1 AND user_id = $2",
-    )
-    .bind(conversation_id)
-    .bind(user_id)
-    .execute(pool)
-    .await?;
+    let result = sqlx::query("DELETE FROM chat_conversations WHERE id = $1 AND user_id = $2")
+        .bind(conversation_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
     Ok(result.rows_affected() > 0)
 }
