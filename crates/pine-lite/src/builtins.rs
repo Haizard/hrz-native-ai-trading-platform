@@ -280,7 +280,8 @@ const TIME_LABEL_ARGS: &[BuiltinParameter] = &[
 ];
 
 pub const SPECS: &[BuiltinSpec] = &[
-    spec(&["na", "nz"], 1, 2, BuiltinReturn::Number),
+    spec(&["na"], 1, 1, BuiltinReturn::Bool),
+    spec(&["nz"], 1, 2, BuiltinReturn::Number),
     spec(&["fixnan"], 1, 1, BuiltinReturn::Number),
     spec(
         &["hour", "minute", "dayofweek", "year", "month", "dayofmonth"],

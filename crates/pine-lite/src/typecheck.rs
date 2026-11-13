@@ -734,8 +734,7 @@ impl Cx {
                     _ => Ty::Float,
                 };
                 let mut param_types = vec![Ty::Float; params.len()];
-                let mut string_params = std::collections::HashSet::new();
-                collect_string_parameters_in_items(body, params, &mut string_params);
+                let string_params = string_parameters_in_items(body, params);
                 for (index, param) in params.iter().enumerate() {
                     if string_params.contains(param) {
                         param_types[index] = Ty::String;
@@ -1591,6 +1590,9 @@ impl Cx {
                 _ => Ty::Float,
             };
         }
+        if callee == "nz" && arg_types.contains(&Ty::String) {
+            return Ty::String;
+        }
         match crate::builtins::lookup(callee).map(|spec| spec.result) {
             Some(crate::builtins::BuiltinReturn::Bool) => Ty::Bool,
             Some(crate::builtins::BuiltinReturn::String) => Ty::String,
@@ -1934,6 +1936,13 @@ fn collect_string_parameters_in_items(
 ) {
     for item in items {
         match item {
+            Item::Assign {
+                expr,
+                decl_type: Some(decl_type),
+                ..
+            } if decl_type == "string" => {
+                collect_text_identifiers(expr, params, found);
+            }
             Item::Assign { expr, .. } | Item::Expr { expr, .. } => {
                 collect_string_parameters(expr, params, found);
             }
@@ -1951,9 +1960,19 @@ fn collect_string_parameters_in_items(
                     collect_string_parameters_in_items(els, params, found);
                 }
             }
+
             Item::TypeDef { .. } | Item::FuncDef { .. } => {}
         }
     }
+}
+
+pub(crate) fn string_parameters_in_items(
+    items: &[Item],
+    params: &[String],
+) -> std::collections::HashSet<String> {
+    let mut found = std::collections::HashSet::new();
+    collect_string_parameters_in_items(items, params, &mut found);
+    found
 }
 
 fn collect_text_identifiers(

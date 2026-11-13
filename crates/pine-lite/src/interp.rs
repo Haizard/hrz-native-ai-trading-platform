@@ -644,7 +644,7 @@ pub fn run_incremental(
 /// The virtual machine.
 enum UserFunctionValue {
     Number(f64),
-    Text(String),
+    Text(Option<String>),
 }
 
 #[derive(Clone)]
@@ -681,8 +681,17 @@ pub struct Vm<'a> {
     /// This is Pine's series-passing model (`f(close)` passes close, not a
     /// snapshot) and what lets a function body run `ta.*` over a parameter.
     series_args: Vec<std::collections::HashMap<String, Expr>>,
+    /// String parameter names inferred for each active function frame.
+    string_params: Vec<std::collections::HashSet<String>>,
     /// String locals belong to their user-function call frame.
     string_scopes: Vec<std::collections::HashMap<String, Option<String>>>,
+    /// Persistent string locals declared in each active function frame.
+    string_local_modes: Vec<std::collections::HashMap<String, VarMode>>,
+    /// Call-expression identities from the outermost call to the current
+    /// frame; persistent locals are independent at each written call site.
+    call_sites: Vec<usize>,
+    /// `var`/`varip` string state, scoped to a call-site path and local name.
+    persistent_string_locals: std::collections::HashMap<(Vec<usize>, String), Option<String>>,
     /// Plot statements deferred to after the bar loop: replaying a plot's
     /// expression needs *completed* buffers, and one AST call site is one
     /// plot no matter how many bars its branch fires on.
@@ -941,7 +950,11 @@ impl<'a> Vm<'a> {
             loop_scopes: Vec::new(),
             scopes: Vec::new(),
             series_args: Vec::new(),
+            string_params: Vec::new(),
             string_scopes: Vec::new(),
+            string_local_modes: Vec::new(),
+            call_sites: Vec::new(),
+            persistent_string_locals: std::collections::HashMap::new(),
             deferred: Vec::new(),
             deferred_seen: std::collections::HashSet::new(),
             heap: Vec::new(),
@@ -1052,7 +1065,11 @@ impl<'a> Vm<'a> {
             loop_scopes: Vec::new(),
             scopes: Vec::new(),
             series_args: Vec::new(),
+            string_params: Vec::new(),
             string_scopes: Vec::new(),
+            string_local_modes: Vec::new(),
+            call_sites: Vec::new(),
+            persistent_string_locals: std::collections::HashMap::new(),
             deferred: Vec::new(),
             deferred_seen: std::collections::HashSet::new(),
             heap: Vec::new(),
@@ -1463,19 +1480,42 @@ impl<'a> Vm<'a> {
                 }
                 // A string right-hand side writes the string buffers, never
                 // the float ring: `s = "UP"`, `s := s + "!"`.
-                if decl_type.as_deref() == Some("string") || self.expr_is_string(expr) {
-                    let value = if matches!(expr.kind, ExprKind::Na) {
-                        None
-                    } else {
-                        Some(self.eval_s(expr)?)
-                    };
+                let is_function_string = self
+                    .string_scopes
+                    .iter()
+                    .rev()
+                    .any(|frame| frame.contains_key(name));
+                let is_string_target = decl_type.as_deref() == Some("string")
+                    || self.expr_is_string(expr)
+                    || is_function_string
+                    || self.str_vars.contains_key(name);
+                if is_string_target {
+                    if self.call_depth > 0 && *mode != VarMode::Auto {
+                        let key = (self.call_sites.clone(), name.clone());
+                        if let Some(persisted) = self.persistent_string_locals.get(&key) {
+                            if let Some(frame) = self.string_scopes.last_mut() {
+                                frame.insert(name.clone(), persisted.clone());
+                            }
+                            if let Some(modes) = self.string_local_modes.last_mut() {
+                                modes.insert(name.clone(), *mode);
+                            }
+                            return Ok(());
+                        }
+                    }
+                    let value = self.eval_s_value(expr)?;
                     if self.call_depth > 0 {
+                        let key = (self.call_sites.clone(), name.clone());
                         if *mode != VarMode::Auto {
-                            return Err(crate::ScriptError {
-                                kind: crate::ErrorKind::Type,
-                                span: crate::Span::new(1, 1),
-                                message: "persistent string locals inside user functions are not supported".into(),
-                            });
+                            self.persistent_string_locals.insert(key, value.clone());
+                            if let Some(modes) = self.string_local_modes.last_mut() {
+                                modes.insert(name.clone(), *mode);
+                            }
+                        } else if self
+                            .string_local_modes
+                            .last()
+                            .is_some_and(|modes| modes.contains_key(name))
+                        {
+                            self.persistent_string_locals.insert(key, value.clone());
                         }
                         if let Some(frame) = self.string_scopes.last_mut() {
                             frame.insert(name.clone(), value);
@@ -1651,7 +1691,9 @@ impl<'a> Vm<'a> {
     fn eval_stmt(&mut self, expr: &Expr) -> Result<(), crate::ScriptError> {
         self.tick()?;
         match &expr.kind {
-            ExprKind::Call { callee, args } => self.call_stmt(callee, args),
+            ExprKind::Call { callee, args } => {
+                self.call_stmt(callee, args, std::ptr::from_ref(expr).addr())
+            }
             ExprKind::Bin {
                 left,
                 op: BinOp::Cmp(_),
@@ -2491,7 +2533,12 @@ impl<'a> Vm<'a> {
         }
     }
 
-    fn call_stmt(&mut self, callee: &str, args: &[Arg]) -> Result<(), crate::ScriptError> {
+    fn call_stmt(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+        call_site: usize,
+    ) -> Result<(), crate::ScriptError> {
         self.tick()?;
         match callee {
             "plot" | "plotshape" | "plotchar" | "plotarrow" | "plotcandle" | "plotbar" | "fill"
@@ -2915,7 +2962,7 @@ impl<'a> Vm<'a> {
             _ => {
                 // User function called as a statement: run for side effects.
                 if self.funcs.contains_key(callee) {
-                    self.call_user(callee, args)?;
+                    self.call_user(callee, args, call_site)?;
                     Ok(())
                 } else {
                     Err(crate::ScriptError {
@@ -3253,7 +3300,13 @@ impl<'a> Vm<'a> {
             ExprKind::Color(c) => *c as f64,
             ExprKind::Str(_) => NA,
             ExprKind::Na => NA,
-            ExprKind::NaChecked { value } => f64::from(!self.eval_f(value)?.is_finite()),
+            ExprKind::NaChecked { value } => {
+                if self.expr_is_string(&value) {
+                    f64::from(self.eval_s_value(&value)?.is_none())
+                } else {
+                    f64::from(!self.eval_f(value)?.is_finite())
+                }
+            }
             ExprKind::Ident(name) => self.read_name(name)?,
             ExprKind::Member { path } => self.read_member(path)?,
             ExprKind::History { base, offset } => {
@@ -3317,7 +3370,10 @@ impl<'a> Vm<'a> {
                     BinOp::Cmp(crate::parse::CmpOp::Eq) | BinOp::Cmp(crate::parse::CmpOp::Ne)
                 ) && (self.expr_is_string(left) || self.expr_is_string(right))
                 {
-                    let (l, r) = (self.eval_s(left)?, self.eval_s(right)?);
+                    let (Some(l), Some(r)) = (self.eval_s_value(left)?, self.eval_s_value(right)?)
+                    else {
+                        return Ok(0.0);
+                    };
                     let eq = l == r;
                     return Ok(f64::from(
                         if matches!(op, BinOp::Cmp(crate::parse::CmpOp::Eq)) {
@@ -3821,6 +3877,11 @@ impl<'a> Vm<'a> {
                 self.str_vars.contains_key(name)
                     || self.is_udt_string_field(name)
                     || self
+                        .string_params
+                        .iter()
+                        .rev()
+                        .any(|frame| frame.contains(name))
+                    || self
                         .string_scopes
                         .iter()
                         .rev()
@@ -3836,43 +3897,49 @@ impl<'a> Vm<'a> {
                 matches!(path.as_str(), "syminfo.ticker" | "timeframe.period")
                     || self.is_udt_string_field(path)
             }
-            ExprKind::Call { callee, .. } => {
+            ExprKind::Call { callee, args } => {
                 matches!(
                     callee.as_str(),
                     "str.tostring" | "str.format" | "array.join" | "input.string"
-                ) || self.funcs.get(callee).is_some_and(|body| {
-                    if !resolving.insert(callee.clone()) {
-                        return false;
-                    }
-                    let is_string = body
-                        .last()
-                        .and_then(|item| match item {
-                            Item::Expr { expr, .. } => Some(expr),
-                            _ => None,
-                        })
-                        .is_some_and(|expr| {
-                            if let ExprKind::Ident(name) = &expr.kind {
-                                body.iter()
-                                    .rev()
-                                    .skip(1)
-                                    .find_map(|item| match item {
-                                        Item::Assign {
-                                            name: assigned,
-                                            expr,
-                                            ..
-                                        } if assigned == name => {
-                                            Some(self.expr_is_string_inner(expr, resolving))
-                                        }
-                                        _ => None,
-                                    })
-                                    .unwrap_or_else(|| self.expr_is_string_inner(expr, resolving))
-                            } else {
-                                self.expr_is_string_inner(expr, resolving)
-                            }
-                        });
-                    resolving.remove(callee);
-                    is_string
-                })
+                ) || (callee == "nz"
+                    && args
+                        .iter()
+                        .any(|arg| self.expr_is_string_inner(&arg.value, resolving)))
+                    || self.funcs.get(callee).is_some_and(|body| {
+                        if !resolving.insert(callee.clone()) {
+                            return false;
+                        }
+                        let is_string = body
+                            .last()
+                            .and_then(|item| match item {
+                                Item::Expr { expr, .. } => Some(expr),
+                                _ => None,
+                            })
+                            .is_some_and(|expr| {
+                                if let ExprKind::Ident(name) = &expr.kind {
+                                    body.iter()
+                                        .rev()
+                                        .skip(1)
+                                        .find_map(|item| match item {
+                                            Item::Assign {
+                                                name: assigned,
+                                                expr,
+                                                ..
+                                            } if assigned == name => {
+                                                Some(self.expr_is_string_inner(expr, resolving))
+                                            }
+                                            _ => None,
+                                        })
+                                        .unwrap_or_else(|| {
+                                            self.expr_is_string_inner(expr, resolving)
+                                        })
+                                } else {
+                                    self.expr_is_string_inner(expr, resolving)
+                                }
+                            });
+                        resolving.remove(callee);
+                        is_string
+                    })
             }
             ExprKind::Bin {
                 op: crate::parse::BinOp::Add(crate::parse::AddOp::Add),
@@ -3913,17 +3980,13 @@ impl<'a> Vm<'a> {
         field_type: &str,
     ) -> Result<UdtFieldValue, crate::ScriptError> {
         if field_type == "string" {
-            Ok(UdtFieldValue::Text(if matches!(expr.kind, ExprKind::Na) {
-                None
-            } else {
-                Some(self.eval_s(expr)?)
-            }))
+            Ok(UdtFieldValue::Text(self.eval_s_value(expr)?))
         } else {
             Ok(UdtFieldValue::Number(self.eval_f(expr)?))
         }
     }
 
-    fn read_udt_string_field(&mut self, path: &str) -> Result<String, crate::ScriptError> {
+    fn read_udt_string_field(&mut self, path: &str) -> Result<Option<String>, crate::ScriptError> {
         let (base, field) = path.split_once('.').ok_or_else(|| crate::ScriptError {
             kind: crate::ErrorKind::Type,
             span: crate::Span::new(1, 1),
@@ -3955,7 +4018,7 @@ impl<'a> Vm<'a> {
             });
         };
         match &values[field_index] {
-            UdtFieldValue::Text(value) => Ok(value.clone().unwrap_or_default()),
+            UdtFieldValue::Text(value) => Ok(value.clone()),
             UdtFieldValue::Number(_) => Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
@@ -4436,7 +4499,15 @@ impl<'a> Vm<'a> {
                     }),
                 }
             }
-            "na" => Ok(f64::from(!a!(0)?.is_finite())),
+            "na" => {
+                if let Some(arg) = args.first().filter(|arg| self.expr_is_string(&arg.value)) {
+                    Ok(f64::from(self.eval_s_value(&arg.value)?.is_none()))
+                } else {
+                    #[cfg(test)]
+                    eprintln!("na numeric arg {:?}; string vars {:?}", args.first().map(|a| &a.value.kind), self.str_vars.keys().collect::<Vec<_>>());
+                    Ok(f64::from(!a!(0)?.is_finite()))
+                }
+            }
             "nz" => {
                 let v = a!(0)?;
                 if v.is_finite() {
@@ -5203,7 +5274,7 @@ impl<'a> Vm<'a> {
                 if let Some(v) = self.method_call(callee, args)? {
                     return Ok(v);
                 }
-                self.call_user(callee, args)
+                self.call_user(callee, args, call_site)
             }
         }
     }
@@ -5448,8 +5519,13 @@ impl<'a> Vm<'a> {
         expr.clone()
     }
 
-    fn call_user(&mut self, callee: &str, args: &[Arg]) -> Result<f64, crate::ScriptError> {
-        match self.call_user_inner(callee, args, false)? {
+    fn call_user(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+        call_site: usize,
+    ) -> Result<f64, crate::ScriptError> {
+        match self.call_user_inner(callee, args, false, call_site)? {
             UserFunctionValue::Number(value) => Ok(value),
             UserFunctionValue::Text(_) => Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
@@ -5463,8 +5539,9 @@ impl<'a> Vm<'a> {
         &mut self,
         callee: &str,
         args: &[Arg],
-    ) -> Result<String, crate::ScriptError> {
-        match self.call_user_inner(callee, args, true)? {
+        call_site: usize,
+    ) -> Result<Option<String>, crate::ScriptError> {
+        match self.call_user_inner(callee, args, true, call_site)? {
             UserFunctionValue::Text(value) => Ok(value),
             UserFunctionValue::Number(_) => Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
@@ -5479,6 +5556,7 @@ impl<'a> Vm<'a> {
         callee: &str,
         args: &[Arg],
         text_result: bool,
+        call_site: usize,
     ) -> Result<UserFunctionValue, crate::ScriptError> {
         // Depth first: a recursive body must name RECURSION as its refusal
         // (the fuel message would be true but misleading), and each frame
@@ -5515,6 +5593,7 @@ impl<'a> Vm<'a> {
             _ => None,
         });
         let (def_params, def_defaults) = def.unwrap_or_else(|| (Vec::new(), Vec::new()));
+        let string_params = crate::typecheck::string_parameters_in_items(body, &def_params);
         let mut locals = std::collections::HashMap::new();
         let mut series_args: std::collections::HashMap<String, Expr> =
             std::collections::HashMap::new();
@@ -5531,7 +5610,7 @@ impl<'a> Vm<'a> {
             // self-name binds nothing (the scalar local rules).
             let resolved = self.resolve_param(&arg.value);
             series_args.insert(param.clone(), resolved);
-            if !self.expr_is_string(&arg.value) {
+            if !string_params.contains(&param) && !self.expr_is_string(&arg.value) {
                 let v = self.eval_f(&arg.value)?;
                 locals.insert(param, v);
             }
@@ -5549,7 +5628,7 @@ impl<'a> Vm<'a> {
             let param = def_params[i].clone();
             let resolved = self.resolve_param(default_expr);
             series_args.insert(param.clone(), resolved);
-            if !self.expr_is_string(default_expr) {
+            if !string_params.contains(&param) && !self.expr_is_string(default_expr) {
                 let v = self.eval_f(default_expr)?;
                 locals.insert(param, v);
             }
@@ -5557,8 +5636,12 @@ impl<'a> Vm<'a> {
         // Named parameters by position: the checker knows the signature; the
         // VM binds positionally (docs/23: positional order matches the table).
         self.series_args.push(series_args);
+        self.string_params.push(string_params);
         self.scopes.push(locals);
         self.string_scopes.push(std::collections::HashMap::new());
+        self.string_local_modes
+            .push(std::collections::HashMap::new());
+        self.call_sites.push(call_site);
         self.call_depth += 1;
         let result = (|| {
             let mut result = UserFunctionValue::Number(NA);
@@ -5567,7 +5650,7 @@ impl<'a> Vm<'a> {
                 if i == last {
                     if let Item::Expr { expr, .. } = item {
                         result = if text_result {
-                            UserFunctionValue::Text(self.eval_s(expr)?)
+                            UserFunctionValue::Text(self.eval_s_value(expr)?)
                         } else {
                             UserFunctionValue::Number(self.eval_f(expr)?)
                         };
@@ -5579,8 +5662,11 @@ impl<'a> Vm<'a> {
             Ok(result)
         })();
         self.call_depth -= 1;
+        self.call_sites.pop();
+        self.string_local_modes.pop();
         self.scopes.pop();
         self.string_scopes.pop();
+        self.string_params.pop();
         self.series_args.pop();
         result
     }
@@ -5606,18 +5692,40 @@ impl<'a> Vm<'a> {
     /// purely numeric expression in a text slot is coerced with plain
     /// tostring -- convenient and unambiguous.
     fn eval_s(&mut self, e: &Expr) -> Result<String, crate::ScriptError> {
+        Ok(self.eval_s_value(e)?.unwrap_or_default())
+    }
+
+    fn eval_s_value(&mut self, e: &Expr) -> Result<Option<String>, crate::ScriptError> {
         match &e.kind {
-            ExprKind::Str(s) => Ok(s.clone()),
+            ExprKind::Str(s) => Ok(Some(s.clone())),
+            ExprKind::Na => Ok(None),
             ExprKind::Call { callee, args } if callee == "input.string" => {
                 let name = self.current_input_name.clone();
-                Ok(self.inputs.strings.get(&name).cloned().unwrap_or_else(|| {
+                Ok(Some(self.inputs.strings.get(&name).cloned().unwrap_or_else(|| {
                     self.arg_str(args, "defval")
                         .or_else(|| self.arg_str_pos(args, 0))
                         .unwrap_or_default()
-                }))
+                })))
             }
             ExprKind::Bin { op: crate::parse::BinOp::Add(crate::parse::AddOp::Add), left, right } => {
-                Ok(format!("{}{}", self.eval_s(left)?, self.eval_s(right)?))
+                Ok(self
+                    .eval_s_value(left)?
+                    .zip(self.eval_s_value(right)?)
+                    .map(|(left, right)| format!("{left}{right}")))
+            }
+            ExprKind::Call { callee, args } if callee == "nz" && self.expr_is_string(e) => {
+                let source = args.first().ok_or_else(|| crate::ScriptError {
+                    kind: crate::ErrorKind::Type,
+                    span: e.span,
+                    message: "`nz` needs a source value".into(),
+                })?;
+                match self.eval_s_value(&source.value)? {
+                    Some(value) => Ok(Some(value)),
+                    None => match args.get(1) {
+                        Some(fallback) => self.eval_s_value(&fallback.value),
+                        None => Ok(Some(String::new())),
+                    },
+                }
             }
             ExprKind::Call { callee, args } if callee == "str.tostring" => {
                 let v = self
@@ -5628,10 +5736,10 @@ impl<'a> Vm<'a> {
                         message: "`str.tostring` needs a value".into(),
                     })?;
                 let fmt = self.arg_str(args, "format").or_else(|| self.arg_str_pos(args, 1));
-                Ok(format_number(v, fmt.as_deref()))
+                Ok(Some(format_number(v, fmt.as_deref())))
             }
             ExprKind::Call { callee, args } if self.funcs.contains_key(callee) && self.expr_is_string(e) => {
-                self.call_user_string(callee, args)
+                self.call_user_string(callee, args, std::ptr::from_ref(e).addr())
             }
             ExprKind::Call { callee, args } if callee == "str.format" => {
                 let mut out = match args.first().map(|a| &a.value.kind) {
@@ -5649,7 +5757,9 @@ impl<'a> Vm<'a> {
                     // {2} plain, or {2,number,#.##} with the tostring spec.
                     let mut head = format!("{{{idx}}}");
                     if out.contains(&head) {
-                        let text = self.eval_s(&a.value)?;
+                        let Some(text) = self.eval_s_value(&a.value)? else {
+                            return Ok(None);
+                        };
                         out = out.replace(&head, &text);
                     }
                     // Brace-scan for the decorated form: {idx,anything}.
@@ -5671,7 +5781,7 @@ impl<'a> Vm<'a> {
                         head.clear();
                     }
                 }
-                Ok(out)
+                Ok(Some(out))
             }
             ExprKind::Switch { subject, arms } => {
                 let sv = match subject {
@@ -5697,7 +5807,7 @@ impl<'a> Vm<'a> {
                     }
                 }
                 match chosen.or(default) {
-                    Some(r) => self.eval_s(r),
+                    Some(r) => self.eval_s_value(r),
                     None => {
                         return Err(crate::ScriptError {
                             kind: crate::ErrorKind::Type,
@@ -5713,9 +5823,9 @@ impl<'a> Vm<'a> {
                 // falling through to the numeric coercion would render na.
                 let c = self.eval_f(cond)?;
                 if self.truthy(c) {
-                    self.eval_s(then)
+                    self.eval_s_value(then)
                 } else {
-                    self.eval_s(els)
+                    self.eval_s_value(els)
                 }
             }
             ExprKind::Call { callee, args } if callee == "array.get" => {
@@ -5735,11 +5845,11 @@ impl<'a> Vm<'a> {
                 }
                 let idx = self.arg_f(args, 1)?.unwrap_or(NA);
                 let idx = if idx.is_finite() && idx >= 0.0 { idx as usize } else { usize::MAX };
-                Ok(self
+                Ok(Some(self
                     .str_array_ref(handle)?
                     .get(idx)
                     .cloned()
-                    .unwrap_or_default())
+                    .unwrap_or_default()))
             }
             ExprKind::Call { callee, args } if callee == "array.join" => {
                 let handle = self
@@ -5750,18 +5860,21 @@ impl<'a> Vm<'a> {
                         message: "`array.join` needs an array".into(),
                     })?;
                 let sep = match args.get(1) {
-                    Some(a) => self.eval_s(&a.value)?,
+                    Some(a) => match self.eval_s_value(&a.value)? {
+                        Some(sep) => sep,
+                        None => return Ok(None),
+                    },
                     None => ",".to_string(),
                 };
                 if (STR_TAG..LTF_TAG).contains(&handle) {
-                    return Ok(self.str_array_ref(handle)?.join(&sep));
+                    return Ok(Some(self.str_array_ref(handle)?.join(&sep)));
                 }
-                Ok(self
+                Ok(Some(self
                     .array_ref(handle)?
                     .iter()
                     .map(|v| if v.is_finite() { format_number(*v, None) } else { "na".to_string() })
                     .collect::<Vec<_>>()
-                    .join(&sep))
+                    .join(&sep)))
             }
             ExprKind::Ident(path) if self.is_udt_string_field(path) => {
                 self.read_udt_string_field(path)
@@ -5783,7 +5896,7 @@ impl<'a> Vm<'a> {
                     .find_map(|frame| frame.get(name))
                     .cloned()
                     .flatten();
-                Ok(value.unwrap_or_default())
+                Ok(value)
             }
             ExprKind::Ident(name) if self.series_args.iter().rev().any(|frame| frame.contains_key(name)) => {
                 let bound = self
@@ -5797,16 +5910,17 @@ impl<'a> Vm<'a> {
                         span: crate::Span::new(1, 1),
                         message: format!("`{name}` has no bound function argument"),
                     })?;
-                if self.expr_is_string(&bound) {
-                    self.eval_s(&bound)
+                if self.string_params.iter().rev().any(|frame| frame.contains(name))
+                    || self.expr_is_string(&bound)
+                {
+                    self.eval_s_value(&bound)
                 } else {
                     let value = self.eval_f(&bound)?;
-                    Ok(format_number(value, None))
+                    Ok(Some(format_number(value, None)))
                 }
             }
             ExprKind::Ident(name) if self.str_vars.contains_key(name) => {
-                let v = self.read_str_var(name)?;
-                Ok(v.unwrap_or_default())
+                self.read_str_var(name)
             }
             ExprKind::History { base, offset } => {
                 // `s[1]`: a string var's past, with the float buffers'
@@ -5821,33 +5935,33 @@ impl<'a> Vm<'a> {
                         self.bar = saved.saturating_sub(off);
                         let v = self.read_str_var(name);
                         self.bar = saved;
-                        Ok(v?.unwrap_or_default())
+                        v
                     }
-                    _ => Ok(String::new()),
+                    _ => Ok(None),
                 }
             }
-            ExprKind::Member { path } if path == "timeframe.period" => Ok(self
+            ExprKind::Member { path } if path == "timeframe.period" => Ok(Some(self
                 .candles
                 .first()
                 .map(|cd| cd.timeframe.as_str().to_string())
-                .unwrap_or_default()),
-            ExprKind::Ident(name) if name == "timeframe.period" => Ok(self
+                .unwrap_or_default())),
+            ExprKind::Ident(name) if name == "timeframe.period" => Ok(Some(self
                 .candles
                 .first()
                 .map(|cd| cd.timeframe.as_str().to_string())
-                .unwrap_or_default()),
-            ExprKind::Member { path } if path == "syminfo.ticker" => Ok(self
+                .unwrap_or_default())),
+            ExprKind::Member { path } if path == "syminfo.ticker" => Ok(Some(self
                 .candles
                 .first()
                 .map(|c| c.symbol.clone())
-                .unwrap_or_default()),
+                .unwrap_or_default())),
             // Dotted paths parse as Ident in some positions; the chart
             // symbol must read as text in all of them.
-            ExprKind::Ident(name) if name == "syminfo.ticker" => Ok(self
+            ExprKind::Ident(name) if name == "syminfo.ticker" => Ok(Some(self
                 .candles
                 .first()
                 .map(|c| c.symbol.clone())
-                .unwrap_or_default()),
+                .unwrap_or_default())),
             ExprKind::Ident(name) if self.vars.contains_key(name) => Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
@@ -5859,7 +5973,7 @@ impl<'a> Vm<'a> {
                 // Numeric coercion in a text slot (builtin series like
                 // bar_index land here too -- they are not vars).
                 let v = self.eval_f(e)?;
-                Ok(format_number(v, None))
+                Ok(Some(format_number(v, None)))
             }
         }
     }
@@ -6165,6 +6279,69 @@ mod tests {
                 .map(|shape| shape.text.as_str())
                 .collect::<Vec<_>>(),
             ["ready!", "ready!", "42!"]
+        );
+    }
+
+    #[test]
+    fn string_na_propagates_through_functions_history_udts_and_nz() {
+        let candles = vec![candle(0, 100.0), candle(1, 101.0)];
+        let out = run_src(
+            concat!(
+                "//@pine_lite version=1 overlay=true title=\"string na\"\n",
+                "wrap(value) =>\n",
+                "    value + \"!\"\n",
+                "string missing = wrap(na)\n",
+                "string previous = missing[1]\n",
+                "type Signal\n",
+                "    string message\n",
+                "signal = Signal.new(message=na)\n",
+                "plotshape(na(missing), text=nz(missing, \"fallback\"))\n",
+                "plotshape(na(previous), text=\"history missing\")\n",
+                "plotshape(na(signal.message), text=nz(signal.message, \"udt fallback\"))\n",
+            ),
+            &candles,
+        );
+        assert_eq!(
+            out.shapes
+                .iter()
+                .map(|shape| shape.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "fallback",
+                "fallback",
+                "history missing",
+                "history missing",
+                "udt fallback",
+                "udt fallback"
+            ]
+        );
+    }
+
+    #[test]
+    fn persistent_string_locals_are_independent_per_function_call_site() {
+        let candles = vec![candle(0, 100.0), candle(1, 101.0)];
+        let out = run_src(
+            concat!(
+                "//@pine_lite version=1 overlay=true title=\"persistent strings\"\n",
+                "next() =>\n",
+                "    var string state = \"a\"\n",
+                "    state := state + \"!\"\n",
+                "    state\n",
+                "left = next()\n",
+                "right = next()\n",
+                "plotshape(bar_index == 0, text=left)\n",
+                "plotshape(bar_index == 1, text=left)\n",
+                "plotshape(bar_index == 0, text=right)\n",
+                "plotshape(bar_index == 1, text=right)\n",
+            ),
+            &candles,
+        );
+        assert_eq!(
+            out.shapes
+                .iter()
+                .map(|shape| shape.text.as_str())
+                .collect::<Vec<_>>(),
+            ["a!", "a!!", "a!", "a!!"]
         );
     }
 
