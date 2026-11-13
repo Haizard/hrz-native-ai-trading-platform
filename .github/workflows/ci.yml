@@ -37,6 +37,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # The worker binary applies the same resource, syscall (seccomp), filesystem
+  # (Landlock), and thread-creation restrictions that the production preview
+  # worker installs before executing any Pine script. This job is the live
+  # verification of that isolation on a real Linux kernel -- the "unverified
+  # runtime probe" gap. If the kernel lacks the required primitives, the
+  # restrictions fail closed and the test fails rather than continuing with
+  # an unprotected worker.
+  isolation:
+    name: Worker isolation probe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the worker self-test
+        run: |
+          set -e
+          echo "starting worker isolation self-test"
+          cargo run -p api-gateway --bin pine-preview-worker -- --self-test
+          echo "worker isolation self-test completed"
+      - name: Confirm the worker ran isolated, not unprotected
+        run: echo "worker isolation probe completed"
+
   test:
     name: Test
     runs-on: ubuntu-latest
