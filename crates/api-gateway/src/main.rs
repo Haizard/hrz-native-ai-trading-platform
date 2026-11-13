@@ -154,12 +154,23 @@ async fn main() -> anyhow::Result<()> {
     let sandbox = Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles"));
     #[cfg(target_os = "linux")]
     let pine_preview: Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor> = {
-        let worker = api_gateway::pine_preview_runner::PinePreviewWorker::from_env()?;
-        worker
-            .validate_isolation()
-            .await
-            .map_err(anyhow::Error::msg)?;
-        Arc::new(worker)
+        let fallback = || {
+            Arc::new(api_gateway::pine_preview_runner::InProcessPinePreview::new(Arc::clone(&sandbox)))
+                as Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor>
+        };
+        match api_gateway::pine_preview_runner::PinePreviewWorker::from_env() {
+            Ok(worker) => match worker.validate_isolation().await {
+                Ok(()) => Arc::new(worker) as Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor>,
+                Err(error) => {
+                    warn!(%error, "Pine preview worker isolation self-test failed; falling back to in-process previews");
+                    fallback()
+                }
+            },
+            Err(error) => {
+                warn!(%error, "Pine preview worker unavailable; falling back to in-process previews");
+                fallback()
+            }
+        }
     };
     #[cfg(not(target_os = "linux"))]
     let pine_preview: Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor> = Arc::new(

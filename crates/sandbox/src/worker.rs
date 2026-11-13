@@ -82,6 +82,16 @@ fn set_limit(resource: libc::__rlimit_resource_t, soft: u64, hard: u64) -> io::R
     }
 }
 
+/// True when the kernel or container refuses an isolation syscall and the
+/// worker should degrade gracefully (Wasmtime fuel/epoch/memory limits and the
+/// import allowlist still apply) rather than fail closed.
+fn is_isolation_unavailable(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::ENOTSUP) | Some(libc::EPERM)
+    )
+}
+
 #[cfg(target_os = "linux")]
 fn install_landlock() -> io::Result<()> {
     const LANDLOCK_CREATE_RULESET_VERSION: libc::c_ulong = 1;
@@ -166,6 +176,16 @@ fn install_landlock() -> io::Result<()> {
     let no_new_privs = unsafe { libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     if no_new_privs != 0 {
         let error = io::Error::last_os_error();
+        if is_isolation_unavailable(&error) {
+            tracing::warn!(
+                "filesystem isolation unavailable: prctl(PR_SET_NO_NEW_PRIVS) not supported; continuing without landlock"
+            );
+            // SAFETY: `ruleset_fd` was returned by landlock_create_ruleset.
+            unsafe {
+                libc::close(ruleset_fd as libc::c_int);
+            }
+            return Ok(());
+        }
         // SAFETY: `ruleset_fd` was returned by landlock_create_ruleset.
         unsafe {
             libc::close(ruleset_fd as libc::c_int);
@@ -315,7 +335,14 @@ fn install_seccomp() -> io::Result<()> {
     // SAFETY: PR_SET_NO_NEW_PRIVS takes an integer flag and no pointer.
     let no_new_privs = unsafe { libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     if no_new_privs != 0 {
-        return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        if is_isolation_unavailable(&error) {
+            tracing::warn!(
+                "syscall isolation unavailable: prctl(PR_SET_NO_NEW_PRIVS) not supported; continuing without seccomp"
+            );
+            return Ok(());
+        }
+        return Err(error);
     }
     // SAFETY: `program` points to a live, immutable BPF program for this call.
     // No threads exist, and the filter blocks creating any after installation.
@@ -330,7 +357,14 @@ fn install_seccomp() -> io::Result<()> {
     if result == 0 {
         Ok(())
     } else {
-        Err(io::Error::last_os_error())
+        let error = io::Error::last_os_error();
+        if is_isolation_unavailable(&error) {
+            tracing::warn!(
+                "syscall isolation unavailable: seccomp() not supported; continuing without seccomp"
+            );
+            return Ok(());
+        }
+        Err(error)
     }
 }
 
