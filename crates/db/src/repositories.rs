@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, QueryBuilder, Row};
 
 use crate::error::DbError;
+use crate::market_source::MarketDataSource;
 
 /// Rows per multi-row INSERT. Large enough to amortize round-trips, small
 /// enough to stay under Postgres' 65535 bind-parameter ceiling.
@@ -76,13 +77,26 @@ pub async fn insert_candles(pool: &PgPool, candles: &[Candle]) -> Result<(), DbE
 /// # Errors
 /// Returns [`DbError::Pool`] if the write fails.
 pub async fn insert_trades(pool: &PgPool, trades: &[Trade]) -> Result<(), DbError> {
+    insert_trades_from_source(pool, &MarketDataSource::legacy(), trades).await
+}
+
+/// Persist trades for one source, ignoring duplicates from that same source.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the write fails.
+pub async fn insert_trades_from_source(
+    pool: &PgPool,
+    source: &MarketDataSource,
+    trades: &[Trade],
+) -> Result<(), DbError> {
     for chunk in trades.chunks(INSERT_CHUNK) {
         let mut query = QueryBuilder::<sqlx::Postgres>::new(
-            "INSERT INTO trades (symbol, trade_id, price, quantity, is_buyer_maker, ts) ",
+            "INSERT INTO trades (source_id, symbol, trade_id, price, quantity, is_buyer_maker, ts) ",
         );
 
         query.push_values(chunk, |mut row, t| {
-            row.push_bind(t.symbol.as_str())
+            row.push_bind(source.as_str())
+                .push_bind(t.symbol.as_str())
                 .push_bind(t.trade_id as i64)
                 .push_bind(t.price)
                 .push_bind(t.quantity)
@@ -90,7 +104,7 @@ pub async fn insert_trades(pool: &PgPool, trades: &[Trade]) -> Result<(), DbErro
                 .push_bind(ns_to_dt(t.timestamp));
         });
 
-        query.push(" ON CONFLICT (symbol, trade_id) DO NOTHING");
+        query.push(" ON CONFLICT (source_id, symbol, trade_id) DO NOTHING");
         query.build().execute(pool).await?;
     }
     Ok(())
@@ -104,21 +118,35 @@ pub async fn insert_orderbook_snapshots(
     pool: &PgPool,
     snapshots: &[OrderBookSnapshot],
 ) -> Result<(), DbError> {
+    insert_orderbook_snapshots_from_source(pool, &MarketDataSource::legacy(), snapshots).await
+}
+
+/// Persist order-book snapshots for one source, ignoring duplicates from that
+/// same source.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the write fails.
+pub async fn insert_orderbook_snapshots_from_source(
+    pool: &PgPool,
+    source: &MarketDataSource,
+    snapshots: &[OrderBookSnapshot],
+) -> Result<(), DbError> {
     for chunk in snapshots.chunks(INSERT_CHUNK) {
         let mut query = QueryBuilder::<sqlx::Postgres>::new(
-            "INSERT INTO orderbook_snapshots (symbol, ts, bids, asks) ",
+            "INSERT INTO orderbook_snapshots (source_id, symbol, ts, bids, asks) ",
         );
 
         query.push_values(chunk, |mut row, s| {
             let bids = serde_json::to_value(&s.bids).unwrap_or(serde_json::Value::Array(vec![]));
             let asks = serde_json::to_value(&s.asks).unwrap_or(serde_json::Value::Array(vec![]));
-            row.push_bind(s.symbol.as_str())
+            row.push_bind(source.as_str())
+                .push_bind(s.symbol.as_str())
                 .push_bind(ns_to_dt(s.timestamp))
                 .push_bind(bids)
                 .push_bind(asks);
         });
 
-        query.push(" ON CONFLICT (symbol, ts) DO NOTHING");
+        query.push(" ON CONFLICT (source_id, symbol, ts) DO NOTHING");
         query.build().execute(pool).await?;
     }
     Ok(())
@@ -195,12 +223,27 @@ pub async fn load_trades(
     from_ns: i64,
     to_ns: i64,
 ) -> Result<Vec<Trade>, DbError> {
+    load_trades_from_source(pool, &MarketDataSource::legacy(), symbol, from_ns, to_ns).await
+}
+
+/// Load one source's trades for `[from_ns, to_ns)`, ordered by time.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] on query failure.
+pub async fn load_trades_from_source(
+    pool: &PgPool,
+    source: &MarketDataSource,
+    symbol: &str,
+    from_ns: i64,
+    to_ns: i64,
+) -> Result<Vec<Trade>, DbError> {
     let rows = sqlx::query(
         "SELECT symbol, trade_id, price, quantity, is_buyer_maker, ts
          FROM trades
-         WHERE symbol = $1 AND ts >= $2 AND ts < $3
+         WHERE source_id = $1 AND symbol = $2 AND ts >= $3 AND ts < $4
          ORDER BY ts",
     )
+    .bind(source.as_str())
     .bind(symbol)
     .bind(ns_to_dt(from_ns))
     .bind(ns_to_dt(to_ns))

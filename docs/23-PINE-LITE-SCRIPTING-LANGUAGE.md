@@ -122,9 +122,15 @@ After a series has a concrete kind, reassignment to another kind is refused.
 An initial untyped `na` does not constrain the later kind.
 
 `if`/`while` conditions must be boolean and `for` bounds/steps numeric.
-User-function arguments are numeric in the currently supported function
-model. UDT constructors and field assignments check declared `bool` and
-`color` fields distinctly; other implemented fields are numeric/handles.
+User-function parameters and returns support strings when the function body
+uses the parameter in string concatenation, string ternaries/switches, or a
+string-valued local assignment. These parameters accept strings and numeric
+values (formatted as text at runtime); defaults are checked against the
+inferred kind. Persistent (`var`/`varip`) string locals inside
+functions are refused; other inferred function parameter kinds are checked at
+the call site. UDT constructors and field assignments check declared
+`string`, `bool`, and `color` fields distinctly; other implemented fields are
+numeric/handles.
 Input defaults are checked against their supported kind (`input.bool` retains
 the legacy numeric default form). Rendering calls check the value kind their
 series slots require. Builtin parameter type/name checks are guaranteed only
@@ -422,10 +428,11 @@ backtest, or a bot.
 - Requests grow a `scripts: [{ id, source, inputs }]` field; the engine
   currently vets and interprets scripts when building each scene; it does not
   cache a compiled script by source hash. The current settings popover edits
-  boolean, numeric, color, and string inputs. The VM supports top-level
-  string-valued assignments, concatenation, history reads, and host-supplied
-  `input.string` values. Strings are not yet supported as user-function
-  parameters/returns or UDT fields; string `na` propagation is incomplete.
+  boolean, numeric, color, and string inputs. The VM supports string-valued
+  assignments, concatenation, history reads, host-supplied `input.string`
+  values, inferred string parameters/returns in user functions, and string UDT
+  fields. Persistent string locals inside functions and complete string `na`
+  propagation remain unsupported.
 
 ## Phased plan
 
@@ -440,7 +447,7 @@ backtest, or a bot.
 | 7 | Strategy calls → backtester replay intents | Pine execution and `ScriptStrategy` replay agree on supported intents; runtime failures are observable | **done** for the adapter's supported intents — `crates/backtester/src/script_strategy.rs` and `crates/backtester/tests/script_parity.rs`; runtime failures now abort replay with diagnostics. |
 | 8 | Static analyser + sandbox front-end + fuel budgets | Adversarial tests mirror docs/08's list | **implemented; Linux runtime verification pending** — the gateway runs Pine-Lite in `sandbox-guest` under Wasmtime fuel, epoch, and linear-memory limits, then executes it in recycled worker processes with Landlock, thread-synchronized seccomp, OS resource limits, bounded IPC, and fail-closed startup validation. Wasm parity/adversarial tests are in `crates/sandbox/tests/pine_preview.rs`; the Linux-only process-policy probe is in `crates/api-gateway/tests/pine_preview_worker.rs` and must pass on the deployment kernel. Non-Linux development uses the in-process backend. |
 | 9 | Gateway: `/scripts/*` routes, workspace language switch, AI loop | `indicator_workspace_flow`-style gateway tests | **done for the indicator path; distinct strategy flow is intentional** — `/scripts/vet`, generation/edit/repair/preview, and revision storage live in `crates/api-gateway/src/script_routes.rs` and `indicator_workspace_routes.rs`; generated previews use the isolated guest. Indicator workspaces use Pine-Lite, while strategy-document workspaces use the Strategy DSL; there is no implicit in-place conversion between these different contracts. |
-| 10 | Chart engine + shell: rendering, inputs UI, pane management | Shell check script + visual parity vs RSI sub-pane | **partial** — render/projection and layer controls are implemented; boolean/numeric/color/string settings are editable in the shell. The VM supports top-level string assignment, concatenation, history, and host-supplied `input.string`, but not string parameters/returns, UDT fields, or complete string-`na` semantics. Full visual acceptance remains open. |
+| 10 | Chart engine + shell: rendering, inputs UI, pane management | Shell check script + visual parity vs RSI sub-pane | **partial** — render/projection and layer controls are implemented; boolean/numeric/color/string settings are editable in the shell. The VM supports string assignment, concatenation, history, `input.string`, inferred string parameters/returns in user functions, and string UDT fields. Persistent string locals inside functions and complete string-`na` semantics remain open. Full visual acceptance remains open. |
 
 Phases 1–5 are the language core and land as one reviewable unit; 6–8 make it
 visible and safe; 9–10 wire it to users.
@@ -456,7 +463,7 @@ limitations remain explicit even when the language construct itself is tested.
 | 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", expression)`, keyed host pools, eight-key cap, and `sec=` shorthand. | **partial** — literal collection, cap, raw source fetching, timestamp merge, and chart-engine paths exist in `crates/pine-lite/src/typecheck.rs`, `interp.rs`, `crates/api-gateway/src/indicator_preview.rs`, and `frontend/chart-engine/src/script.rs`. Sub-VM history/rolling evaluation advances once per source candle, missing source bars carry only the last revealed value, and an unfinished final bucket is not revealed. Runtime tests cover cadence and sparse source bars; the chart engine tests raw-history warm-up for a zoomed window. Broader chart-preview/renderer visual acceptance remains open. |
 | 12 | **User-defined functions** with typed call sites, series-passing semantics, and recursion limits. | **done** — parser/checker/runtime in `parse.rs`, `typecheck.rs`, and `interp.rs`; `tests/user_functions.rs` covers execution, TA composition, arity, and recursion refusal. |
 | 13 | **Drawing objects** with bounded VM heap and chart-coordinate projection. | **done** for implemented line/label/box/Fibonacci objects — `tests/drawing_objects.rs`, `frontend/chart-engine/src/scene.rs` projection tests, and `frontend/app/app.js` painter. This does not imply every requested visualization type exists. |
-| 14 | **Provider-backed `request.data`** for ticker snapshots, timestamped futures series, and captured flow/depth. Generic HTTP is explicitly not part of this phase. | **partial** — ticker/funding/OI and trade/book series are implemented in `indicator_preview.rs`; trade flow aggregates retained database records and overlays covered live ticks, while depth reads stored snapshots as-of each bar. Availability depends on collector/backfill coverage and retention. Provider identity in persistent flow storage and an external-backtest data contract remain open. Missing feeds remain visible; generic HTTP is permission-gated future work. |
+| 14 | **Provider-backed `request.data`** for ticker snapshots, timestamped futures series, and captured flow/depth. Generic HTTP is explicitly not part of this phase. | **implemented for the defined feeds** — ticker/funding/OI and trade/book series are implemented in `indicator_preview.rs`; flow aggregates retained records and overlays live ticks only when their source matches, while depth reads source-specific snapshots as-of each bar. `db::MarketDataSource` is the provider-neutral persistence contract, with source-aware pumps, writes, and history queries for Binance, Bybit, legacy rows, and external dataset adapters. `MARKET_HISTORY_SOURCE` selects a non-default retained dataset. Availability still reflects actual capture/backfill coverage and retention; missing data remains `na`. Generic HTTP is permission-gated future work. |
 | 15 | **v1.1 expressiveness**: `while`, user-function parameter defaults, and 256-object cap. | **done** — implementation in `interp.rs`, `limits.rs`, and `typecheck.rs`; behavior and runaway-loop coverage in `tests/model_ergonomics.rs`, with the heap cap in `tests/drawing_objects.rs`. |
 | 16 | **Time-anchored drawings** and aligned-secondary `request.time()`. | **partial** — VM and chart time-coordinate mapping are tested in `tests/time_anchored_objects.rs` and `frontend/chart-engine/src/scene.rs`; aligned script series now retain source timestamps, including MTF pool bars. Broader chart-preview/renderer visual acceptance remains open. |
 | 17 | **Optional box borders** with backward-compatible serialization. | **done** — constructor/runtime and wire behavior are covered by `tests/drawing_objects.rs` and `frontend/chart-engine/src/scene.rs`; unset borders preserve the fill-only rendering. |
@@ -467,6 +474,17 @@ open and is not claimed as full TradingView parity. The next roadmap phase is
 the quantitative standard library. Phase 14 is provider-backed data only;
 generic HTTP remains out of scope until permissions, response-size caps, and
 caching are designed and tested.
+
+Flow-history source IDs are stable and provider-neutral: built-in collectors
+use `binance_spot` and `bybit_spot`, while rows created before migration 0021
+remain under `legacy`. `MARKET_HISTORY_SOURCE` can select an alternate retained
+dataset, using lowercase ASCII IDs of at most 96 characters. An external
+backtest adapter should stamp its own ID with the source-aware database pumps
+or repository writers and read with the matching `*_from_source` functions.
+The API gateway deliberately keeps live ticks in its bounded in-memory tape;
+it does not persist every live trade, which would violate the documented
+database budget. Therefore source-specific long-window flow is available only
+when a collector or adapter has explicitly retained that source's records.
 
 ## Implementation notes (2026-11)
 

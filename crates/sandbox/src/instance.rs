@@ -114,11 +114,10 @@ pub struct Sandbox {
     engine: Engine,
     module: Module,
     limits: SandboxLimits,
-    /// Advances the engine's epoch on a timer for as long as the sandbox lives.
-    ///
-    /// Never read. It is held because dropping it is what stops the ticker, so
-    /// the field's *absence* is the bug -- which is what the underscore records.
-    _ticker: EpochTicker,
+    /// Advances the engine's epoch on a timer when this sandbox needs an
+    /// in-process wall-clock limit. The supervised worker relies on its parent
+    /// process deadline instead and therefore has no ticker thread.
+    _ticker: Option<EpochTicker>,
 }
 
 impl Sandbox {
@@ -130,6 +129,20 @@ impl Sandbox {
     /// problem rather than a runtime one.
     pub fn new() -> Result<Self, SandboxError> {
         Self::with_limits(SandboxLimits::default())
+    }
+
+    /// Build a sandbox for a supervised worker process without an epoch
+    /// ticker thread.
+    ///
+    /// The worker's parent must enforce a hard process deadline. Fuel and
+    /// memory limits remain active; the process deadline replaces the ticker's
+    /// wall-clock interruption for this single-threaded worker configuration.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sandbox::new`].
+    pub fn new_for_supervised_worker() -> Result<Self, SandboxError> {
+        Self::from_wasm_with_epoch_ticker(GUEST_WASM, SandboxLimits::default(), false)
     }
 
     /// The shipped interpreter, with explicit limits.
@@ -152,6 +165,14 @@ impl Sandbox {
     /// [`SandboxError::Instantiation`] if the bytes are not a valid module, or
     /// [`SandboxError::CapabilityDenied`] if it imports something it may not.
     pub fn from_wasm(wasm: &[u8], limits: SandboxLimits) -> Result<Self, SandboxError> {
+        Self::from_wasm_with_epoch_ticker(wasm, limits, true)
+    }
+
+    fn from_wasm_with_epoch_ticker(
+        wasm: &[u8],
+        limits: SandboxLimits,
+        use_epoch_ticker: bool,
+    ) -> Result<Self, SandboxError> {
         let engine = Engine::new(&engine_config())
             .map_err(|error| SandboxError::Instantiation(error.to_string()))?;
         let module = Module::new(&engine, wasm)
@@ -159,7 +180,11 @@ impl Sandbox {
 
         allowlist::check_module(&module)?;
 
-        let ticker = EpochTicker::start(engine.clone())?;
+        let ticker = if use_epoch_ticker {
+            Some(EpochTicker::start(engine.clone())?)
+        } else {
+            None
+        };
         Ok(Self {
             engine,
             module,

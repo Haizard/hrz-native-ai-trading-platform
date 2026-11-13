@@ -348,15 +348,21 @@ async fn collect(symbol: &str, venue: VenueArg, persist: bool) -> anyhow::Result
     collector.subscribe_order_book(&symbol).await?;
 
     let health = collector.health_counters();
+    let history_source = db::MarketDataSource::new(match venue {
+        VenueArg::Binance => db::MarketDataSource::BINANCE_SPOT,
+        VenueArg::Bybit => db::MarketDataSource::BYBIT_SPOT,
+    })?;
 
     let trade_db = db.clone();
+    let trade_source = history_source.clone();
     let trade_handle = tokio::spawn(async move {
-        db::pump::pump_trades(&mut trades_rx, trade_db, None).await;
+        db::pump::pump_trades_from_source(&mut trades_rx, trade_db, None, trade_source).await;
     });
 
     let book_db = db.clone();
+    let book_source = history_source;
     let book_handle = tokio::spawn(async move {
-        db::pump::pump_books(&mut books_rx, book_db, None).await;
+        db::pump::pump_books_from_source(&mut books_rx, book_db, None, book_source).await;
     });
 
     // Counted so the status line can show candles landing. Without it a soak

@@ -25,6 +25,7 @@ use analytics_core::types::OrderBookSnapshot;
 use analytics_core::OrderBookLevel;
 
 use crate::error::DbError;
+use crate::market_source::MarketDataSource;
 use crate::repositories::{dt_to_ns, levels_from_json, ns_to_dt};
 
 /// Aggregated retained trade flow for one bar-sized bucket.
@@ -56,20 +57,46 @@ pub async fn trade_flow_buckets(
     to_ns: i64,
     bucket_width_ns: i64,
 ) -> Result<Vec<TradeFlowBucket>, DbError> {
+    trade_flow_buckets_from_source(
+        pool,
+        &MarketDataSource::legacy(),
+        symbol,
+        from_ns,
+        to_ns,
+        bucket_width_ns,
+    )
+    .await
+}
+
+/// Aggregate one source's retained trades into timeframe-sized buckets.
+///
+/// Empty buckets are omitted so callers can preserve missing-data semantics.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn trade_flow_buckets_from_source(
+    pool: &PgPool,
+    source: &MarketDataSource,
+    symbol: &str,
+    from_ns: i64,
+    to_ns: i64,
+    bucket_width_ns: i64,
+) -> Result<Vec<TradeFlowBucket>, DbError> {
     if bucket_width_ns <= 0 || to_ns <= from_ns {
         return Ok(Vec::new());
     }
 
     let rows = sqlx::query(
-        "SELECT FLOOR(EXTRACT(EPOCH FROM (ts - $2)) / $4)::BIGINT AS bucket, \
+        "SELECT FLOOR(EXTRACT(EPOCH FROM (ts - $3)) / $5)::BIGINT AS bucket, \
                 COALESCE(SUM(quantity), 0)::DOUBLE PRECISION AS volume, \
                 COALESCE(SUM(quantity) FILTER (WHERE NOT is_buyer_maker), 0)::DOUBLE PRECISION AS buy_volume, \
                 COALESCE(SUM(quantity) FILTER (WHERE is_buyer_maker), 0)::DOUBLE PRECISION AS sell_volume, \
                 COUNT(*)::BIGINT AS trade_count \
          FROM trades \
-         WHERE symbol = $1 AND ts >= $2 AND ts < $3 \
+         WHERE source_id = $1 AND symbol = $2 AND ts >= $3 AND ts < $4 \
          GROUP BY bucket ORDER BY bucket",
     )
+    .bind(source.as_str())
     .bind(symbol)
     .bind(ns_to_dt(from_ns))
     .bind(ns_to_dt(to_ns))
@@ -105,21 +132,48 @@ pub async fn orderbooks_at(
     bar_opens_ns: &[i64],
     max_age_ns: i64,
 ) -> Result<Vec<Option<OrderBookSnapshot>>, DbError> {
+    orderbooks_at_from_source(
+        pool,
+        &MarketDataSource::legacy(),
+        symbol,
+        bar_opens_ns,
+        max_age_ns,
+    )
+    .await
+}
+
+/// Select one source's most recent retained book at or before each bar open,
+/// subject to a maximum age.
+///
+/// Results are aligned one-for-one with `bar_opens_ns`; bars without a fresh
+/// snapshot contain `None`.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails or [`DbError::InvalidConfig`]
+/// if a stored level payload cannot be decoded.
+pub async fn orderbooks_at_from_source(
+    pool: &PgPool,
+    source: &MarketDataSource,
+    symbol: &str,
+    bar_opens_ns: &[i64],
+    max_age_ns: i64,
+) -> Result<Vec<Option<OrderBookSnapshot>>, DbError> {
     if bar_opens_ns.is_empty() || max_age_ns < 0 {
         return Ok(vec![None; bar_opens_ns.len()]);
     }
     let bar_opens: Vec<DateTime<Utc>> = bar_opens_ns.iter().copied().map(ns_to_dt).collect();
     let rows = sqlx::query(
         "SELECT bar.open_time, snapshot.ts AS snapshot_ts, snapshot.bids, snapshot.asks \
-         FROM UNNEST($2::timestamptz[]) AS bar(open_time) \
+         FROM UNNEST($3::timestamptz[]) AS bar(open_time) \
          LEFT JOIN LATERAL ( \
              SELECT ts, bids, asks FROM orderbook_snapshots \
-             WHERE symbol = $1 AND ts <= bar.open_time \
-               AND ts >= bar.open_time - make_interval(secs => $3::double precision) \
+             WHERE source_id = $1 AND symbol = $2 AND ts <= bar.open_time \
+               AND ts >= bar.open_time - make_interval(secs => $4::double precision) \
              ORDER BY ts DESC LIMIT 1 \
          ) AS snapshot ON TRUE \
          ORDER BY bar.open_time",
     )
+    .bind(source.as_str())
     .bind(symbol)
     .bind(bar_opens)
     .bind(max_age_ns as f64 / 1_000_000_000.0)
@@ -309,10 +363,25 @@ pub async fn list_symbols(pool: &PgPool) -> Result<Vec<SymbolCoverage>, DbError>
 /// # Errors
 /// Returns [`DbError::Pool`] if the query fails.
 pub async fn orderbook_snapshot_count(pool: &PgPool, symbol: &str) -> Result<i64, DbError> {
-    let row = sqlx::query("SELECT count(*) AS n FROM orderbook_snapshots WHERE symbol = $1")
-        .bind(symbol)
-        .fetch_one(pool)
-        .await?;
+    orderbook_snapshot_count_from_source(pool, &MarketDataSource::legacy(), symbol).await
+}
+
+/// Count retained order-book snapshots for one source and symbol.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn orderbook_snapshot_count_from_source(
+    pool: &PgPool,
+    source: &MarketDataSource,
+    symbol: &str,
+) -> Result<i64, DbError> {
+    let row = sqlx::query(
+        "SELECT count(*) AS n FROM orderbook_snapshots WHERE source_id = $1 AND symbol = $2",
+    )
+    .bind(source.as_str())
+    .bind(symbol)
+    .fetch_one(pool)
+    .await?;
     Ok(row.try_get("n")?)
 }
 
@@ -324,10 +393,24 @@ pub async fn latest_orderbook(
     pool: &PgPool,
     symbol: &str,
 ) -> Result<Option<OrderBookSnapshot>, DbError> {
+    latest_orderbook_from_source(pool, &MarketDataSource::legacy(), symbol).await
+}
+
+/// Load the latest retained order-book snapshot for one source and symbol.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails or [`DbError::InvalidConfig`]
+/// if a stored level payload cannot be decoded.
+pub async fn latest_orderbook_from_source(
+    pool: &PgPool,
+    source: &MarketDataSource,
+    symbol: &str,
+) -> Result<Option<OrderBookSnapshot>, DbError> {
     let row = sqlx::query(
         "SELECT symbol, ts, bids, asks FROM orderbook_snapshots \
-         WHERE symbol = $1 ORDER BY ts DESC LIMIT 1",
+         WHERE source_id = $1 AND symbol = $2 ORDER BY ts DESC LIMIT 1",
     )
+    .bind(source.as_str())
     .bind(symbol)
     .fetch_optional(pool)
     .await?;

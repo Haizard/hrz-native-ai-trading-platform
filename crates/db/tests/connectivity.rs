@@ -89,6 +89,46 @@ async fn initial_schema_has_expected_tables() {
     }
 }
 
+/// Confirms market history keys include the source so identical venue IDs or
+/// timestamps do not collide across providers.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn market_history_schema_is_source_keyed() {
+    load_env();
+    let database = Database::from_env().await.expect("DATABASE_URL");
+    MIGRATIONS.run(database.pool()).await.expect("migrate");
+
+    let columns: Vec<String> = sqlx::query_scalar(
+        "SELECT table_name || '.' || column_name \
+         FROM information_schema.columns \
+         WHERE table_schema = 'public' AND column_name = 'source_id' \
+           AND table_name IN ('trades', 'orderbook_snapshots')",
+    )
+    .fetch_all(database.pool())
+    .await
+    .expect("list source columns");
+    assert!(columns.iter().any(|column| column == "trades.source_id"));
+    assert!(columns
+        .iter()
+        .any(|column| column == "orderbook_snapshots.source_id"));
+
+    let primary_keys: Vec<String> = sqlx::query_scalar(
+        "SELECT conrelid::regclass::text || ':' || pg_get_constraintdef(oid) \
+         FROM pg_constraint \
+         WHERE contype = 'p' \
+           AND conrelid IN ('trades'::regclass, 'orderbook_snapshots'::regclass)",
+    )
+    .fetch_all(database.pool())
+    .await
+    .expect("list market-history primary keys");
+    assert!(primary_keys
+        .iter()
+        .any(|key| key.contains("trades:PRIMARY KEY (source_id, symbol, trade_id)")));
+    assert!(primary_keys
+        .iter()
+        .any(|key| key.contains("orderbook_snapshots:PRIMARY KEY (source_id, symbol, ts)")));
+}
+
 /// The Phase 8 live path, against a real database.
 ///
 /// Five properties, and each one is load-bearing:

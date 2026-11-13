@@ -1049,7 +1049,10 @@ pub async fn replay_script_preview(
             sym.eq_ignore_ascii_case(symbol) && is_live_book_field(field)
         })
     });
-    let tape = needs_trade_data.then(|| live.tape(symbol));
+    let history_source = state.bots.history_source();
+    let live_source_matches_history =
+        state.bots.feed_history_source().as_ref() == Some(&history_source);
+    let tape = (needs_trade_data && live_source_matches_history).then(|| live.tape(symbol));
     let trade_bounds = tape
         .as_ref()
         .map(|tape| (tape.earliest_ns(), tape.newest_ns()));
@@ -1058,15 +1061,25 @@ pub async fn replay_script_preview(
             tape.range(first.open_time, last.open_time.saturating_add(tf.nanos()))
         })
     });
-    let mut book_snapshots = needs_book_data
-        .then(|| live.book_history(symbol))
-        .unwrap_or_default();
+    let mut book_snapshots = if needs_book_data && live_source_matches_history {
+        live.book_history(symbol)
+    } else {
+        Vec::new()
+    };
     if needs_book_data {
         let bar_opens = candles
             .iter()
             .map(|candle| candle.open_time)
             .collect::<Vec<_>>();
-        match db::orderbooks_at(database.pool(), symbol, &bar_opens, LIVE_BOOK_MAX_AGE_NS).await {
+        match db::orderbooks_at_from_source(
+            database.pool(),
+            &history_source,
+            symbol,
+            &bar_opens,
+            LIVE_BOOK_MAX_AGE_NS,
+        )
+        .await
+        {
             Ok(snapshots) => book_snapshots.extend(snapshots.into_iter().flatten()),
             Err(error) => {
                 tracing::warn!(%symbol, %error, "could not load retained order-book history for Pine-Lite preview");
@@ -1077,8 +1090,9 @@ pub async fn replay_script_preview(
     let stored_trade_buckets = if needs_trade_data {
         match candles.first().zip(candles.last()) {
             Some((first, last)) => {
-                match db::trade_flow_buckets(
+                match db::trade_flow_buckets_from_source(
                     database.pool(),
+                    &history_source,
                     symbol,
                     first.open_time,
                     last.open_time.saturating_add(tf.nanos()),

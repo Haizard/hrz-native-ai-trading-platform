@@ -39,13 +39,31 @@ pub fn install_filesystem_restrictions() -> io::Result<()> {
     Ok(())
 }
 
-/// Deny network and process-creation syscalls for all worker threads.
+/// Deny network and process-creation syscalls for the worker process.
 ///
-/// The seccomp filter is synchronized to existing threads; unsupported
-/// architectures or kernel policies fail closed.
+/// This must be called before Landlock and while the worker has one thread:
+/// the filter then applies to the only existing thread, and blocks creation
+/// of any additional threads. Unsupported architectures or kernel policies
+/// fail closed.
 pub fn install_syscall_restrictions() -> io::Result<()> {
     #[cfg(target_os = "linux")]
-    install_seccomp()?;
+    {
+        ensure_single_threaded()?;
+        install_seccomp()?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_single_threaded() -> io::Result<()> {
+    let thread_count = std::fs::read_dir("/proc/self/task")?
+        .collect::<io::Result<Vec<_>>>()?
+        .len();
+    if thread_count != 1 {
+        return Err(io::Error::other(format!(
+            "seccomp requires a single-threaded worker; found {thread_count} threads"
+        )));
+    }
     Ok(())
 }
 
@@ -178,13 +196,13 @@ fn install_seccomp() -> io::Result<()> {
     const BPF_JMP_JSET_K: u16 = 0x45;
     const BPF_RET_K: u16 = 0x06;
     const SECCOMP_SET_MODE_FILTER: libc::c_int = 2;
-    const SECCOMP_FILTER_FLAG_TSYNC: libc::c_int = 1;
     const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
     const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
     const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
     const SECCOMP_DATA_NR_OFFSET: u32 = 0;
     const SECCOMP_DATA_ARCH_OFFSET: u32 = 4;
     const SYS_CLONE3: u32 = 435;
+    const PR_SET_NO_NEW_PRIVS: libc::c_int = 38;
     #[cfg(target_arch = "x86_64")]
     const X32_SYSCALL_BIT: u32 = 0x4000_0000;
 
@@ -294,22 +312,23 @@ fn install_seccomp() -> io::Result<()> {
         len: filter.len() as u16,
         filter: filter.as_ptr(),
     };
+    // SAFETY: PR_SET_NO_NEW_PRIVS takes an integer flag and no pointer.
+    let no_new_privs = unsafe { libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    if no_new_privs != 0 {
+        return Err(io::Error::last_os_error());
+    }
     // SAFETY: `program` points to a live, immutable BPF program for this call.
-    // TSYNC applies the filter to every thread created during Wasmtime setup.
+    // No threads exist, and the filter blocks creating any after installation.
     let result = unsafe {
         libc::syscall(
             libc::SYS_seccomp,
             SECCOMP_SET_MODE_FILTER,
-            SECCOMP_FILTER_FLAG_TSYNC,
+            0,
             &program as *const SockFprog as libc::c_ulong,
         )
     };
     if result == 0 {
         Ok(())
-    } else if result > 0 {
-        Err(io::Error::other(format!(
-            "seccomp could not synchronize worker thread {result}"
-        )))
     } else {
         Err(io::Error::last_os_error())
     }

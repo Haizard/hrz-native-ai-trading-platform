@@ -33,6 +33,7 @@ pub mod indicator_workspaces;
 pub mod live;
 pub mod loading;
 pub mod market;
+pub mod market_source;
 pub mod models;
 pub mod paper;
 pub mod pattern_library;
@@ -111,9 +112,12 @@ pub use live::{
 };
 pub use loading::{coverage, load_timeframe_series, warn_about_short_series, MIN_COVERAGE};
 pub use market::{
-    best_bid_ask, latest_orderbook, list_symbols, orderbook_snapshot_count, orderbooks_at,
-    trade_flow_buckets, SymbolCoverage, TimeframeCoverage, TradeFlowBucket,
+    best_bid_ask, latest_orderbook, latest_orderbook_from_source, list_symbols,
+    orderbook_snapshot_count, orderbook_snapshot_count_from_source, orderbooks_at,
+    orderbooks_at_from_source, trade_flow_buckets, trade_flow_buckets_from_source, SymbolCoverage,
+    TimeframeCoverage, TradeFlowBucket,
 };
+pub use market_source::MarketDataSource;
 pub use models::Database;
 pub use paper::{
     bot_summary, count_audit_events, count_executed_trades, create_owner, find_or_create_strategy,
@@ -124,7 +128,10 @@ pub use paper::{
 };
 pub use pattern_library::{delete_pattern, insert_pattern, list_patterns, NewPattern, PatternRow};
 pub use repositories::TradeCoverage;
-pub use repositories::{dt_to_ns, ns_to_dt};
+pub use repositories::{
+    dt_to_ns, insert_orderbook_snapshots_from_source, insert_trades_from_source,
+    load_trades_from_source, ns_to_dt,
+};
 pub use retention::{
     delete_older_than as retention_delete_older_than, run as run_retention, spawn_retention_task,
     Cutoff, RetentionPolicy, RetentionReport, Table as RetentionTable, BATCH as RETENTION_BATCH,

@@ -261,15 +261,15 @@ pub async fn delete_older_than(
     let statement = match table {
         Table::Trades => {
             "DELETE FROM trades \
-             WHERE (symbol, trade_id) IN ( \
-             SELECT symbol, trade_id FROM trades WHERE ts < $1 \
-             ORDER BY ts, symbol, trade_id LIMIT $2)"
+             WHERE (source_id, symbol, trade_id) IN ( \
+             SELECT source_id, symbol, trade_id FROM trades WHERE ts < $1 \
+             ORDER BY ts, source_id, symbol, trade_id LIMIT $2)"
         }
         Table::OrderbookSnapshots => {
             "DELETE FROM orderbook_snapshots \
-             WHERE (symbol, ts) IN ( \
-             SELECT symbol, ts FROM orderbook_snapshots WHERE ts < $1 \
-             ORDER BY ts, symbol LIMIT $2)"
+             WHERE (source_id, symbol, ts) IN ( \
+             SELECT source_id, symbol, ts FROM orderbook_snapshots WHERE ts < $1 \
+             ORDER BY ts, source_id, symbol LIMIT $2)"
         }
         Table::Candles => {
             "DELETE FROM candles \
@@ -428,12 +428,17 @@ mod tests {
     #[test]
     fn each_delete_targets_one_table_through_its_primary_key() {
         let statements = [
-            (Table::Trades, "trades", "ts", "(symbol, trade_id)"),
+            (
+                Table::Trades,
+                "trades",
+                "ts",
+                "(source_id, symbol, trade_id)",
+            ),
             (
                 Table::OrderbookSnapshots,
                 "orderbook_snapshots",
                 "ts",
-                "(symbol, ts)",
+                "(source_id, symbol, ts)",
             ),
             (
                 Table::Candles,
@@ -445,8 +450,8 @@ mod tests {
 
         for (table, target, time_column, key) in statements {
             let sql = match table {
-                Table::Trades => "DELETE FROM trades WHERE (symbol, trade_id) IN (SELECT symbol, trade_id FROM trades WHERE ts < $1 ORDER BY ts, symbol, trade_id LIMIT $2)",
-                Table::OrderbookSnapshots => "DELETE FROM orderbook_snapshots WHERE (symbol, ts) IN (SELECT symbol, ts FROM orderbook_snapshots WHERE ts < $1 ORDER BY ts, symbol LIMIT $2)",
+                Table::Trades => "DELETE FROM trades WHERE (source_id, symbol, trade_id) IN (SELECT source_id, symbol, trade_id FROM trades WHERE ts < $1 ORDER BY ts, source_id, symbol, trade_id LIMIT $2)",
+                Table::OrderbookSnapshots => "DELETE FROM orderbook_snapshots WHERE (source_id, symbol, ts) IN (SELECT source_id, symbol, ts FROM orderbook_snapshots WHERE ts < $1 ORDER BY ts, source_id, symbol LIMIT $2)",
                 Table::Candles => "DELETE FROM candles WHERE (symbol, timeframe, open_time) IN (SELECT symbol, timeframe, open_time FROM candles WHERE open_time < $1 ORDER BY open_time, symbol, timeframe LIMIT $2)",
             };
             assert!(

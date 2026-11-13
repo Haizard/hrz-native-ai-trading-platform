@@ -27,6 +27,7 @@ use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::interval;
 
+use crate::market_source::MarketDataSource;
 use crate::repositories;
 use crate::Database;
 
@@ -177,6 +178,16 @@ pub async fn pump_trades(
     db: Option<Arc<Database>>,
     report: Option<&Report>,
 ) -> u64 {
+    pump_trades_from_source(rx, db, report, MarketDataSource::legacy()).await
+}
+
+/// Persist trades under a stable provider or dataset identity.
+pub async fn pump_trades_from_source(
+    rx: &mut broadcast::Receiver<Trade>,
+    db: Option<Arc<Database>>,
+    report: Option<&Report>,
+    source: MarketDataSource,
+) -> u64 {
     pump(
         "trade",
         rx,
@@ -186,8 +197,9 @@ pub async fn pump_trades(
         report,
         |db, batch| {
             let count = batch.len();
+            let source = source.clone();
             async move {
-                repositories::insert_trades(db.pool(), &batch)
+                repositories::insert_trades_from_source(db.pool(), &source, &batch)
                     .await
                     .map(|()| count)
                     .map_err(|e| e.to_string())
@@ -203,6 +215,16 @@ pub async fn pump_books(
     db: Option<Arc<Database>>,
     report: Option<&Report>,
 ) -> u64 {
+    pump_books_from_source(rx, db, report, MarketDataSource::legacy()).await
+}
+
+/// Persist order-book snapshots under a stable provider or dataset identity.
+pub async fn pump_books_from_source(
+    rx: &mut broadcast::Receiver<OrderBookSnapshot>,
+    db: Option<Arc<Database>>,
+    report: Option<&Report>,
+    source: MarketDataSource,
+) -> u64 {
     pump(
         "order book",
         rx,
@@ -212,8 +234,9 @@ pub async fn pump_books(
         report,
         |db, batch| {
             let count = batch.len();
+            let source = source.clone();
             async move {
-                repositories::insert_orderbook_snapshots(db.pool(), &batch)
+                repositories::insert_orderbook_snapshots_from_source(db.pool(), &source, &batch)
                     .await
                     .map(|()| count)
                     .map_err(|e| e.to_string())

@@ -232,6 +232,16 @@ impl FeedMode {
     pub const fn is_on(self) -> bool {
         !matches!(self, Self::Off)
     }
+
+    /// The stable identity used for history from this feed, if enabled.
+    #[must_use]
+    pub fn history_source(self) -> Option<db::MarketDataSource> {
+        match self {
+            Self::Off => None,
+            Self::Binance => Some(db::MarketDataSource::binance_spot()),
+            Self::Bybit => Some(db::MarketDataSource::bybit_spot()),
+        }
+    }
 }
 
 /// Something a running bot did, for a client watching it.
@@ -577,6 +587,8 @@ struct Inner {
     /// across an await.
     alerter: Mutex<observability::Alerter>,
     feed: FeedMode,
+    /// Source selected for retained Pine-Lite flow and depth history.
+    history_source: db::MarketDataSource,
     /// Symbols a collector has been started for, so a second bot on the same
     /// symbol does not open a second websocket.
     ///
@@ -636,7 +648,17 @@ impl BotSupervisor {
     /// Build a supervisor.
     #[must_use]
     pub fn new(feed: FeedMode) -> Self {
-        Self::build(feed, DEFAULT_FLUSH_INTERVAL)
+        let source = feed
+            .history_source()
+            .unwrap_or_else(db::MarketDataSource::legacy);
+        Self::build(feed, source, DEFAULT_FLUSH_INTERVAL)
+    }
+
+    /// Build a supervisor that reads retained flow and depth from an explicit
+    /// provider or external dataset.
+    #[must_use]
+    pub fn with_history_source(feed: FeedMode, source: db::MarketDataSource) -> Self {
+        Self::build(feed, source, DEFAULT_FLUSH_INTERVAL)
     }
 
     /// Build a supervisor that flushes on a chosen interval.
@@ -645,15 +667,23 @@ impl BotSupervisor {
     /// seconds or assert against decisions that have not been written yet.
     #[must_use]
     pub fn with_flush_interval(feed: FeedMode, flush_interval: Duration) -> Self {
-        Self::build(feed, flush_interval)
+        let source = feed
+            .history_source()
+            .unwrap_or_else(db::MarketDataSource::legacy);
+        Self::build(feed, source, flush_interval)
     }
 
-    fn build(feed: FeedMode, flush_interval: Duration) -> Self {
+    fn build(
+        feed: FeedMode,
+        history_source: db::MarketDataSource,
+        flush_interval: Duration,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 bus: Arc::new(market_data::MarketBusRegistry::new()),
                 running: Mutex::new(HashMap::new()),
                 feed,
+                history_source,
                 feeds: Mutex::new(HashMap::new()),
                 history: Arc::new(market_data::HistoryRegistry::new()),
                 live: Arc::new(market_data::LiveRegistry::new()),
@@ -665,6 +695,18 @@ impl BotSupervisor {
                 events: broadcast::channel(EVENT_BUFFER).0,
             }),
         }
+    }
+
+    /// Source identity selected for retained Pine-Lite flow and depth history.
+    #[must_use]
+    pub fn history_source(&self) -> db::MarketDataSource {
+        self.inner.history_source.clone()
+    }
+
+    /// Source identity produced by this process's live feed, if any.
+    #[must_use]
+    pub fn feed_history_source(&self) -> Option<db::MarketDataSource> {
+        self.inner.feed.history_source()
     }
 
     /// The shared alert engine, for the task that evaluates the rules.
@@ -2064,6 +2106,27 @@ mod tests {
             return;
         }
         assert_eq!(FeedMode::from_env(), FeedMode::Off);
+    }
+
+    #[test]
+    fn history_source_defaults_to_the_feed_and_can_be_selected_independently() {
+        let supervisor = BotSupervisor::new(FeedMode::Bybit);
+        assert_eq!(
+            supervisor.history_source(),
+            db::MarketDataSource::bybit_spot()
+        );
+        assert_eq!(
+            supervisor.feed_history_source(),
+            Some(db::MarketDataSource::bybit_spot())
+        );
+
+        let external = db::MarketDataSource::new("research:vendor_x:dataset_y").unwrap();
+        let supervisor = BotSupervisor::with_history_source(FeedMode::Bybit, external.clone());
+        assert_eq!(supervisor.history_source(), external);
+        assert_ne!(
+            supervisor.history_source(),
+            supervisor.feed_history_source().unwrap()
+        );
     }
 
     #[test]

@@ -49,25 +49,14 @@ fn main() -> ExitCode {
 fn self_test() -> Result<(), String> {
     sandbox::worker::apply_resource_limits()
         .map_err(|error| format!("could not apply Pine preview worker resource limits: {error}"))?;
-    sandbox::worker::install_filesystem_restrictions()
-        .map_err(|error| format!("could not enable filesystem isolation: {error}"))?;
-    let _sandbox = Sandbox::new()
+    let _sandbox = Sandbox::new_for_supervised_worker()
         .map_err(|error| format!("could not initialize Wasmtime preview host: {error}"))?;
-    let (release, wait) = std::sync::mpsc::channel();
-    let verifier = std::thread::spawn(move || {
-        wait.recv()
-            .map_err(|error| format!("could not start thread-isolation probe: {error}"))?;
-        verify_restrictions()
-    });
     sandbox::worker::install_syscall_restrictions()
         .map_err(|error| format!("could not enable syscall isolation: {error}"))?;
+    sandbox::worker::install_filesystem_restrictions()
+        .map_err(|error| format!("could not enable filesystem isolation: {error}"))?;
     verify_restrictions()?;
-    release
-        .send(())
-        .map_err(|error| format!("could not release thread-isolation probe: {error}"))?;
-    verifier
-        .join()
-        .map_err(|_| "worker thread-isolation probe panicked".to_string())?
+    verify_thread_creation_denied()
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -78,12 +67,12 @@ fn self_test() -> Result<(), String> {
 fn run_worker() -> Result<(), String> {
     sandbox::worker::apply_resource_limits()
         .map_err(|error| format!("could not apply Pine preview worker resource limits: {error}"))?;
-    sandbox::worker::install_filesystem_restrictions()
-        .map_err(|error| format!("could not enable filesystem isolation: {error}"))?;
-    let sandbox = Sandbox::new()
+    let sandbox = Sandbox::new_for_supervised_worker()
         .map_err(|error| format!("could not initialize Wasmtime preview host: {error}"))?;
     sandbox::worker::install_syscall_restrictions()
         .map_err(|error| format!("could not enable syscall isolation: {error}"))?;
+    sandbox::worker::install_filesystem_restrictions()
+        .map_err(|error| format!("could not enable filesystem isolation: {error}"))?;
 
     let stdin = io::stdin();
     let mut input = stdin.lock();
@@ -175,4 +164,20 @@ fn verify_restrictions() -> Result<(), String> {
         Ok(_) => return Err("worker can create a network connection".to_string()),
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn verify_thread_creation_denied() -> Result<(), String> {
+    match std::thread::Builder::new().spawn(|| {}) {
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Ok(()),
+        Err(error) => Err(format!(
+            "unexpected thread creation restriction error: {error}"
+        )),
+        Ok(thread) => {
+            thread
+                .join()
+                .map_err(|_| "worker thread-isolation probe panicked".to_string())?;
+            Err("worker can create another thread".to_string())
+        }
+    }
 }

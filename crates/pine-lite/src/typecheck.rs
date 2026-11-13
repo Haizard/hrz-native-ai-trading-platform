@@ -37,6 +37,8 @@ pub struct Checked {
 pub struct FuncSig {
     /// Parameter names.
     pub params: Vec<String>,
+    /// Inferred parameter types, one per name.
+    pub param_types: Vec<Ty>,
     /// One entry per parameter, right-aligned: `Some(expr)` when the
     /// parameter declares a default (`f(a, b = 2) => ...`), `None` when it
     /// does not. The checker derives the call's minimum arity from the
@@ -44,6 +46,8 @@ pub struct FuncSig {
     /// call, in the call's scope, so a default of `close[1]` binds the
     /// caller's yesterday.
     pub defaults: Vec<Option<Expr>>,
+    /// Type of the function body's final expression.
+    pub return_type: Ty,
 }
 
 /// One `input.*` declaration.
@@ -398,6 +402,7 @@ impl Cx {
                         word.as_str(),
                         "float"
                             | "int"
+                            | "string"
                             | "bool"
                             | "color"
                             | "line"
@@ -528,6 +533,7 @@ impl Cx {
                                         let want = match word.as_str() {
                                             "bool" => Ty::Bool,
                                             "color" => Ty::Color,
+                                            "string" => Ty::String,
                                             _ => Ty::Float,
                                         };
                                         if ty != want && ty != Ty::Na {
@@ -705,7 +711,9 @@ impl Cx {
                     name.clone(),
                     FuncSig {
                         params: params.clone(),
+                        param_types: vec![Ty::Float; params.len()],
                         defaults: defaults.clone(),
+                        return_type: Ty::Float,
                     },
                 );
                 // Parameters are in scope inside the body; bind them as
@@ -715,28 +723,48 @@ impl Cx {
                     function_types.insert(p.clone(), Ty::Float);
                 }
                 self.local_types.push(function_types);
-                for default in defaults.iter().flatten() {
-                    let ty = self.expr(default);
-                    if !matches!(ty, Ty::Float | Ty::Na) {
+                let default_types: Vec<_> = defaults
+                    .iter()
+                    .map(|default| default.as_ref().map(|expr| (expr.span, self.expr(expr))))
+                    .collect();
+                self.stmt_depth += 1;
+                self.items(body);
+                let return_type = match body.last() {
+                    Some(Item::Expr { expr, .. }) => self.expr(expr),
+                    _ => Ty::Float,
+                };
+                let mut param_types = vec![Ty::Float; params.len()];
+                let mut string_params = std::collections::HashSet::new();
+                collect_string_parameters_in_items(body, params, &mut string_params);
+                for (index, param) in params.iter().enumerate() {
+                    if string_params.contains(param) {
+                        param_types[index] = Ty::String;
+                    }
+                }
+                for (index, default) in default_types.iter().enumerate() {
+                    let Some((span, actual)) = default else {
+                        continue;
+                    };
+                    let expected = param_types.get(index).copied().unwrap_or(Ty::Float);
+                    let compatible = match expected {
+                        Ty::String => matches!(actual, Ty::Float | Ty::String | Ty::Na),
+                        Ty::Float => matches!(actual, Ty::Float | Ty::Na),
+                        Ty::Bool => matches!(actual, Ty::Bool | Ty::Na),
+                        Ty::Color => matches!(actual, Ty::Color | Ty::Na),
+                        Ty::Na => *actual == Ty::Na,
+                    };
+                    if !compatible {
                         self.err(
-                            default.span,
-                            format!("function parameter defaults must be numeric, got {ty:?}"),
+                            *span,
+                            format!(
+                                "function parameter default expects {expected:?}, got {actual:?}"
+                            ),
                         );
                     }
                 }
-                self.stmt_depth += 1;
-                self.items(body);
-                // Functions return numbers: the body's last expression is
-                // the value, and a string there is a vet error (string
-                // params and string returns are both out of the function
-                // model; string vars live at statement level). Typed at the
-                // body's own depth, after its walk.
-                if let Some(Item::Expr { expr, .. }) = body.last() {
-                    if self.expr(expr) == Ty::String {
-                        self.err(*span, format!(
-                            "`{name}` returns a string, and functions return numbers; build the text at the call site instead"
-                        ));
-                    }
+                if let Some(signature) = self.out.functions.get_mut(name) {
+                    signature.param_types = param_types;
+                    signature.return_type = return_type;
                 }
                 self.stmt_depth -= 1;
                 self.local_types.pop();
@@ -1002,6 +1030,7 @@ impl Cx {
                 if let Some(layout) = self.type_fields.get(&type_name) {
                     if let Some((_, word)) = layout.iter().find(|(f, _)| f == field) {
                         return match word.as_str() {
+                            "string" => Ty::String,
                             "bool" => Ty::Bool,
                             "color" => Ty::Color,
                             _ => Ty::Float,
@@ -1231,6 +1260,7 @@ impl Cx {
                         continue;
                     }
                     let expected = match layout[index].1.as_str() {
+                        "string" => Ty::String,
                         "bool" => Ty::Bool,
                         "color" => Ty::Color,
                         _ => Ty::Float,
@@ -1477,16 +1507,30 @@ impl Cx {
                         format!("`{callee}` takes {range} argument(s), got {positional}"),
                     );
                 }
-                for a in args {
+                for (index, a) in args.iter().enumerate() {
                     let ty = self.expr(&a.value);
-                    if !matches!(ty, Ty::Float | Ty::Na) {
+                    let expected = sig.param_types.get(index).copied().unwrap_or(Ty::Float);
+                    let compatible = match expected {
+                        Ty::String => matches!(ty, Ty::Float | Ty::String | Ty::Na),
+                        Ty::Float => matches!(ty, Ty::Float | Ty::Na),
+                        Ty::Bool => matches!(ty, Ty::Bool | Ty::Na),
+                        Ty::Color => matches!(ty, Ty::Color | Ty::Na),
+                        Ty::Na => ty == Ty::Na,
+                    };
+                    if !compatible {
                         self.err(
                             a.value.span,
-                            format!("`{callee}` arguments must be numeric, got {ty:?}"),
+                            format!(
+                                "`{callee}` parameter `{}` expects {expected:?}, got {ty:?}",
+                                sig.params
+                                    .get(index)
+                                    .map(String::as_str)
+                                    .unwrap_or("argument")
+                            ),
                         );
                     }
                 }
-                return Ty::Float;
+                return sig.return_type;
             }
             None => {
                 self.unknown(span, callee);
@@ -1852,6 +1896,123 @@ pub enum Ty {
     Na,
 }
 
+fn collect_string_parameters(
+    expr: &Expr,
+    params: &[String],
+    found: &mut std::collections::HashSet<String>,
+) {
+    match &expr.kind {
+        ExprKind::Bin {
+            left,
+            op: BinOp::Add(_),
+            right,
+        } if expression_is_string(left) || expression_is_string(right) => {
+            collect_text_identifiers(left, params, found);
+            collect_text_identifiers(right, params, found);
+        }
+        ExprKind::Ternary { then, els, .. } => {
+            if expression_is_string(then) || expression_is_string(els) {
+                collect_text_identifiers(then, params, found);
+                collect_text_identifiers(els, params, found);
+            }
+        }
+        ExprKind::Switch { arms, .. } => {
+            if arms.iter().any(|(_, result)| expression_is_string(result)) {
+                for (_, result) in arms {
+                    collect_text_identifiers(result, params, found);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_string_parameters_in_items(
+    items: &[Item],
+    params: &[String],
+    found: &mut std::collections::HashSet<String>,
+) {
+    for item in items {
+        match item {
+            Item::Assign { expr, .. } | Item::Expr { expr, .. } => {
+                collect_string_parameters(expr, params, found);
+            }
+            Item::Destructure { call, .. } => {
+                collect_string_parameters(call, params, found);
+            }
+            Item::Block {
+                exprs, body, els, ..
+            } => {
+                for expr in exprs {
+                    collect_string_parameters(expr, params, found);
+                }
+                collect_string_parameters_in_items(body, params, found);
+                if let Some(els) = els {
+                    collect_string_parameters_in_items(els, params, found);
+                }
+            }
+            Item::TypeDef { .. } | Item::FuncDef { .. } => {}
+        }
+    }
+}
+
+fn collect_text_identifiers(
+    expr: &Expr,
+    params: &[String],
+    found: &mut std::collections::HashSet<String>,
+) {
+    match &expr.kind {
+        ExprKind::Ident(name) if params.iter().any(|param| param == name) => {
+            found.insert(name.clone());
+        }
+        ExprKind::Bin {
+            left,
+            op: BinOp::Add(_),
+            right,
+        } => {
+            collect_text_identifiers(left, params, found);
+            collect_text_identifiers(right, params, found);
+        }
+        ExprKind::Ternary { then, els, .. } => {
+            collect_text_identifiers(then, params, found);
+            collect_text_identifiers(els, params, found);
+        }
+        ExprKind::Switch { arms, .. } => {
+            for (_, result) in arms {
+                collect_text_identifiers(result, params, found);
+            }
+        }
+        ExprKind::Call { callee, args } if callee != "str.tostring" => {
+            for arg in args {
+                collect_text_identifiers(&arg.value, params, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn expression_is_string(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Str(_) => true,
+        ExprKind::Call { callee, .. } => matches!(
+            callee.as_str(),
+            "str.tostring" | "str.format" | "input.string" | "array.join"
+        ),
+        ExprKind::Bin {
+            left,
+            op: BinOp::Add(_),
+            right,
+        } => expression_is_string(left) || expression_is_string(right),
+        ExprKind::Ternary { then, els, .. } => {
+            expression_is_string(then) || expression_is_string(els)
+        }
+        ExprKind::Switch { arms, .. } => {
+            arms.iter().any(|(_, result)| expression_is_string(result))
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2021,8 +2182,32 @@ mod tests {
             "{errs:?}"
         );
         assert!(
-            errs.iter()
-                .any(|e| e.message.contains("`f` arguments must be numeric")),
+            errs.iter().any(|e| e
+                .message
+                .contains("`f` parameter `value` expects Float, got Bool")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn string_function_parameters_and_returns_are_inferred() {
+        let errs = check_src(concat!(
+            "//@pine_lite version=1\n",
+            "decorate(prefix = \"ready\") =>\n",
+            "    suffix = prefix + \"!\"\n",
+            "    suffix\n",
+            "label = decorate()\n",
+            "plotshape(true, text=label)\n",
+            "bad = decorate(true)\n",
+        ));
+        assert!(
+            errs.iter().any(|e| e
+                .message
+                .contains("`decorate` parameter `prefix` expects String")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().all(|e| !e.message.contains("returns a string")),
             "{errs:?}"
         );
     }
@@ -2034,13 +2219,22 @@ mod tests {
             "type Signal\n",
             "    bool valid\n",
             "    color tint\n",
+            "    string message\n",
             "    float level\n",
-            "good = Signal.new(valid=true, tint=color.red, level=close)\n",
-            "bad = Signal.new(1, color.red, close)\n",
+            "good = Signal.new(valid=true, tint=color.red, message=\"ready\", level=close)\n",
+            "good.message := \"go\"\n",
+            "plotshape(true, text=good.message)\n",
+            "bad = Signal.new(1, color.red, true, close)\n",
         ));
         assert!(
             errs.iter()
                 .any(|e| e.message.contains("field `valid` expects Bool, got Float")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e
+                .message
+                .contains("field `message` expects String, got Bool")),
             "{errs:?}"
         );
     }

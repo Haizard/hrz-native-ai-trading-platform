@@ -57,7 +57,18 @@ async fn main() -> anyhow::Result<()> {
     if feed == FeedMode::Off {
         info!("MARKET_FEED is not `binance`: bots started through the API will receive no candles");
     }
-    let bots = Arc::new(BotSupervisor::new(feed));
+    let bots = Arc::new(match std::env::var("MARKET_HISTORY_SOURCE") {
+        Ok(source) => BotSupervisor::with_history_source(
+            feed,
+            db::MarketDataSource::new(source).map_err(anyhow::Error::from)?,
+        ),
+        Err(std::env::VarError::NotPresent) => BotSupervisor::new(feed),
+        Err(error) => return Err(error.into()),
+    });
+    info!(
+        source = %bots.history_source(),
+        "Pine-Lite retained flow/depth history source selected"
+    );
 
     // Chart history older than the in-memory buffer is fetched from the venue
     // and dropped, not stored: `MARKET_REST_URL` exists so a test or a proxy can

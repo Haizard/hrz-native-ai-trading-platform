@@ -642,6 +642,17 @@ pub fn run_incremental(
 }
 
 /// The virtual machine.
+enum UserFunctionValue {
+    Number(f64),
+    Text(String),
+}
+
+#[derive(Clone)]
+enum UdtFieldValue {
+    Number(f64),
+    Text(Option<String>),
+}
+
 pub struct Vm<'a> {
     script: &'a Script,
     candles: &'a [Candle],
@@ -670,6 +681,8 @@ pub struct Vm<'a> {
     /// This is Pine's series-passing model (`f(close)` passes close, not a
     /// snapshot) and what lets a function body run `ta.*` over a parameter.
     series_args: Vec<std::collections::HashMap<String, Expr>>,
+    /// String locals belong to their user-function call frame.
+    string_scopes: Vec<std::collections::HashMap<String, Option<String>>>,
     /// Plot statements deferred to after the bar loop: replaying a plot's
     /// expression needs *completed* buffers, and one AST call site is one
     /// plot no matter how many bars its branch fires on.
@@ -757,7 +770,7 @@ pub struct Vm<'a> {
     /// word) layout, hoisted from the items at construction.
     type_defs: std::collections::HashMap<String, Vec<(String, String)>>,
     /// The UDT instance heap: (type name, field values) by handle.
-    udts_live: Vec<(String, Vec<f64>)>,
+    udts_live: Vec<(String, Vec<UdtFieldValue>)>,
     /// Vars known to hold a UDT instance: var name -> type name.
     var_udt_types: std::collections::HashMap<String, String>,
     /// Side channel: the last `Type.new` call's type, for the Assign arm.
@@ -928,6 +941,7 @@ impl<'a> Vm<'a> {
             loop_scopes: Vec::new(),
             scopes: Vec::new(),
             series_args: Vec::new(),
+            string_scopes: Vec::new(),
             deferred: Vec::new(),
             deferred_seen: std::collections::HashSet::new(),
             heap: Vec::new(),
@@ -1038,6 +1052,7 @@ impl<'a> Vm<'a> {
             loop_scopes: Vec::new(),
             scopes: Vec::new(),
             series_args: Vec::new(),
+            string_scopes: Vec::new(),
             deferred: Vec::new(),
             deferred_seen: std::collections::HashSet::new(),
             heap: Vec::new(),
@@ -1406,22 +1421,32 @@ impl<'a> Vm<'a> {
                 // instance. (Checked before the plain path -- `p.x` is not
                 // a plain variable name.)
                 if let Some((base, field)) = name.split_once('.') {
-                    if self.var_udt_types.contains_key(base) {
-                        let value = self.eval_f(expr)?;
+                    if let Some(type_name) = self.var_udt_types.get(base).cloned() {
+                        let field_type = self
+                            .type_defs
+                            .get(&type_name)
+                            .and_then(|layout| layout.iter().find(|(f, _)| f == field))
+                            .map(|(_, word)| word.clone())
+                            .ok_or_else(|| crate::ScriptError {
+                                kind: crate::ErrorKind::Type,
+                                span: crate::Span::new(1, 1),
+                                message: format!("type {type_name} has no field `{field}`"),
+                            })?;
+                        let value = self.eval_udt_field_value(expr, &field_type)?;
                         let handle = self.read_name(base)?;
                         let idx = if handle.is_finite() && handle >= 0.0 {
                             handle as usize
                         } else {
                             usize::MAX
                         };
-                        let Some((type_name, values)) = self.udts_live.get_mut(idx) else {
+                        let Some((instance_type, values)) = self.udts_live.get_mut(idx) else {
                             return Err(crate::ScriptError {
                                 kind: crate::ErrorKind::Type,
                                 span: crate::Span::new(1, 1),
                                 message: format!("`{base}` does not hold a live instance"),
                             });
                         };
-                        let Some((fi, _)) = self.type_defs[type_name.as_str()]
+                        let Some((fi, _)) = self.type_defs[instance_type.as_str()]
                             .iter()
                             .enumerate()
                             .find(|(_, (f, _))| f == field)
@@ -1429,7 +1454,7 @@ impl<'a> Vm<'a> {
                             return Err(crate::ScriptError {
                                 kind: crate::ErrorKind::Type,
                                 span: crate::Span::new(1, 1),
-                                message: format!("type {type_name} has no field `{field}`"),
+                                message: format!("type {instance_type} has no field `{field}`"),
                             });
                         };
                         values[fi] = value;
@@ -1444,6 +1469,19 @@ impl<'a> Vm<'a> {
                     } else {
                         Some(self.eval_s(expr)?)
                     };
+                    if self.call_depth > 0 {
+                        if *mode != VarMode::Auto {
+                            return Err(crate::ScriptError {
+                                kind: crate::ErrorKind::Type,
+                                span: crate::Span::new(1, 1),
+                                message: "persistent string locals inside user functions are not supported".into(),
+                            });
+                        }
+                        if let Some(frame) = self.string_scopes.last_mut() {
+                            frame.insert(name.clone(), value);
+                            return Ok(());
+                        }
+                    }
                     if *mode != VarMode::Auto && self.bar > 0 && self.str_vars.contains_key(name) {
                         return Ok(());
                     }
@@ -3396,7 +3434,16 @@ impl<'a> Vm<'a> {
                         ),
                     });
                 };
-                return Ok(values[fi]);
+                return match &values[fi] {
+                    UdtFieldValue::Number(value) => Ok(*value),
+                    UdtFieldValue::Text(_) => Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!(
+                            "`{name}` is a string field and cannot be read as a number"
+                        ),
+                    }),
+                };
             }
         }
         if let Some(buf) = self.vars.get(name) {
@@ -3760,32 +3807,160 @@ impl<'a> Vm<'a> {
     /// Is this expression string-typed? Mirrors eval_s's domain exactly:
     /// the runtime answer to "does this assignment write a string var".
     fn expr_is_string(&self, e: &Expr) -> bool {
+        self.expr_is_string_inner(e, &mut std::collections::HashSet::new())
+    }
+
+    fn expr_is_string_inner(
+        &self,
+        e: &Expr,
+        resolving: &mut std::collections::HashSet<String>,
+    ) -> bool {
         match &e.kind {
             ExprKind::Str(_) => true,
             ExprKind::Ident(name) => {
                 self.str_vars.contains_key(name)
+                    || self.is_udt_string_field(name)
+                    || self
+                        .string_scopes
+                        .iter()
+                        .rev()
+                        .any(|frame| frame.contains_key(name))
                     || matches!(name.as_str(), "syminfo.ticker" | "timeframe.period")
+                    || self.series_args.iter().rev().any(|frame| {
+                        frame
+                            .get(name)
+                            .is_some_and(|bound| self.expr_is_string_inner(bound, resolving))
+                    })
             }
             ExprKind::Member { path } => {
                 matches!(path.as_str(), "syminfo.ticker" | "timeframe.period")
+                    || self.is_udt_string_field(path)
             }
             ExprKind::Call { callee, .. } => {
                 matches!(
                     callee.as_str(),
                     "str.tostring" | "str.format" | "array.join" | "input.string"
-                )
+                ) || self.funcs.get(callee).is_some_and(|body| {
+                    if !resolving.insert(callee.clone()) {
+                        return false;
+                    }
+                    let is_string = body
+                        .last()
+                        .and_then(|item| match item {
+                            Item::Expr { expr, .. } => Some(expr),
+                            _ => None,
+                        })
+                        .is_some_and(|expr| {
+                            if let ExprKind::Ident(name) = &expr.kind {
+                                body.iter()
+                                    .rev()
+                                    .skip(1)
+                                    .find_map(|item| match item {
+                                        Item::Assign {
+                                            name: assigned,
+                                            expr,
+                                            ..
+                                        } if assigned == name => {
+                                            Some(self.expr_is_string_inner(expr, resolving))
+                                        }
+                                        _ => None,
+                                    })
+                                    .unwrap_or_else(|| self.expr_is_string_inner(expr, resolving))
+                            } else {
+                                self.expr_is_string_inner(expr, resolving)
+                            }
+                        });
+                    resolving.remove(callee);
+                    is_string
+                })
             }
             ExprKind::Bin {
                 op: crate::parse::BinOp::Add(crate::parse::AddOp::Add),
                 left,
                 right,
-            } => self.expr_is_string(left) || self.expr_is_string(right),
-            ExprKind::Ternary { then, els, .. } => {
-                self.expr_is_string(then) || self.expr_is_string(els)
+            } => {
+                self.expr_is_string_inner(left, resolving)
+                    || self.expr_is_string_inner(right, resolving)
             }
-            ExprKind::Switch { arms, .. } => arms.iter().any(|(_, r)| self.expr_is_string(r)),
-            ExprKind::History { base, .. } => self.expr_is_string(base),
+            ExprKind::Ternary { then, els, .. } => {
+                self.expr_is_string_inner(then, resolving)
+                    || self.expr_is_string_inner(els, resolving)
+            }
+            ExprKind::Switch { arms, .. } => arms
+                .iter()
+                .any(|(_, r)| self.expr_is_string_inner(r, resolving)),
+            ExprKind::History { base, .. } => self.expr_is_string_inner(base, resolving),
             _ => false,
+        }
+    }
+
+    fn is_udt_string_field(&self, path: &str) -> bool {
+        let Some((base, field)) = path.split_once('.') else {
+            return false;
+        };
+        let Some(type_name) = self.var_udt_types.get(base) else {
+            return false;
+        };
+        self.type_defs
+            .get(type_name)
+            .and_then(|layout| layout.iter().find(|(name, _)| name == field))
+            .is_some_and(|(_, field_type)| field_type == "string")
+    }
+
+    fn eval_udt_field_value(
+        &mut self,
+        expr: &Expr,
+        field_type: &str,
+    ) -> Result<UdtFieldValue, crate::ScriptError> {
+        if field_type == "string" {
+            Ok(UdtFieldValue::Text(if matches!(expr.kind, ExprKind::Na) {
+                None
+            } else {
+                Some(self.eval_s(expr)?)
+            }))
+        } else {
+            Ok(UdtFieldValue::Number(self.eval_f(expr)?))
+        }
+    }
+
+    fn read_udt_string_field(&mut self, path: &str) -> Result<String, crate::ScriptError> {
+        let (base, field) = path.split_once('.').ok_or_else(|| crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span: crate::Span::new(1, 1),
+            message: format!("`{path}` is not a UDT field"),
+        })?;
+        let handle = self.read_name(base)?;
+        let idx = if handle.is_finite() && handle >= 0.0 {
+            handle as usize
+        } else {
+            usize::MAX
+        };
+        let Some((type_name, values)) = self.udts_live.get(idx) else {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: format!("`{base}` does not hold a live instance"),
+            });
+        };
+        let Some((field_index, _)) = self.type_defs.get(type_name).and_then(|layout| {
+            layout
+                .iter()
+                .enumerate()
+                .find(|(_, (name, _))| name == field)
+        }) else {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: format!("type {type_name} has no field `{field}`"),
+            });
+        };
+        match &values[field_index] {
+            UdtFieldValue::Text(value) => Ok(value.clone().unwrap_or_default()),
+            UdtFieldValue::Number(_) => Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: format!("`{path}` is not a string field"),
+            }),
         }
     }
 
@@ -3997,18 +4172,29 @@ impl<'a> Vm<'a> {
         if let Some(type_name) = callee.strip_suffix(".new") {
             if let Some(layout) = self.type_defs.get(type_name).cloned() {
                 self.tick()?;
-                let mut values = vec![NA; layout.len()];
-                for (idx, (fname, _)) in layout.iter().enumerate() {
+                let mut values: Vec<_> = layout
+                    .iter()
+                    .map(|(_, field_type)| {
+                        if field_type == "string" {
+                            UdtFieldValue::Text(None)
+                        } else {
+                            UdtFieldValue::Number(NA)
+                        }
+                    })
+                    .collect();
+                for (idx, (fname, field_type)) in layout.iter().enumerate() {
                     if let Some(a) = args
                         .iter()
                         .find(|a| a.name.as_deref() == Some(fname.as_str()))
                     {
-                        values[idx] = self.eval_f(&a.value)?;
+                        values[idx] = self.eval_udt_field_value(&a.value, field_type)?;
                     }
                 }
                 let positional: Vec<&Arg> = args.iter().filter(|a| a.name.is_none()).collect();
-                for (a, slot) in positional.iter().zip(values.iter_mut()) {
-                    *slot = self.eval_f(&a.value)?;
+                for (index, a) in positional.iter().enumerate() {
+                    if let Some((_, field_type)) = layout.get(index) {
+                        values[index] = self.eval_udt_field_value(&a.value, field_type)?;
+                    }
                 }
                 let handle = self.udts_live.len() as f64;
                 self.udts_live.push((type_name.to_string(), values));
@@ -5263,6 +5449,37 @@ impl<'a> Vm<'a> {
     }
 
     fn call_user(&mut self, callee: &str, args: &[Arg]) -> Result<f64, crate::ScriptError> {
+        match self.call_user_inner(callee, args, false)? {
+            UserFunctionValue::Number(value) => Ok(value),
+            UserFunctionValue::Text(_) => Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: format!("`{callee}` returns text and cannot be used as a number"),
+            }),
+        }
+    }
+
+    fn call_user_string(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+    ) -> Result<String, crate::ScriptError> {
+        match self.call_user_inner(callee, args, true)? {
+            UserFunctionValue::Text(value) => Ok(value),
+            UserFunctionValue::Number(_) => Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: format!("`{callee}` does not return text"),
+            }),
+        }
+    }
+
+    fn call_user_inner(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+        text_result: bool,
+    ) -> Result<UserFunctionValue, crate::ScriptError> {
         // Depth first: a recursive body must name RECURSION as its refusal
         // (the fuel message would be true but misleading), and each frame
         // binds caller expressions, so the cap also bounds that growth.
@@ -5314,8 +5531,10 @@ impl<'a> Vm<'a> {
             // self-name binds nothing (the scalar local rules).
             let resolved = self.resolve_param(&arg.value);
             series_args.insert(param.clone(), resolved);
-            let v = self.eval_f(&arg.value)?;
-            locals.insert(param, v);
+            if !self.expr_is_string(&arg.value) {
+                let v = self.eval_f(&arg.value)?;
+                locals.insert(param, v);
+            }
         }
         // Omitted trailing parameters (v1.1 defaults): each default is
         // evaluated fresh per call, in the CALLER's scope, and bound exactly
@@ -5330,29 +5549,40 @@ impl<'a> Vm<'a> {
             let param = def_params[i].clone();
             let resolved = self.resolve_param(default_expr);
             series_args.insert(param.clone(), resolved);
-            let v = self.eval_f(default_expr)?;
-            locals.insert(param, v);
+            if !self.expr_is_string(default_expr) {
+                let v = self.eval_f(default_expr)?;
+                locals.insert(param, v);
+            }
         }
         // Named parameters by position: the checker knows the signature; the
         // VM binds positionally (docs/23: positional order matches the table).
         self.series_args.push(series_args);
         self.scopes.push(locals);
+        self.string_scopes.push(std::collections::HashMap::new());
         self.call_depth += 1;
-        let mut result = NA;
-        let last = body.len().saturating_sub(1);
-        for (i, item) in body.iter().enumerate() {
-            if i == last {
-                if let Item::Expr { expr, .. } = item {
-                    result = self.eval_f(expr)?;
-                    continue;
+        let result = (|| {
+            let mut result = UserFunctionValue::Number(NA);
+            let last = body.len().saturating_sub(1);
+            for (i, item) in body.iter().enumerate() {
+                if i == last {
+                    if let Item::Expr { expr, .. } = item {
+                        result = if text_result {
+                            UserFunctionValue::Text(self.eval_s(expr)?)
+                        } else {
+                            UserFunctionValue::Number(self.eval_f(expr)?)
+                        };
+                        continue;
+                    }
                 }
+                self.item(item)?;
             }
-            self.item(item)?;
-        }
+            Ok(result)
+        })();
         self.call_depth -= 1;
         self.scopes.pop();
+        self.string_scopes.pop();
         self.series_args.pop();
-        Ok(result)
+        result
     }
 
     // ---- argument helpers ----
@@ -5399,6 +5629,9 @@ impl<'a> Vm<'a> {
                     })?;
                 let fmt = self.arg_str(args, "format").or_else(|| self.arg_str_pos(args, 1));
                 Ok(format_number(v, fmt.as_deref()))
+            }
+            ExprKind::Call { callee, args } if self.funcs.contains_key(callee) && self.expr_is_string(e) => {
+                self.call_user_string(callee, args)
             }
             ExprKind::Call { callee, args } if callee == "str.format" => {
                 let mut out = match args.first().map(|a| &a.value.kind) {
@@ -5530,6 +5763,47 @@ impl<'a> Vm<'a> {
                     .collect::<Vec<_>>()
                     .join(&sep))
             }
+            ExprKind::Ident(path) if self.is_udt_string_field(path) => {
+                self.read_udt_string_field(path)
+            }
+            ExprKind::Member { path } if self.is_udt_string_field(path) => {
+                self.read_udt_string_field(path)
+            }
+            ExprKind::Ident(name)
+                if self
+                    .string_scopes
+                    .iter()
+                    .rev()
+                    .any(|frame| frame.contains_key(name)) =>
+            {
+                let value = self
+                    .string_scopes
+                    .iter()
+                    .rev()
+                    .find_map(|frame| frame.get(name))
+                    .cloned()
+                    .flatten();
+                Ok(value.unwrap_or_default())
+            }
+            ExprKind::Ident(name) if self.series_args.iter().rev().any(|frame| frame.contains_key(name)) => {
+                let bound = self
+                    .series_args
+                    .iter()
+                    .rev()
+                    .find_map(|frame| frame.get(name))
+                    .cloned()
+                    .ok_or_else(|| crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!("`{name}` has no bound function argument"),
+                    })?;
+                if self.expr_is_string(&bound) {
+                    self.eval_s(&bound)
+                } else {
+                    let value = self.eval_f(&bound)?;
+                    Ok(format_number(value, None))
+                }
+            }
             ExprKind::Ident(name) if self.str_vars.contains_key(name) => {
                 let v = self.read_str_var(name)?;
                 Ok(v.unwrap_or_default())
@@ -5578,7 +5852,7 @@ impl<'a> Vm<'a> {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
                 message: format!(
-                    "`{name}` can't be read as text: v1 strings are expression-level (no variable holds one) -- build the text inline with str.tostring/str.format"
+                    "`{name}` is numeric and cannot be read as text directly; use str.tostring or str.format"
                 ),
             }),
             _ => {
@@ -5868,6 +6142,54 @@ mod tests {
         );
         assert_eq!(values[3], 42.0, "bar 3 reads bar 2's assignment");
         assert_eq!(values[9], 42.0, "bar 9 still reads the carried assignment");
+    }
+
+    #[test]
+    fn string_user_function_arguments_and_returns_flow_through_text_series() {
+        let candles = vec![candle(0, 100.0), candle(1, 101.0)];
+        let out = run_src(
+            concat!(
+                "//@pine_lite version=1 overlay=true title=\"string function\"\n",
+                "decorate(prefix = \"ready\") =>\n",
+                "    suffix = prefix + \"!\"\n",
+                "    suffix\n",
+                "message = decorate()\n",
+                "plotshape(true, text=message)\n",
+                "plotshape(bar_index == 0, text=decorate(42))\n",
+            ),
+            &candles,
+        );
+        assert_eq!(
+            out.shapes
+                .iter()
+                .map(|shape| shape.text.as_str())
+                .collect::<Vec<_>>(),
+            ["ready!", "ready!", "42!"]
+        );
+    }
+
+    #[test]
+    fn string_udt_fields_construct_read_assign_and_render() {
+        let candles = vec![candle(0, 100.0), candle(1, 101.0)];
+        let out = run_src(
+            concat!(
+                "//@pine_lite version=1 overlay=true title=\"string UDT\"\n",
+                "type Signal\n",
+                "    string message\n",
+                "    float level\n",
+                "signal = Signal.new(message=\"ready\", level=close)\n",
+                "signal.message := signal.message + \"!\"\n",
+                "plotshape(true, text=signal.message)\n",
+            ),
+            &candles,
+        );
+        assert_eq!(
+            out.shapes
+                .iter()
+                .map(|shape| shape.text.as_str())
+                .collect::<Vec<_>>(),
+            ["ready!", "ready!"]
+        );
     }
 
     #[test]
