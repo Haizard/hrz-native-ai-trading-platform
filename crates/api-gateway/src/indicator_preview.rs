@@ -30,7 +30,7 @@
 use crate::AppState;
 use analytics_core::concepts::{self, detect};
 use analytics_core::regions::Region;
-use analytics_core::types::{self, Timeframe};
+use analytics_core::types::{self, Candle, Timeframe};
 use backtester::replay::{replay, ReplayConfig, ReplayInput, ReplaySignal};
 use chart_engine::{
     self, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind, ReplayExit, ReplaySetup,
@@ -1034,16 +1034,120 @@ pub async fn replay_script_preview(
         series_pool.insert(if want_raw { format!("{key}#ltf") } else { key }, raw);
     }
     // Phase 14 (docs/23): `request.data("NAME")` — platform-native feeds.
-    // Today: ticker fields from the venue cache, named `SYMBOL.field`
-    // (change_pct, quote_volume, high, low). Tickers are point-in-time, so
-    // the aligned series is the current value carried flat across the
-    // window; venue funding/OI plugs into the same map when those feeds
-    // land, with no language change.
+    // Ticker fields are point-in-time; funding/OI are timestamped venue
+    // series; trade/book fields use retained database observations plus
+    // covered live data and preserve missing coverage as `na`.
+    let data_names = pine_lite::typecheck::collect_data_names(&parsed);
+    let live = state.bots.live();
+    let needs_trade_data = data_names.iter().any(|name| {
+        name.split_once('.').is_some_and(|(sym, field)| {
+            sym.eq_ignore_ascii_case(symbol) && is_live_trade_field(field)
+        })
+    });
+    let needs_book_data = data_names.iter().any(|name| {
+        name.split_once('.').is_some_and(|(sym, field)| {
+            sym.eq_ignore_ascii_case(symbol) && is_live_book_field(field)
+        })
+    });
+    let tape = needs_trade_data.then(|| live.tape(symbol));
+    let trade_bounds = tape
+        .as_ref()
+        .map(|tape| (tape.earliest_ns(), tape.newest_ns()));
+    let trades = tape.as_ref().and_then(|tape| {
+        candles.first().zip(candles.last()).map(|(first, last)| {
+            tape.range(first.open_time, last.open_time.saturating_add(tf.nanos()))
+        })
+    });
+    let mut book_snapshots = needs_book_data
+        .then(|| live.book_history(symbol))
+        .unwrap_or_default();
+    if needs_book_data {
+        let bar_opens = candles
+            .iter()
+            .map(|candle| candle.open_time)
+            .collect::<Vec<_>>();
+        match db::orderbooks_at(database.pool(), symbol, &bar_opens, LIVE_BOOK_MAX_AGE_NS).await {
+            Ok(snapshots) => book_snapshots.extend(snapshots.into_iter().flatten()),
+            Err(error) => {
+                tracing::warn!(%symbol, %error, "could not load retained order-book history for Pine-Lite preview");
+            }
+        }
+    }
+
+    let stored_trade_buckets = if needs_trade_data {
+        match candles.first().zip(candles.last()) {
+            Some((first, last)) => {
+                match db::trade_flow_buckets(
+                    database.pool(),
+                    symbol,
+                    first.open_time,
+                    last.open_time.saturating_add(tf.nanos()),
+                    tf.nanos(),
+                )
+                .await
+                {
+                    Ok(buckets) => buckets,
+                    Err(error) => {
+                        tracing::warn!(%symbol, %error, "could not load retained trade history for Pine-Lite preview");
+                        Vec::new()
+                    }
+                }
+            }
+            None => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+
     let mut data_series = std::collections::HashMap::new();
-    for name in pine_lite::typecheck::collect_data_names(&parsed) {
+    for name in data_names {
         let Some((sym, field)) = name.split_once('.') else {
             continue;
         };
+        if sym.eq_ignore_ascii_case(symbol) {
+            if let Some(values) = candle_volume_series(&candles, field) {
+                data_series.insert(name, values);
+                continue;
+            }
+            if is_live_trade_field(field) {
+                let mut values = retained_trade_series(&stored_trade_buckets, candles.len(), field);
+                if let (Some(trades), Some((earliest_ns, newest_ns))) =
+                    (trades.as_deref(), trade_bounds)
+                {
+                    if let Some(live_values) =
+                        live_trade_series(trades, earliest_ns, newest_ns, &candles, tf, field)
+                    {
+                        values = Some(match values {
+                            Some(mut stored_values) => {
+                                for (stored_value, live_value) in
+                                    stored_values.iter_mut().zip(live_values)
+                                {
+                                    if live_value.is_finite() {
+                                        *stored_value = live_value;
+                                    }
+                                }
+                                stored_values
+                            }
+                            None => live_values,
+                        });
+                    }
+                }
+                if let Some(values) = values {
+                    if values.iter().any(|value| value.is_finite()) {
+                        data_series.insert(name, values);
+                        continue;
+                    }
+                }
+            }
+            if is_live_book_field(field) {
+                if let Some(values) = live_book_series(&book_snapshots, &candles, field) {
+                    if values.iter().any(|value| value.is_finite()) {
+                        data_series.insert(name, values);
+                        continue;
+                    }
+                }
+            }
+        }
         match field {
             // Venue futures feeds: funding rate and open interest, carried
             // per bar. A failed fetch leaves the name missing -- the VM's
@@ -1051,13 +1155,13 @@ pub async fn replay_script_preview(
             "funding" => {
                 let points = fetch_funding_series(sym, from_ns, to_ns).await;
                 if !points.is_empty() {
-                    data_series.insert(name.clone(), carry_points(&points, &candles));
+                    data_series.insert(name, carry_points(&points, &candles));
                 }
             }
             "oi" => {
                 let points = fetch_oi_series(sym, from_ns, to_ns).await;
                 if !points.is_empty() {
-                    data_series.insert(name.clone(), carry_points(&points, &candles));
+                    data_series.insert(name, carry_points(&points, &candles));
                 }
             }
             _ => {
@@ -1071,7 +1175,7 @@ pub async fn replay_script_preview(
                         _ => None,
                     };
                     if let Some(v) = value {
-                        data_series.insert(name.clone(), vec![v; candles.len()]);
+                        data_series.insert(name, vec![v; candles.len()]);
                     }
                 }
             }
@@ -1096,11 +1200,23 @@ pub async fn replay_script_preview(
         contracts,
         ..pine_lite::interp::Inputs::default()
     };
-    let output = pine_lite::interp::run(&parsed, &candles, &inputs)
-        .map_err(|err| format!("the script failed at run time: {err}"))?;
-    // Run notes (docs/24 S1: the two-pass strategy mismatch, and any later
-    // simulation warnings) ride the preview_note slot -- non-fatal, but the
-    // user must see them.
+    let _preview_permit = state
+        .pine_preview_slots
+        .try_acquire()
+        .map_err(|_| "all Pine-Lite preview slots are busy; retry the preview".to_string())?;
+    let output = state
+        .pine_preview
+        .execute(sandbox::PinePreviewRequest {
+            source: source.to_string(),
+            candles: candles.clone(),
+            inputs,
+        })
+        .await
+        .map_err(|error| {
+            format!("the sandbox could not complete the Pine-Lite preview: {error}")
+        })?;
+    // Run notes ride the preview_note slot -- non-fatal, but the user must see
+    // them.
     let run_note = if output.notes.is_empty() {
         serde_json::Value::Null
     } else {
@@ -1109,52 +1225,36 @@ pub async fn replay_script_preview(
     let stats = crate::indicator_workspace_routes::ScriptPreviewStats {
         window_days: (PREVIEW_WINDOW_NS / 86_400_000_000_000) as i64,
         bars: candles.len(),
-        plots: output.plots.len(),
-        levels: output.hlines.len(),
+        plots: output.plot_count,
+        levels: output.levels,
         shapes: output.shapes.len(),
-        drawing_objects: output.objects.len()
-            + output.polylines.len()
-            + output.linefills.len()
-            + output.tables.len(),
-        boxes: output
-            .objects
-            .iter()
-            .filter(|object| {
-                matches!(
-                    object,
-                    pine_lite::interp::ScriptObject::Box { .. }
-                        | pine_lite::interp::ScriptObject::BoxTime { .. }
-                )
-            })
-            .count(),
-        labels: output
-            .objects
-            .iter()
-            .filter(|object| {
-                matches!(
-                    object,
-                    pine_lite::interp::ScriptObject::Label { .. }
-                        | pine_lite::interp::ScriptObject::LabelTime { .. }
-                )
-            })
-            .count(),
+        drawing_objects: output.drawing_objects,
+        boxes: output.boxes,
+        labels: output.labels,
         objects_truncated: output.objects_truncated,
         overlays: usize::from(header.overlay),
         strategy: output.simulation.is_some(),
         trades: output
             .simulation
             .as_ref()
-            .map_or(0, |s| s.report.total_trades as usize),
+            .map_or(0, |simulation| simulation.trades),
         net_profit: output
             .simulation
             .as_ref()
-            .map_or(0.0, |s| s.report.net_profit),
+            .map_or(0.0, |simulation| simulation.net_profit),
         max_drawdown: output
             .simulation
             .as_ref()
-            .map_or(0.0, |s| s.report.max_drawdown),
-        alerts: output.alerts.len(),
-        simulation_note: strategy_simulation_note(output.simulation.as_ref(), candles.len()),
+            .map_or(0.0, |simulation| simulation.max_drawdown),
+        alerts: output.alerts,
+        simulation_note: output.simulation.as_ref().and_then(|simulation| {
+            (simulation.trades == 0).then(|| {
+                format!(
+                    "0 fills in {} bars -- the entry condition never fired or every entry was skipped; loosen the entry condition or gate it on strategy.position_size == 0",
+                    candles.len()
+                )
+            })
+        }),
     };
     let title = header.title.clone().unwrap_or_else(|| "script".to_string());
     // The preview folds the run into the shared vocabulary: one zone per
@@ -1173,24 +1273,12 @@ pub async fn replay_script_preview(
         trendlines: Vec::new(),
     };
     for plot in &output.plots {
-        let finite: Vec<f64> = plot
-            .values
-            .iter()
-            .copied()
-            .filter(|v| v.is_finite())
-            .collect();
-        let (Some(low), Some(high)) = (
-            finite.iter().copied().reduce(f64::min),
-            finite.iter().copied().reduce(f64::max),
-        ) else {
-            continue;
-        };
         out.zones.push(chart_engine::IndicatorZone {
             id: format!("{}-plot", plot.id),
             start_time: candles.first().map(|c| c.open_time).unwrap_or(0),
             end_time: candles.last().map(|c| c.open_time).unwrap_or(0),
-            price_low: low,
-            price_high: high,
+            price_low: plot.low,
+            price_high: plot.high,
             label: plot.title.clone(),
             state: chart_engine::ZoneState::Active,
         });
@@ -1211,22 +1299,213 @@ pub async fn replay_script_preview(
     Ok((out, stats, run_note))
 }
 
-/// docs/24 S3: a strategy that simulated ZERO fills is a drawing, not a
-/// strategy -- the run succeeds, but the note must ride the stats card and
-/// the chat row so the user (and the repair loop's next round) sees the
-/// truth instead of a silent "net 0". `None` for indicator runs and for
-/// strategies that actually traded.
-#[must_use]
-pub(crate) fn strategy_simulation_note(
-    simulation: Option<&pine_lite::sim::Simulation>,
-    bars: usize,
-) -> Option<String> {
-    let sim = simulation?;
-    (sim.report.total_trades == 0.0).then(|| {
-        format!(
-            "0 fills in {bars} bars -- the entry condition never fired or every entry was skipped; loosen the entry condition or gate it on strategy.position_size == 0"
-        )
-    })
+fn candle_volume_series(candles: &[Candle], field: &str) -> Option<Vec<f64>> {
+    let has_split = candles
+        .iter()
+        .any(|candle| candle.buy_volume > 0.0 || candle.sell_volume > 0.0);
+    if !has_split {
+        return None;
+    }
+    let value: fn(&Candle) -> f64 = match field {
+        "buy_volume" => |candle: &Candle| candle.buy_volume,
+        "sell_volume" => |candle: &Candle| candle.sell_volume,
+        "volume_delta" => |candle: &Candle| candle.buy_volume - candle.sell_volume,
+        _ => return None,
+    };
+    Some(candles.iter().map(value).collect())
+}
+
+const LIVE_BOOK_MAX_AGE_NS: i64 = 30_000_000_000;
+
+fn is_live_trade_field(field: &str) -> bool {
+    matches!(
+        field,
+        "trade_volume" | "trade_buy_volume" | "trade_sell_volume" | "trade_delta" | "trade_count"
+    )
+}
+
+fn live_trade_series(
+    trades: &[analytics_core::types::Trade],
+    earliest_ns: Option<i64>,
+    newest_ns: Option<i64>,
+    candles: &[Candle],
+    timeframe: Timeframe,
+    field: &str,
+) -> Option<Vec<f64>> {
+    let value = match field {
+        "trade_volume" => 0,
+        "trade_buy_volume" => 1,
+        "trade_sell_volume" => 2,
+        "trade_delta" => 3,
+        "trade_count" => 4,
+        _ => return None,
+    };
+    let (Some(earliest_ns), Some(newest_ns)) = (earliest_ns, newest_ns) else {
+        return None;
+    };
+
+    let mut out = Vec::with_capacity(candles.len());
+    let mut cursor = 0usize;
+    for candle in candles {
+        let start = candle.open_time;
+        let end = start.saturating_add(timeframe.nanos());
+        while cursor < trades.len() && trades[cursor].timestamp < start {
+            cursor += 1;
+        }
+
+        if start < earliest_ns || start > newest_ns {
+            out.push(f64::NAN);
+            continue;
+        }
+
+        let mut total = 0.0;
+        let mut buy = 0.0;
+        let mut sell = 0.0;
+        let mut count = 0usize;
+        while cursor < trades.len() && trades[cursor].timestamp < end {
+            let trade = &trades[cursor];
+            if trade.quantity.is_finite() && trade.quantity >= 0.0 {
+                if trade.is_buyer_maker {
+                    sell += trade.quantity;
+                } else {
+                    buy += trade.quantity;
+                }
+                total += trade.quantity;
+                count += 1;
+            }
+            cursor += 1;
+        }
+
+        out.push(match value {
+            0 => total,
+            1 => buy,
+            2 => sell,
+            3 => buy - sell,
+            _ => count as f64,
+        });
+    }
+    Some(out)
+}
+
+fn retained_trade_series(
+    buckets: &[db::TradeFlowBucket],
+    candle_count: usize,
+    field: &str,
+) -> Option<Vec<f64>> {
+    let metric: fn(&db::TradeFlowBucket) -> f64 = match field {
+        "trade_volume" => |bucket| bucket.volume,
+        "trade_buy_volume" => |bucket| bucket.buy_volume,
+        "trade_sell_volume" => |bucket| bucket.sell_volume,
+        "trade_delta" => |bucket| bucket.buy_volume - bucket.sell_volume,
+        "trade_count" => |bucket| bucket.trade_count as f64,
+        _ => return None,
+    };
+    if buckets.is_empty() {
+        return None;
+    }
+
+    let mut out = vec![f64::NAN; candle_count];
+    for bucket in buckets {
+        let Ok(index) = usize::try_from(bucket.bucket) else {
+            continue;
+        };
+        if index >= out.len()
+            || !bucket.volume.is_finite()
+            || bucket.volume < 0.0
+            || !bucket.buy_volume.is_finite()
+            || bucket.buy_volume < 0.0
+            || !bucket.sell_volume.is_finite()
+            || bucket.sell_volume < 0.0
+            || bucket.trade_count < 0
+        {
+            continue;
+        }
+        out[index] = metric(bucket);
+    }
+    Some(out)
+}
+
+fn is_live_book_field(field: &str) -> bool {
+    matches!(
+        field,
+        "book_bid_depth" | "book_ask_depth" | "book_imbalance" | "book_spread" | "book_mid"
+    )
+}
+
+fn live_book_series(
+    snapshots: &[analytics_core::types::OrderBookSnapshot],
+    candles: &[Candle],
+    field: &str,
+) -> Option<Vec<f64>> {
+    if !is_live_book_field(field) {
+        return None;
+    }
+
+    let mut snapshots = snapshots.iter().collect::<Vec<_>>();
+    snapshots.sort_by_key(|snapshot| snapshot.timestamp);
+
+    let mut out = Vec::with_capacity(candles.len());
+    let mut cursor = 0usize;
+    let mut current = None;
+    for candle in candles {
+        while cursor < snapshots.len() && snapshots[cursor].timestamp <= candle.open_time {
+            current = Some(snapshots[cursor]);
+            cursor += 1;
+        }
+
+        let Some(snapshot) = current.filter(|snapshot| {
+            candle.open_time.saturating_sub(snapshot.timestamp) <= LIVE_BOOK_MAX_AGE_NS
+        }) else {
+            out.push(f64::NAN);
+            continue;
+        };
+
+        let bid_depth: f64 = snapshot
+            .bids
+            .iter()
+            .filter(|level| level.quantity.is_finite() && level.quantity >= 0.0)
+            .map(|level| level.quantity)
+            .sum();
+        let ask_depth: f64 = snapshot
+            .asks
+            .iter()
+            .filter(|level| level.quantity.is_finite() && level.quantity >= 0.0)
+            .map(|level| level.quantity)
+            .sum();
+        let best_bid = snapshot
+            .bids
+            .iter()
+            .filter(|level| level.price.is_finite() && level.price > 0.0)
+            .map(|level| level.price)
+            .reduce(f64::max);
+        let best_ask = snapshot
+            .asks
+            .iter()
+            .filter(|level| level.price.is_finite() && level.price > 0.0)
+            .map(|level| level.price)
+            .reduce(f64::min);
+        let metric = match field {
+            "book_bid_depth" => bid_depth,
+            "book_ask_depth" => ask_depth,
+            "book_imbalance" => {
+                let depth = bid_depth + ask_depth;
+                if depth > 0.0 {
+                    (bid_depth - ask_depth) / depth
+                } else {
+                    f64::NAN
+                }
+            }
+            "book_spread" => best_ask
+                .zip(best_bid)
+                .map_or(f64::NAN, |(ask, bid)| ask - bid),
+            "book_mid" => best_ask
+                .zip(best_bid)
+                .map_or(f64::NAN, |(ask, bid)| (ask + bid) / 2.0),
+            _ => unreachable!("field was checked above"),
+        };
+        out.push(metric);
+    }
+    Some(out)
 }
 
 /// Map a detection side to the marker vocabulary the chart already paints.
@@ -1419,6 +1698,200 @@ use uuid::Uuid;
 mod tests {
     use super::*;
     use strategy_runtime::signal::{EnterSignal, ExitSignal, ExitTrigger};
+
+    #[test]
+    fn candle_flow_series_preserves_split_and_is_missing_without_it() {
+        let candle = |buy_volume, sell_volume| Candle {
+            symbol: "BTCUSDT".into(),
+            timeframe: Timeframe::M1,
+            open_time: 0,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.5,
+            volume: buy_volume + sell_volume,
+            buy_volume,
+            sell_volume,
+        };
+        let candles = vec![candle(3.0, 1.0), candle(0.0, 2.0)];
+        assert_eq!(
+            candle_volume_series(&candles, "volume_delta"),
+            Some(vec![2.0, -2.0])
+        );
+        assert_eq!(
+            candle_volume_series(&candles, "buy_volume"),
+            Some(vec![3.0, 0.0])
+        );
+        assert_eq!(
+            candle_volume_series(&[candle(0.0, 0.0)], "volume_delta"),
+            None
+        );
+    }
+
+    #[test]
+    fn live_trade_series_aggregates_real_ticks_and_marks_uncovered_bars_na() {
+        let period = Timeframe::M1.nanos();
+        let candle = |open_time| Candle {
+            symbol: "BTCUSDT".into(),
+            timeframe: Timeframe::M1,
+            open_time,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.5,
+            volume: 0.0,
+            buy_volume: 0.0,
+            sell_volume: 0.0,
+        };
+        let trade = |timestamp, quantity, is_buyer_maker| analytics_core::types::Trade {
+            symbol: "BTCUSDT".into(),
+            trade_id: timestamp as u64,
+            price: 100.0,
+            quantity,
+            is_buyer_maker,
+            timestamp,
+        };
+        let candles = vec![candle(0), candle(period), candle(period * 2)];
+        let trades = vec![
+            trade(100, 8.0, false),
+            trade(period + 100, 2.0, false),
+            trade(period + 200, 1.0, true),
+            trade(period + 300, 3.0, false),
+        ];
+
+        let delta = live_trade_series(
+            &trades,
+            Some(100),
+            Some(period + 300),
+            &candles,
+            Timeframe::M1,
+            "trade_delta",
+        )
+        .expect("supported live trade field");
+        assert!(
+            delta[0].is_nan(),
+            "a partial first bar must not look complete"
+        );
+        assert_eq!(delta[1], 4.0);
+        assert!(
+            delta[2].is_nan(),
+            "bars beyond the latest tick are uncovered"
+        );
+
+        assert_eq!(
+            live_trade_series(
+                &trades,
+                Some(100),
+                Some(period + 300),
+                &candles,
+                Timeframe::M1,
+                "trade_count",
+            )
+            .expect("supported live trade field")[1],
+            3.0
+        );
+    }
+
+    #[test]
+    fn retained_trade_series_uses_bucketed_history_and_keeps_gaps_na() {
+        let buckets = [
+            db::TradeFlowBucket {
+                bucket: 0,
+                volume: 4.0,
+                buy_volume: 3.0,
+                sell_volume: 1.0,
+                trade_count: 2,
+            },
+            db::TradeFlowBucket {
+                bucket: 2,
+                volume: 5.0,
+                buy_volume: 0.0,
+                sell_volume: 5.0,
+                trade_count: 1,
+            },
+        ];
+
+        let delta = retained_trade_series(&buckets, 3, "trade_delta")
+            .expect("supported retained trade field");
+        assert_eq!(delta[0], 2.0);
+        assert!(delta[1].is_nan(), "a missing bucket remains Pine na");
+        assert_eq!(delta[2], -5.0);
+        assert_eq!(
+            retained_trade_series(&buckets, 3, "trade_count")
+                .expect("supported retained trade field")[2],
+            1.0
+        );
+        assert!(retained_trade_series(&[], 3, "trade_volume").is_none());
+    }
+
+    #[test]
+    fn live_book_series_aligns_as_of_bar_open_and_expires_stale_snapshots() {
+        let candle = |open_time| Candle {
+            symbol: "BTCUSDT".into(),
+            timeframe: Timeframe::M1,
+            open_time,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.5,
+            volume: 0.0,
+            buy_volume: 0.0,
+            sell_volume: 0.0,
+        };
+        let snapshot = analytics_core::types::OrderBookSnapshot {
+            symbol: "BTCUSDT".into(),
+            timestamp: 5_000_000_000,
+            bids: vec![
+                analytics_core::types::OrderBookLevel {
+                    price: 99.0,
+                    quantity: 2.0,
+                },
+                analytics_core::types::OrderBookLevel {
+                    price: 98.0,
+                    quantity: 3.0,
+                },
+            ],
+            asks: vec![
+                analytics_core::types::OrderBookLevel {
+                    price: 101.0,
+                    quantity: 4.0,
+                },
+                analytics_core::types::OrderBookLevel {
+                    price: 102.0,
+                    quantity: 5.0,
+                },
+            ],
+        };
+        let candles = vec![candle(10_000_000_000), candle(40_000_000_000)];
+
+        assert_eq!(
+            live_book_series(&[snapshot.clone()], &candles, "book_bid_depth")
+                .expect("supported live book field")[0],
+            5.0
+        );
+        assert_eq!(
+            live_book_series(&[snapshot.clone()], &candles, "book_ask_depth")
+                .expect("supported live book field")[0],
+            9.0
+        );
+        assert_eq!(
+            live_book_series(&[snapshot.clone()], &candles, "book_imbalance")
+                .expect("supported live book field")[0],
+            -2.0 / 7.0
+        );
+        assert_eq!(
+            live_book_series(&[snapshot.clone()], &candles, "book_spread")
+                .expect("supported live book field")[0],
+            2.0
+        );
+        let mid = live_book_series(&[snapshot.clone()], &candles, "book_mid")
+            .expect("supported live book field");
+        assert_eq!(mid[0], 100.0);
+        assert!(
+            mid[1].is_nan(),
+            "a snapshot older than 30 seconds must be na"
+        );
+    }
 
     fn signal(time: i64, price: f64, signal: Signal) -> ReplaySignal {
         ReplaySignal {

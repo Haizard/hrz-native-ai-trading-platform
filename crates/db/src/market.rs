@@ -18,13 +18,136 @@
 //! This module never writes. Loading candles for a computation is
 //! [`crate::repositories`]; this is the catalogue.
 
+use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
 
 use analytics_core::types::OrderBookSnapshot;
 use analytics_core::OrderBookLevel;
 
 use crate::error::DbError;
-use crate::repositories::{dt_to_ns, levels_from_json};
+use crate::repositories::{dt_to_ns, levels_from_json, ns_to_dt};
+
+/// Aggregated retained trade flow for one bar-sized bucket.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TradeFlowBucket {
+    /// Zero-based bucket offset from the requested window start.
+    pub bucket: i64,
+    /// Sum of stored trade quantities.
+    pub volume: f64,
+    /// Quantity from buyer-aggressed trades.
+    pub buy_volume: f64,
+    /// Quantity from seller-aggressed trades.
+    pub sell_volume: f64,
+    /// Number of retained trades in the bucket.
+    pub trade_count: i64,
+}
+
+/// Aggregate retained trades into timeframe-sized buckets without loading
+/// individual trades into the gateway process.
+///
+/// Empty buckets are omitted so callers can preserve missing-data semantics.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn trade_flow_buckets(
+    pool: &PgPool,
+    symbol: &str,
+    from_ns: i64,
+    to_ns: i64,
+    bucket_width_ns: i64,
+) -> Result<Vec<TradeFlowBucket>, DbError> {
+    if bucket_width_ns <= 0 || to_ns <= from_ns {
+        return Ok(Vec::new());
+    }
+
+    let rows = sqlx::query(
+        "SELECT FLOOR(EXTRACT(EPOCH FROM (ts - $2)) / $4)::BIGINT AS bucket, \
+                COALESCE(SUM(quantity), 0)::DOUBLE PRECISION AS volume, \
+                COALESCE(SUM(quantity) FILTER (WHERE NOT is_buyer_maker), 0)::DOUBLE PRECISION AS buy_volume, \
+                COALESCE(SUM(quantity) FILTER (WHERE is_buyer_maker), 0)::DOUBLE PRECISION AS sell_volume, \
+                COUNT(*)::BIGINT AS trade_count \
+         FROM trades \
+         WHERE symbol = $1 AND ts >= $2 AND ts < $3 \
+         GROUP BY bucket ORDER BY bucket",
+    )
+    .bind(symbol)
+    .bind(ns_to_dt(from_ns))
+    .bind(ns_to_dt(to_ns))
+    .bind(bucket_width_ns as f64 / 1_000_000_000.0)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(TradeFlowBucket {
+                bucket: row.try_get("bucket")?,
+                volume: row.try_get("volume")?,
+                buy_volume: row.try_get("buy_volume")?,
+                sell_volume: row.try_get("sell_volume")?,
+                trade_count: row.try_get("trade_count")?,
+            })
+        })
+        .collect()
+}
+
+/// Select the most recent retained order-book snapshot at or before each bar
+/// open, subject to a maximum age.
+///
+/// Results are aligned one-for-one with `bar_opens_ns`; bars without a fresh
+/// snapshot contain `None`.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails or [`DbError::InvalidConfig`]
+/// if a stored level payload cannot be decoded.
+pub async fn orderbooks_at(
+    pool: &PgPool,
+    symbol: &str,
+    bar_opens_ns: &[i64],
+    max_age_ns: i64,
+) -> Result<Vec<Option<OrderBookSnapshot>>, DbError> {
+    if bar_opens_ns.is_empty() || max_age_ns < 0 {
+        return Ok(vec![None; bar_opens_ns.len()]);
+    }
+    let bar_opens: Vec<DateTime<Utc>> = bar_opens_ns.iter().copied().map(ns_to_dt).collect();
+    let rows = sqlx::query(
+        "SELECT bar.open_time, snapshot.ts AS snapshot_ts, snapshot.bids, snapshot.asks \
+         FROM UNNEST($2::timestamptz[]) AS bar(open_time) \
+         LEFT JOIN LATERAL ( \
+             SELECT ts, bids, asks FROM orderbook_snapshots \
+             WHERE symbol = $1 AND ts <= bar.open_time \
+               AND ts >= bar.open_time - make_interval(secs => $3::double precision) \
+             ORDER BY ts DESC LIMIT 1 \
+         ) AS snapshot ON TRUE \
+         ORDER BY bar.open_time",
+    )
+    .bind(symbol)
+    .bind(bar_opens)
+    .bind(max_age_ns as f64 / 1_000_000_000.0)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let Some(timestamp) = row.try_get::<Option<DateTime<Utc>>, _>("snapshot_ts")? else {
+                return Ok(None);
+            };
+            let bids: serde_json::Value = row.try_get("bids")?;
+            let asks: serde_json::Value = row.try_get("asks")?;
+            let bids = serde_json::from_value(bids).map_err(|error| {
+                DbError::InvalidConfig(format!("invalid stored order-book bids: {error}"))
+            })?;
+            let asks = serde_json::from_value(asks).map_err(|error| {
+                DbError::InvalidConfig(format!("invalid stored order-book asks: {error}"))
+            })?;
+            Ok(Some(OrderBookSnapshot {
+                symbol: symbol.to_owned(),
+                timestamp: dt_to_ns(timestamp),
+                bids,
+                asks,
+            }))
+        })
+        .collect()
+}
 
 /// How much of one resolution is loaded for one symbol.
 #[derive(Debug, Clone, PartialEq, Eq)]

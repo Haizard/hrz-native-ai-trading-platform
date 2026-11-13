@@ -1,5 +1,6 @@
 [package]
 name = "api-gateway"
+default-run = "api-gateway"
 description = "Axum HTTP + WebSocket surface for the frontend."
 version.workspace = true
 edition.workspace = true

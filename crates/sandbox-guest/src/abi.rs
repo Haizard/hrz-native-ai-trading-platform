@@ -34,6 +34,7 @@ use std::cell::RefCell;
 use strategy_runtime::context::TimeframeView;
 
 use crate::interpret::{Header, Interpreter, MarketSource};
+use crate::pine::Request as PineRequest;
 
 /// Version of this ABI. Bump when the protocol changes incompatibly.
 const ABI_VERSION: u32 = 1;
@@ -70,6 +71,7 @@ thread_local! {
         interpreter: Interpreter::new(),
         error: Vec::new(),
     });
+    static PINE_RESULT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 impl Guest {
@@ -137,6 +139,54 @@ pub unsafe extern "C" fn sbx_free(ptr: u32, len: u32) {
         // SAFETY: this function's contract, plus the matching `layout`.
         dealloc(ptr as *mut u8, layout);
     }
+}
+
+/// Run one bounded Pine-Lite preview request.
+///
+/// The request and response travel through guest memory. The host supplies all
+/// market data; this module has no network, filesystem, or WASI imports.
+#[no_mangle]
+pub extern "C" fn pl_eval(ptr: u32, len: u32) -> i32 {
+    const MAX_REQUEST_BYTES: u32 = 64 * 1024 * 1024;
+    const MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
+
+    let response = if len > MAX_REQUEST_BYTES {
+        Err("the Pine-Lite request exceeds 64 MiB".to_string())
+    } else {
+        // SAFETY: the host allocates this range with `sbx_alloc` and passes
+        // its exact pointer and length.
+        let raw = unsafe { bytes(ptr, len) };
+        match serde_json::from_slice::<PineRequest>(raw) {
+            Ok(request) => crate::pine::execute(request),
+            Err(error) => Err(format!("invalid Pine-Lite request: {error}")),
+        }
+    };
+
+    let (code, result) = match response {
+        Ok(preview) => match serde_json::to_vec(&preview) {
+            Ok(bytes) if bytes.len() <= MAX_RESULT_BYTES => (0, bytes),
+            Ok(_) => (-1, b"the Pine-Lite preview output exceeds 4 MiB".to_vec()),
+            Err(error) => (
+                -1,
+                format!("could not serialize preview: {error}").into_bytes(),
+            ),
+        },
+        Err(error) => (-1, error.into_bytes()),
+    };
+    PINE_RESULT.with(|slot| *slot.borrow_mut() = result);
+    code
+}
+
+/// Pointer to the last Pine-Lite result or error message.
+#[no_mangle]
+pub extern "C" fn pl_result_ptr() -> u32 {
+    PINE_RESULT.with(|slot| slot.borrow().as_ptr() as u32)
+}
+
+/// Length of the last Pine-Lite result or error message.
+#[no_mangle]
+pub extern "C" fn pl_result_len() -> u32 {
+    PINE_RESULT.with(|slot| u32::try_from(slot.borrow().len()).unwrap_or(u32::MAX))
 }
 
 /// Load a strategy document. Returns 0 on success, -1 on failure.

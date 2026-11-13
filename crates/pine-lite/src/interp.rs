@@ -12,13 +12,61 @@
 //! native run and the sandboxed run byte-identical.
 
 use analytics_core::types::{Candle, Timeframe};
+use serde::{Deserialize, Serialize};
 
 use crate::parse::{Arg, BinOp, BlockKind, CmpOp, Expr, ExprKind, Item, Script, UnOp, VarMode};
 use crate::ta::{self, Series, NA};
 
+mod data_series_values {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S>(
+        values: &HashMap<String, Vec<f64>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        values
+            .iter()
+            .map(|(name, series)| {
+                (
+                    name,
+                    series
+                        .iter()
+                        .map(|value| value.is_finite().then_some(*value))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<HashMap<_, _>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<String, Vec<f64>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        HashMap::<String, Vec<Option<f64>>>::deserialize(deserializer).map(|values| {
+            values
+                .into_iter()
+                .map(|(name, series)| {
+                    (
+                        name,
+                        series
+                            .into_iter()
+                            .map(|value| value.unwrap_or(f64::NAN))
+                            .collect(),
+                    )
+                })
+                .collect()
+        })
+    }
+}
+
 /// Host-supplied input values, by variable name. Anything the script declares
 /// with `input.*` but the host does not supply runs on its declared default.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Inputs {
     /// Numeric inputs (`input.int` / `input.float`).
     pub numbers: std::collections::HashMap<String, f64>,
@@ -56,9 +104,11 @@ pub struct Inputs {
     /// Empty when the script names none. Cap: 8 keys (see `check_with_header`).
     pub series_pool: std::collections::HashMap<String, Vec<Candle>>,
     /// Host-supplied data series for `request.data("name")` (docs/23 Phase
-    /// 14): platform-native feeds (ticker fields, funding, OI) as per-bar
-    /// values aligned onto the chart's bars. A name the host did not fill
-    /// reads as the VM's data-missing error -- the truth, not a zero.
+    /// 14): platform-native feeds aligned onto the chart's bars. Non-finite
+    /// values serialize as JSON null and deserialize back to Pine `na`, so
+    /// missing coverage survives the guest ABI rather than becoming zero.
+    /// A name the host did not fill reads as a data-missing error.
+    #[serde(with = "data_series_values")]
     pub data_series: std::collections::HashMap<String, Vec<f64>>,
 }
 
@@ -542,8 +592,8 @@ pub fn run(
 /// A snapshot of per-variable series state at the end of a run, suitable for
 /// initializing an incremental run over additional bars (`run_incremental`).
 ///
-/// Captures the ring-buffer contents and carry-forward flags for every
-/// variable, so a streaming consumer can run the full history once, save the
+/// Captures the ring-buffer contents and carry-forward flags for numeric
+/// variables, so a streaming consumer can run the full history once, save the
 /// state, and then process each new bar without re-evaluating the whole
 /// window. Does **not** capture array heaps, drawing objects, or strategy
 /// account snapshots -- scripts that use those must re-run from scratch.
@@ -1322,6 +1372,7 @@ impl<'a> Vm<'a> {
             Item::Assign {
                 name,
                 mode,
+                decl_type,
                 expr,
                 op,
                 ..
@@ -1387,8 +1438,12 @@ impl<'a> Vm<'a> {
                 }
                 // A string right-hand side writes the string buffers, never
                 // the float ring: `s = "UP"`, `s := s + "!"`.
-                if self.expr_is_string(expr) {
-                    let value = self.eval_s(expr)?;
+                if decl_type.as_deref() == Some("string") || self.expr_is_string(expr) {
+                    let value = if matches!(expr.kind, ExprKind::Na) {
+                        None
+                    } else {
+                        Some(self.eval_s(expr)?)
+                    };
                     if *mode != VarMode::Auto && self.bar > 0 && self.str_vars.contains_key(name) {
                         return Ok(());
                     }
@@ -1396,7 +1451,7 @@ impl<'a> Vm<'a> {
                         .str_vars
                         .entry(name.clone())
                         .or_insert_with(|| vec![None; self.candles.len()]);
-                    buf[self.bar] = Some(value);
+                    buf[self.bar] = value;
                     self.str_vars_written
                         .entry(name.clone())
                         .or_insert_with(|| vec![false; self.candles.len()])[self.bar] = true;
@@ -3717,7 +3772,7 @@ impl<'a> Vm<'a> {
             ExprKind::Call { callee, .. } => {
                 matches!(
                     callee.as_str(),
-                    "str.tostring" | "str.format" | "array.join"
+                    "str.tostring" | "str.format" | "array.join" | "input.string"
                 )
             }
             ExprKind::Bin {
@@ -5316,15 +5371,21 @@ impl<'a> Vm<'a> {
 
     /// The string-expression evaluator: labels take TEXT, and text is a
     /// real expression now -- a quoted literal, `"..." + ...` concatenation,
-    /// `str.tostring(value)` / `str.tostring(value, "#.##")`, or
-    /// `str.format("{0} {1}", a, b)`. Strings are expression-level only in
-    /// v1: no variable holds one (the var buffers are float rings), so an
-    /// Ident here is a vet-time shape error, not a runtime one. A purely
-    /// numeric expression in a text slot is coerced with the plain tostring
-    /// -- convenient and unambiguous.
+    /// `str.tostring(value)` / `str.tostring(value, "#.##")`,
+    /// `str.format("{0} {1}", a, b)`, or a string-valued series variable. A
+    /// purely numeric expression in a text slot is coerced with plain
+    /// tostring -- convenient and unambiguous.
     fn eval_s(&mut self, e: &Expr) -> Result<String, crate::ScriptError> {
         match &e.kind {
             ExprKind::Str(s) => Ok(s.clone()),
+            ExprKind::Call { callee, args } if callee == "input.string" => {
+                let name = self.current_input_name.clone();
+                Ok(self.inputs.strings.get(&name).cloned().unwrap_or_else(|| {
+                    self.arg_str(args, "defval")
+                        .or_else(|| self.arg_str_pos(args, 0))
+                        .unwrap_or_default()
+                }))
+            }
             ExprKind::Bin { op: crate::parse::BinOp::Add(crate::parse::AddOp::Add), left, right } => {
                 Ok(format!("{}{}", self.eval_s(left)?, self.eval_s(right)?))
             }

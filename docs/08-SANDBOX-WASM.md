@@ -94,34 +94,47 @@ interpreter fuel meter bound ordinary script work, but they do not impose a
 memory ceiling or isolate a native interpreter/runtime fault from the service.
 This path is not the Wasmtime sandbox and must not be described as isolated.
 
-**Decision:** keep the existing preview limited to producing chart-preview
-results. Do not add live execution, trading capabilities, broader background
-execution, or new server-side script APIs on this native path. Before expanding
-server-side Pine-Lite execution, run the trusted Pine-Lite interpreter as
-WebAssembly inside Wasmtime and pass source, candles, and provider-backed
+**Decision:** keep Pine-Lite limited to producing chart-preview results, with no
+live execution, broker, or order-placement capability. The gateway now runs
+the trusted Pine-Lite interpreter as WebAssembly inside the existing Wasmtime
+host (`sandbox-guest::pine`), passing source, candles, and provider-backed
 series as bounded data. The guest receives no filesystem, network, environment,
-secret, broker, or order-placement capabilities; preview data is fetched by the
+secret, broker, or order-placement capability; preview data is fetched by the
 host and the guest only evaluates that snapshot.
+
+The gateway preflights no more than 50,000 chart candles, 100,000 total candle
+and provider values, eight secondary market pools, 64 provider series, and
+16 MiB of serialized input. The guest response is capped at 4 MiB; Wasmtime's
+default 64 MiB linear-memory limit, 100,000,000 fuel, and 250 ms epoch
+deadline apply. A gateway semaphore allows four active Pine preview jobs and
+rejects excess work instead of queueing it without bound. The guest returns
+reduced chart evidence, not its full per-bar plot buffers.
 
 The Wasmtime guest is an in-process WebAssembly boundary: its linear memory and
 imports are constrained, but it does not contain a Wasmtime or host integration
-vulnerability from the gateway's OS process. If the deployment threat model
-requires surviving a runtime/host compromise or running arbitrary scripts for
-untrusted multi-tenant callers, execute the sandbox in a separate worker
-process with OS-enforced memory/CPU limits and no ambient credentials or
-network access.
+vulnerability from the gateway's OS process. On Linux, server-side Pine-Lite
+previews therefore run in the packaged `pine-preview-worker` child executable.
+The gateway sends bounded length-prefixed JSON over stdin/stdout, clears each
+worker's environment, enforces per-request timeouts, and requires the worker's
+startup self-test to prove filesystem and network denial before serving.
+The worker installs Landlock and seccomp restrictions, disallows process
+creation and network syscalls, applies CPU/address-space/file/descriptor limits,
+handles at most 32 requests before recycling, and still applies Wasmtime's
+guest-level fuel, epoch, memory, and import limits.
+Landlock is installed before Wasmtime initialization so its epoch-ticker thread
+inherits filesystem denial; seccomp is synchronized to every worker thread.
+Missing kernel support or an unavailable worker is a startup error; Linux does
+not fall back to in-process preview execution. Non-Linux development currently
+uses the explicitly in-process Wasmtime backend.
 
-The Pine-Lite guest integration is not implemented yet. Its release gate must
-cover:
-
-- input byte, candle-count, timeframe-pool, and provider-series caps before
-  copying data into guest memory;
-- Wasmtime fuel, epoch deadline, and linear-memory limits, with guest startup
-  failures reported rather than silently dropping a limit;
-- bounded plot/drawing/error output and bounded concurrent preview jobs;
-- adversarial scripts for fuel exhaustion, memory growth, forbidden imports,
-  malformed input, and trap/error propagation, plus parity against the native
-  preview fixture.
+The guest integration is covered by `crates/sandbox/tests/pine_preview.rs` and
+`crates/sandbox-guest/src/pine.rs`: native-versus-guest evidence parity,
+invalid-source refusal, fuel exhaustion, input caps, module import allowlisting,
+and bounded output conversion. `cargo check -p pine-lite --target
+wasm32-unknown-unknown` preserves the browser build. These checks do not claim
+process isolation by themselves; the Linux child-process boundary and its
+kernel-policy probes are covered by the gateway worker integration tests and
+must pass on the deployment kernel.
 
 Existing evidence is deliberately kept separate: Pine-Lite's runaway-loop
 tests prove its interpreter fuel guard; `sandbox/tests/adversarial.rs` tests

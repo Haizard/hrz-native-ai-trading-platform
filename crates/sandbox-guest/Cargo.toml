@@ -23,6 +23,7 @@ strategy-runtime = { workspace = true }
 # parser, so a hostile document has no YAML surface to attack
 # (docs/08-SANDBOX-WASM.md).
 strategy-dsl = { workspace = true }
+pine-lite = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

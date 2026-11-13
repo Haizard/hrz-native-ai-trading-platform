@@ -77,6 +77,7 @@ pub mod orderflow_routes;
 pub mod parameter_sweep;
 pub mod pine_cheatsheet;
 pub mod pine_codegen;
+pub mod pine_preview_runner;
 pub mod plot;
 pub mod provider_routes;
 pub mod rate_limit;
@@ -234,6 +235,10 @@ pub struct AppState {
     /// both paper and live bots through [`PaperBot::sandboxed`] and
     /// [`LiveBot::sandboxed`] rather than through the native constructors.
     pub sandbox: Arc<sandbox::Sandbox>,
+    /// Dedicated executor for server-side Pine-Lite preview scripts.
+    pub pine_preview: Arc<dyn pine_preview_runner::PinePreviewExecutor>,
+    /// Bounds concurrent generated-script previews sharing the gateway host.
+    pub pine_preview_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// The audit event type an alert is written under.

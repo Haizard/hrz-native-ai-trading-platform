@@ -140,6 +140,21 @@ async fn main() -> anyhow::Result<()> {
         ),
     }
 
+    let sandbox = Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles"));
+    #[cfg(target_os = "linux")]
+    let pine_preview: Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor> = {
+        let worker = api_gateway::pine_preview_runner::PinePreviewWorker::from_env()?;
+        worker
+            .validate_isolation()
+            .await
+            .map_err(anyhow::Error::msg)?;
+        Arc::new(worker)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let pine_preview: Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor> = Arc::new(
+        api_gateway::pine_preview_runner::InProcessPinePreview::new(Arc::clone(&sandbox)),
+    );
+
     let state = AppState {
         econ: api_gateway::econ_routes::EconStore::default(),
         // Subscriptions need a store. Without one, billing routes say so and
@@ -180,7 +195,9 @@ async fn main() -> anyhow::Result<()> {
         binance_base_url: trading_engine::binance_base_url(),
         vault,
         alert_queue: alert_queue.clone(),
-        sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
+        sandbox,
+        pine_preview,
+        pine_preview_slots: Arc::new(tokio::sync::Semaphore::new(4)),
         tickers: Arc::new(tickers::TickerCache::new()),
     };
 

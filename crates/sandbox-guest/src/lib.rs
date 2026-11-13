@@ -35,6 +35,7 @@
 #![deny(missing_docs)]
 
 pub mod interpret;
+pub mod pine;
 
 #[cfg(target_arch = "wasm32")]
 mod abi;

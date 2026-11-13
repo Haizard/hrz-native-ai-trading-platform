@@ -40,7 +40,7 @@ capabilities     = { path = "crates/capabilities" }
 market-data      = { path = "crates/market-data" }
 # docs/23: the Pine-like scripting language. A leaf like analytics-core --
 # its only internal dependency is the math crate, and it must keep building
-# for wasm32 because the sandbox guest links it.
+# for wasm32 because the browser chart engine and preview guest link it.
 pine-lite        = { path = "crates/pine-lite" }
 # YAML is OFF by default across the workspace, and each crate opts in.
 #
@@ -107,6 +107,7 @@ anyhow    = "1"
 # --- logging / tracing ---
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+libc               = "0.2"
 
 # --- database ---
 sqlx = { version = "0.8", features = [

@@ -430,14 +430,25 @@ fn inputs_from_spec_with_window(
                 inputs.bools.insert(name.clone(), *b);
             }
             serde_json::Value::String(s) => {
-                // The VM grows a string evaluator when the language does; the
-                // map exists so that day needs no ABI change.
+                if let Some(color) = parse_input_color(s) {
+                    inputs.numbers.insert(name.clone(), f64::from(color));
+                }
                 inputs.strings.insert(name.clone(), s.clone());
             }
             _ => {}
         }
     }
     inputs
+}
+
+fn parse_input_color(value: &str) -> Option<u32> {
+    let hex = value.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(hex, 16)
+        .ok()
+        .map(|rgb| 0xFF00_0000 | rgb)
 }
 
 /// Vet and run one script: the shared front half of [`script_pane`] and
@@ -1742,6 +1753,7 @@ mod tests {
         let spec: ScriptSpec = serde_json::from_value(serde_json::json!({
             "source": src,
             "inputs": { "mult": "3", "on": 1 },
+
         }))
         .expect("the wire shape deserializes");
         let pane = script_pane(&spec, &candles, 10.0, &plot_rect()).expect("pane");
@@ -1750,6 +1762,25 @@ mod tests {
             "max={} -- a wrong-typed input was coerced",
             pane.value_max
         );
+    }
+
+    #[test]
+    fn color_inputs_from_the_settings_wire_reach_plot_rendering() {
+        let source = concat!(
+            "//@pine_lite version=1 overlay=false title=\"Color input\"\n",
+            "plot_color = input.color(defval=color.red, title=\"Line color\")\n",
+            "plot(close, color=plot_color)\n",
+        );
+        let spec: ScriptSpec = serde_json::from_value(serde_json::json!({
+            "source": source,
+            "inputs": { "plot_color": "#123abc" },
+        }))
+        .expect("the color setting should deserialize");
+        let candles = vec![candle(0, 100.0), candle(1, 101.0)];
+        let (_, parsed) = pine_lite::vet(source).expect("color input should vet");
+        let output = run(&parsed, &candles, &inputs_from_spec(&spec, "BTCUSDT"))
+            .expect("the selected color should execute");
+        assert_eq!(output.plots[0].color, 0xFF12_3ABC);
     }
 
     #[test]

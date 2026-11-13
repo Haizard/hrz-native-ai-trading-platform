@@ -25,6 +25,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+libc = { workspace = true }
 
 # `default-features = false` drops a lot: the component model, the async runtime,
 # the pooling allocator, the compilation cache, GC, threads, profiling and the
@@ -53,3 +54,4 @@ strategy-dsl = { workspace = true, features = ["yaml"] }
 # dev-dependency only, so the production graph keeps the documented rule that
 # `sandbox` depends on `strategy-runtime` and nothing above it.
 backtester = { workspace = true }
+pine-lite = { workspace = true }

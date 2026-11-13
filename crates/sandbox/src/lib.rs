@@ -85,6 +85,7 @@ pub mod host;
 pub mod instance;
 pub mod limits;
 pub mod strategy;
+pub mod worker;
 
 pub use allowlist::{check_module, is_allowed, ALLOWED_HOST_FUNCTIONS, ALLOWED_IMPORT_MODULE};
 pub use error::SandboxError;
@@ -93,6 +94,7 @@ pub use instance::{
     engine_config, guest_wasm, ResourceUsage, Sandbox, SandboxExecutionResult, Session, ABI_VERSION,
 };
 pub use limits::SandboxLimits;
+pub use sandbox_guest::pine::{Preview as PinePreview, Request as PinePreviewRequest};
 pub use strategy::SandboxedStrategy;
 
 /// The types most callers need.

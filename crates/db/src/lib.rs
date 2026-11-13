@@ -111,8 +111,8 @@ pub use live::{
 };
 pub use loading::{coverage, load_timeframe_series, warn_about_short_series, MIN_COVERAGE};
 pub use market::{
-    best_bid_ask, latest_orderbook, list_symbols, orderbook_snapshot_count, SymbolCoverage,
-    TimeframeCoverage,
+    best_bid_ask, latest_orderbook, list_symbols, orderbook_snapshot_count, orderbooks_at,
+    trade_flow_buckets, SymbolCoverage, TimeframeCoverage, TradeFlowBucket,
 };
 pub use models::Database;
 pub use paper::{

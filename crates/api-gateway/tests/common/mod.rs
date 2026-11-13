@@ -147,6 +147,8 @@ impl Harness {
             burst: RateLimit::default().burst,
         }));
         let metrics = Arc::new(Registry::new());
+        let sandbox =
+            Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles"));
         let state = AppState {
             econ: api_gateway::econ_routes::EconStore::default(),
             db: Some(Arc::new(database.clone())),
@@ -229,7 +231,11 @@ impl Harness {
             // which also keeps this path off the network entirely.
             tickers: Arc::new(tickers::TickerCache::new()),
             alert_queue: None,
-            sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
+            pine_preview: Arc::new(api_gateway::pine_preview_runner::InProcessPinePreview::new(
+                Arc::clone(&sandbox),
+            )),
+            sandbox,
+            pine_preview_slots: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         Some(Self {
             app: router(state),

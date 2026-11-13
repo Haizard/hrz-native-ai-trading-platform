@@ -7175,9 +7175,22 @@ function createChartPane(root, hooks = {}) {
             `<input type="number" step="${step}" data-input="${i}" value="${value}" /></label>`
           );
         }
-        // string/color inputs typecheck but the VM has no string evaluator
-        // yet: the row says so instead of offering a control that does
-        // nothing.
+        if (decl.kind === "color") {
+          const value = typeof current === "string" && /^#[0-9a-f]{6}$/i.test(current)
+            ? current
+            : "#94a3b8";
+          return (
+            `<label class="lsRow"><span>${label}</span>` +
+            `<input type="color" data-input="${i}" value="${value}" /></label>`
+          );
+        }
+        if (decl.kind === "string") {
+          const value = typeof current === "string" ? current : "";
+          return (
+            `<label class="lsRow"><span>${label}</span>` +
+            `<input type="text" data-input="${i}" value="${escapeHtml(value)}" /></label>`
+          );
+        }
         return `<label class="lsRow"><span>${label}</span><span class="muted">edited in code</span></label>`;
       })
       .join("");
@@ -7196,6 +7209,10 @@ function createChartPane(root, hooks = {}) {
         let applied;
         if (decl.kind === "bool") {
           applied = control.checked;
+        } else if (decl.kind === "color") {
+          applied = control.value;
+        } else if (decl.kind === "string") {
+          applied = control.value;
         } else {
           const value = parseFloat(control.value);
           // A half-typed number ("1e", "-") is not a value: keep the old one

@@ -31,6 +31,7 @@ const GUEST_SOURCES: &[&str] = &[
     "crates/strategy-runtime/src",
     "crates/strategy-dsl/src",
     "crates/analytics-core/src",
+    "crates/pine-lite/src",
 ];
 
 /// Manifests whose contents decide how the guest is built.
@@ -39,7 +40,9 @@ const GUEST_MANIFESTS: &[&str] = &[
     "crates/strategy-runtime/Cargo.toml",
     "crates/strategy-dsl/Cargo.toml",
     "crates/analytics-core/Cargo.toml",
+    "crates/pine-lite/Cargo.toml",
     "Cargo.toml",
+    "Cargo.lock",
 ];
 
 fn main() {

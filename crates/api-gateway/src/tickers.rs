@@ -350,6 +350,8 @@ mod tests {
     /// a test that unexpectedly fetches fails fast instead of passing.
     fn state_with(base_url: &str, cache: TickerCache) -> AppState {
         let supervisor = Arc::new(crate::bots::BotSupervisor::new(crate::bots::FeedMode::Off));
+        let sandbox =
+            Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles"));
         AppState {
             econ: crate::econ_routes::EconStore::default(),
             db: None,
@@ -389,7 +391,11 @@ mod tests {
             binance_base_url: base_url.to_string(),
             tickers: Arc::new(cache),
             vault: None,
-            sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
+            pine_preview: Arc::new(crate::pine_preview_runner::InProcessPinePreview::new(
+                Arc::clone(&sandbox),
+            )),
+            sandbox,
+            pine_preview_slots: Arc::new(tokio::sync::Semaphore::new(4)),
         }
     }
 

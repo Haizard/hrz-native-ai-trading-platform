@@ -19,20 +19,17 @@ RUN apt-get update \
 #
 # `crates/sandbox`'s build script compiles `sandbox-guest` to WASM and embeds
 # the module, so any build that reaches that crate needs this target installed.
-# The binaries built below (`api-gateway`, `xtask`) do not depend on `sandbox`
-# today, so this is not yet load-bearing -- but `trading-engine` does, and
-# `trading-engine` is what the gateway is for. Installing it here costs one
-# small layer and turns a future "nested cargo build failed with a confusing
-# message" into nothing at all.
+# The Linux Pine preview worker embeds the sandbox guest, so the wasm target is
+# required for both gateway and worker builds.
 RUN rustup target add wasm32-unknown-unknown
 
 COPY . .
 
-# Only the two binaries we actually deploy. sqlx uses the runtime query API
-# (not the `query!` macros), so no DATABASE_URL is needed at build time.
+# sqlx uses the runtime query API (not the `query!` macros), so no DATABASE_URL
+# is needed at build time.
 # `sqlx::migrate!` does embed migrations at compile time, which is why the
 # whole source tree is copied above rather than just the binary crates.
-RUN cargo build --release --locked --bin api-gateway --bin xtask
+RUN cargo build --release --locked --bin api-gateway --bin pine-preview-worker --bin xtask
 
 # ---------------------------------------------------------------------------
 
@@ -45,6 +42,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/api-gateway /usr/local/bin/api-gateway
+COPY --from=builder /app/target/release/pine-preview-worker /usr/local/bin/pine-preview-worker
 COPY --from=builder /app/target/release/xtask        /usr/local/bin/xtask
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

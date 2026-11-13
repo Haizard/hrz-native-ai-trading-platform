@@ -32,9 +32,10 @@ external projects as formula and API-design references; add no indicator or
 array dependency in this phase.
 
 This decision does not change the separate server-execution boundary:
-gateway preview remains preview-only and in-process until Pine-Lite executes
-inside a bounded Wasmtime guest under the gates recorded in
-[`docs/08`](./08-SANDBOX-WASM.md).
+gateway preview remains preview-only, with no live execution, broker, or
+order-placement capability. The Linux gateway runs the bounded Wasmtime guest
+in a restricted worker process under the gates recorded in
+[`docs/08`](./08-SANDBOX-WASM.md); non-Linux development remains in-process.
 
 ## Evidence and alternatives
 
@@ -91,12 +92,12 @@ version, MSRV, dependency tree, and license obligations.
 
 ### Isolation
 
-The existing Wasmtime strategy guest does not link Pine-Lite; gateway preview
-calls the native interpreter. Continue to treat preview as preview-only.
-Moving Pine-Lite server execution into Wasmtime is a separate, bounded
-isolation project, not a reason to replace the language runtime. The guest
-must preserve fuel, epoch, memory, import, and error controls and pass
-native/WASM equivalence and adversarial tests before broader execution.
+The existing Wasmtime strategy guest does not link Pine-Lite; the Pine preview
+guest is a separate Wasmtime module with the same language implementation.
+Linux gateway preview runs it in a restricted child process; non-Linux
+development remains in-process. Preview remains preview-only. Any broader
+server execution must preserve fuel, epoch, memory, import, process, and error
+controls and pass native/WASM equivalence and adversarial tests.
 
 ## Dependency, compatibility, and migration risks
 
@@ -116,9 +117,10 @@ native/WASM equivalence and adversarial tests before broader execution.
 - **Optimization:** Caching or precomputation can introduce stale state or
   lookahead. Cache only proven-pure computations over immutable inputs;
   define amend-last-bar and reset behavior for mutable streaming state.
-- **Isolation:** A Wasmtime guest is an in-process WebAssembly boundary, not
-  OS-process isolation. Do not treat this language-architecture decision as
-  approval to broaden server-side execution.
+- **Isolation:** Linux preview uses an OS-restricted worker around the
+  Wasmtime guest, while non-Linux development remains in-process. Neither
+  preview path grants broker or order-placement capabilities; this decision
+  does not approve broader server-side execution.
 
 ## Revisit criteria
 

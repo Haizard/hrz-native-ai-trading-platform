@@ -7,9 +7,8 @@ rust-version.workspace = true
 license.workspace = true
 
 # A leaf crate, like analytics-core: nothing internal except the math crate.
-# Keep it building for wasm32 for the browser chart engine. The strategy
-# sandbox guest does not link Pine-Lite; server preview still runs natively
-# until the guest-isolation work is complete. docs/23 is the language spec.
+# Keep it building for wasm32 for both the browser chart engine and the
+# bounded server-side preview guest. docs/23 is the language spec.
 [dependencies]
 analytics-core = { path = "../analytics-core" }
 serde = { workspace = true }

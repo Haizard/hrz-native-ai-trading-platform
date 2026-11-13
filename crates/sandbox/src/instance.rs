@@ -242,6 +242,203 @@ impl Sandbox {
             denials: session.denials().to_vec(),
         }
     }
+
+    /// Execute a Pine-Lite preview inside the bounded Wasmtime guest.
+    ///
+    /// The request contains only source plus host-fetched market data; the
+    /// guest has no market, network, filesystem, or trading host capability.
+    pub fn execute_pine_preview(
+        &self,
+        request: sandbox_guest::pine::Request,
+    ) -> Result<(sandbox_guest::pine::Preview, ResourceUsage), SandboxError> {
+        const MAX_CANDLES: usize = 50_000;
+        const MAX_TOTAL_SERIES_CANDLES: usize = 100_000;
+        const MAX_SERIES_POOLS: usize = 8;
+        const MAX_DATA_SERIES: usize = 64;
+        const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+        const MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
+
+        if request.candles.is_empty() || request.candles.len() > MAX_CANDLES {
+            return Err(SandboxError::Guest(format!(
+                "Pine-Lite preview requires 1..={MAX_CANDLES} chart candles"
+            )));
+        }
+        if request.inputs.series_pool.len() > MAX_SERIES_POOLS
+            || request.inputs.data_series.len() > MAX_DATA_SERIES
+        {
+            return Err(SandboxError::Guest(format!(
+                "Pine-Lite preview permits at most {MAX_SERIES_POOLS} market pools and {MAX_DATA_SERIES} provider series"
+            )));
+        }
+        let mut total_series_candles = request.candles.len();
+        for series in request
+            .inputs
+            .series_pool
+            .values()
+            .chain(std::iter::once(&request.inputs.security))
+        {
+            if series.len() > MAX_CANDLES {
+                return Err(SandboxError::Guest(format!(
+                    "a Pine-Lite market series exceeds {MAX_CANDLES} candles"
+                )));
+            }
+            total_series_candles = total_series_candles.saturating_add(series.len());
+        }
+        for series in request.inputs.data_series.values() {
+            if series.len() > MAX_CANDLES {
+                return Err(SandboxError::Guest(format!(
+                    "a Pine-Lite provider series exceeds {MAX_CANDLES} values"
+                )));
+            }
+            total_series_candles = total_series_candles.saturating_add(series.len());
+        }
+        if request.inputs.numbers.len() > 256
+            || request.inputs.bools.len() > 256
+            || request.inputs.strings.len() > 256
+        {
+            return Err(SandboxError::Guest(
+                "Pine-Lite preview input settings exceed 256 values per type".into(),
+            ));
+        }
+        if total_series_candles > MAX_TOTAL_SERIES_CANDLES {
+            return Err(SandboxError::Guest(format!(
+                "Pine-Lite preview market data exceeds {MAX_TOTAL_SERIES_CANDLES} candles"
+            )));
+        }
+
+        let payload = serde_json::to_vec(&request)
+            .map_err(|error| SandboxError::Instantiation(error.to_string()))?;
+        if payload.len() > MAX_REQUEST_BYTES {
+            return Err(SandboxError::Guest(format!(
+                "Pine-Lite preview input exceeds {MAX_REQUEST_BYTES} bytes"
+            )));
+        }
+
+        let state = HostState::new(self.limits);
+        let mut store = Store::new(&self.engine, state);
+        store.limiter(|state| state.limiter());
+        let mut linker: Linker<HostState> = Linker::new(&self.engine);
+        host::link(&mut linker).map_err(|error| SandboxError::Instantiation(error.to_string()))?;
+        let instance = linker
+            .instantiate(&mut store, &self.module)
+            .map_err(|error| SandboxError::Instantiation(error.to_string()))?;
+        let memory = instance
+            .get_memory(&mut store, "memory")
+            .ok_or_else(|| SandboxError::MissingExport("memory".into()))?;
+
+        store
+            .set_fuel(self.limits.fuel)
+            .map_err(|error| SandboxError::Instantiation(error.to_string()))?;
+        let deadline_ticks = u64::try_from(self.limits.timeout.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        store.set_epoch_deadline(deadline_ticks);
+        let started = Instant::now();
+
+        let result = (|| {
+            let alloc = instance
+                .get_typed_func::<i32, i32>(&mut store, "sbx_alloc")
+                .map_err(|_| SandboxError::MissingExport("sbx_alloc".into()))?;
+            let free = instance
+                .get_typed_func::<(i32, i32), ()>(&mut store, "sbx_free")
+                .map_err(|_| SandboxError::MissingExport("sbx_free".into()))?;
+            let eval = instance
+                .get_typed_func::<(i32, i32), i32>(&mut store, "pl_eval")
+                .map_err(|_| SandboxError::MissingExport("pl_eval".into()))?;
+            let result_ptr = instance
+                .get_typed_func::<(), i32>(&mut store, "pl_result_ptr")
+                .map_err(|_| SandboxError::MissingExport("pl_result_ptr".into()))?;
+            let result_len = instance
+                .get_typed_func::<(), i32>(&mut store, "pl_result_len")
+                .map_err(|_| SandboxError::MissingExport("pl_result_len".into()))?;
+
+            let payload_len = i32::try_from(payload.len())
+                .map_err(|_| SandboxError::Guest("Pine-Lite preview input is too large".into()))?;
+            let ptr = alloc.call(&mut store, payload_len).map_err(|error| {
+                classify_pine_error(&store, self.limits, &error, started.elapsed())
+            })?;
+            if ptr <= 0 {
+                return Err(SandboxError::MemoryLimitExceeded {
+                    limit: self.limits.max_memory_bytes,
+                });
+            }
+            memory
+                .write(&mut store, ptr as usize, &payload)
+                .map_err(|error| SandboxError::Trap(error.to_string()))?;
+
+            let code = eval.call(&mut store, (ptr, payload_len)).map_err(|error| {
+                classify_pine_error(&store, self.limits, &error, started.elapsed())
+            });
+            let code = match code {
+                Ok(code) => code,
+                Err(error) => {
+                    let _ = free.call(&mut store, (ptr, payload_len));
+                    return Err(error);
+                }
+            };
+            let output_ptr = result_ptr.call(&mut store, ()).map_err(|error| {
+                classify_pine_error(&store, self.limits, &error, started.elapsed())
+            })?;
+            let output_len = result_len.call(&mut store, ()).map_err(|error| {
+                classify_pine_error(&store, self.limits, &error, started.elapsed())
+            })?;
+            if output_ptr <= 0 || output_len < 0 || output_len as usize > MAX_RESULT_BYTES {
+                let _ = free.call(&mut store, (ptr, payload_len));
+                return Err(SandboxError::Guest(
+                    "the Pine-Lite guest returned an invalid or oversized result".into(),
+                ));
+            }
+            let start = output_ptr as usize;
+            let end = start.checked_add(output_len as usize).ok_or_else(|| {
+                SandboxError::Guest("the Pine-Lite guest result range overflowed".into())
+            })?;
+            let bytes = memory
+                .data(&store)
+                .get(start..end)
+                .ok_or_else(|| {
+                    SandboxError::Guest("the Pine-Lite guest result is out of bounds".into())
+                })?
+                .to_vec();
+            free.call(&mut store, (ptr, payload_len)).map_err(|error| {
+                classify_pine_error(&store, self.limits, &error, started.elapsed())
+            })?;
+            if code != 0 {
+                let message = String::from_utf8_lossy(&bytes).into_owned();
+                return Err(SandboxError::Guest(message));
+            }
+            let preview = serde_json::from_slice(&bytes).map_err(|error| {
+                SandboxError::Guest(format!("invalid Pine-Lite guest response: {error}"))
+            })?;
+            Ok(preview)
+        })();
+
+        let remaining = store.get_fuel().unwrap_or(0);
+        let usage = ResourceUsage {
+            fuel_budget: self.limits.fuel,
+            fuel_consumed: self.limits.fuel.saturating_sub(remaining),
+            elapsed: started.elapsed(),
+            memory_bytes: memory.data_size(&store),
+        };
+        result.map(|preview| (preview, usage))
+    }
+}
+
+fn classify_pine_error(
+    store: &Store<HostState>,
+    limits: SandboxLimits,
+    error: &wasmtime::Error,
+    elapsed: Duration,
+) -> SandboxError {
+    if store.get_fuel().is_ok_and(|fuel| fuel == 0) {
+        return SandboxError::FuelExhausted {
+            used: limits.fuel,
+            budget: limits.fuel,
+        };
+    }
+    if elapsed >= limits.timeout {
+        return SandboxError::Timeout(limits.timeout);
+    }
+    SandboxError::Trap(error.to_string())
 }
 
 /// A live sandboxed interpreter, holding its state across many candles.

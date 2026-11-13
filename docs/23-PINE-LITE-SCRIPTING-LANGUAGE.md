@@ -16,9 +16,13 @@ vocabulary:
 - **The platform vets scripts.** Static validation (parse, type check, limits)
   and runtime budgets refuse invalid or resource-heavy code before it draws.
   Current status: the browser chart engine runs Pine-Lite in its WASM artifact;
-  gateway preview runs the metered interpreter in-process. The server-side
-  `sandbox-guest` currently serves the Strategy DSL and does not link
-  `pine-lite`, so Pine-Lite guest isolation remains pending.
+  gateway preview runs the interpreter in the Wasmtime `sandbox-guest` with
+  fuel, epoch, memory, request/response, and concurrent-job limits. On Linux,
+  the gateway invokes a separate worker process with Landlock/seccomp and
+  OS resource limits; unsupported isolation fails closed. Non-Linux
+  development remains in-process. The guest receives only host-fetched data
+  and has no network, filesystem, broker, or order-placement capability; see
+  `docs/08-SANDBOX-WASM.md`.
 - **Arbitrary plots.** `plot()`, `plotshape()`, `plotchar()`, `hline()`,
   `fill()`, and annotations, on the price pane (`overlay=true`) or in their own
   sub-pane, with per-plot inputs.
@@ -69,12 +73,14 @@ pine-lite -> analytics-core
 chart-engine -> pine-lite
 api-gateway -> pine-lite
 backtester -> pine-lite
+sandbox-guest -> pine-lite
+sandbox -> sandbox-guest (Wasmtime host)
 ```
 
-`sandbox-guest` currently depends on `strategy-runtime` and `strategy-dsl`, not
-`pine-lite`. Whether to add a Pine-Lite guest front-end or retain the
-fuel-metered in-process gateway preview is an open isolation decision; do not
-describe the current preview path as WASM-sandboxed.
+`sandbox-guest` also contains the existing strategy interpreter. Pine-Lite
+previews use the same Wasmtime host; on Linux, the additional worker process
+isolates that host from the gateway process. Non-Linux development continues
+to use an in-process WebAssembly boundary; see `docs/08-SANDBOX-WASM.md`.
 
 `ai-agent` must never depend on `pine-lite` (its rule stands): the AI emits
 *text*; the gateway calls `pine-lite` to vet it. `analytics-core` is the
@@ -253,13 +259,27 @@ and timeframe must be quoted literals, the pool caps at 8 keys per script.
   `quote_volume`, `high`, `low`, `last`) as one point-in-time ticker snapshot
   repeated over the requested window. `funding` and `oi` use provider points
   carried forward to chart bars by timestamp; bars before the first point are
-  `na`. A feed the host did not supply raises a runtime missing-data error;
-  it never silently becomes zero.
-- Pine-Lite currently exposes candle OHLCV, not `Candle.buy_volume` /
-  `sell_volume`, individual trades, order-book depth, or footprint levels.
-  The Rust candle type's buy/sell split is not by itself a script capability.
-  No new order-flow API is specified here: add one only with a real provider,
-  timestamp/coverage semantics, and executable conformance tests.
+  `na`. For the chart symbol only, `buy_volume`, `sell_volume`, and
+  `volume_delta` use the aligned candle split, when the loaded window contains
+  split-volume data. A feed the host did not supply raises a runtime
+  missing-data error; it never silently becomes zero. Split quality is
+  provider-specific: Binance klines expose a real taker-buy split, while
+  Bybit's REST candle split is direction-attributed from candle direction and
+  is not an aggressor-side measurement.
+- `trade_volume`, `trade_buy_volume`, `trade_sell_volume`, `trade_delta`, and
+  `trade_count` aggregate retained trade records into chart bars. Stored
+  records are queried by bar bucket; the live tape overlays its covered bars.
+  Bars without an observation remain `na`, not zero. History is limited to
+  what collectors/backfills actually persisted and the database retention
+  window; the current storage key is symbol-based, and the series is not yet a
+  provider-neutral input contract for external backtests. No Deriv tick is
+  reclassified as an execution.
+- The chart symbol's retained order-book snapshots supply `book_bid_depth`,
+  `book_ask_depth`, `book_imbalance`, `book_spread`, and `book_mid`. Depth
+  sums the levels in the actual stored snapshot; the other fields use the best
+  bid and ask. The newest snapshot at or before each chart bar's open is used
+  and expires after 30 seconds; unavailable or stale bars are `na`. These are
+  captured observations, not reconstructed order-book depth or footprint levels.
 
 ## Builtin namespaces
 
@@ -377,10 +397,12 @@ script" for code-first workspaces:
 2. Gateway vets it through layers 1–3 and returns the **full error list**.
 3. The agent re-prompts with the script + errors, up to 5 attempts — the
    existing `max_attempts`/`repaired_errors` loop, unchanged in shape.
-4. The vetted script runs through the fuel-metered interpreter in the gateway
-   process over the preview window (7 days, the same `indicator_preview`
-   path), producing plot series and the evidence preview. This path is not
-   currently executed in `sandbox-guest`.
+4. The vetted script runs in the Pine-Lite `sandbox-guest` over the preview
+   window (7 days, the same `indicator_preview` path), producing bounded
+   chart evidence. The gateway fetches data and enforces input, output, and
+   concurrency limits; the guest has no network, filesystem, or trading
+   capabilities. Linux previews additionally run in a restricted worker
+   process; other development platforms use the in-process Wasmtime host.
 5. Revision stored with `status: validated|rejected`, exactly like today.
 
 Because the validator is deterministic, "the platform vets scripts" is not a
@@ -400,8 +422,10 @@ backtest, or a bot.
 - Requests grow a `scripts: [{ id, source, inputs }]` field; the engine
   currently vets and interprets scripts when building each scene; it does not
   cache a compiled script by source hash. The current settings popover edits
-  boolean and numeric inputs; string/color declarations are shown as
-  code-only.
+  boolean, numeric, color, and string inputs. The VM supports top-level
+  string-valued assignments, concatenation, history reads, and host-supplied
+  `input.string` values. Strings are not yet supported as user-function
+  parameters/returns or UDT fields; string `na` propagation is incomplete.
 
 ## Phased plan
 
@@ -414,9 +438,9 @@ backtest, or a bot.
 | 5 | Quantitative standard library: complete advertised `ta.*` surface | Numeric fixtures, complete catalog metadata, and AI-reference coverage | **done** for every advertised builtin — numeric tests in `crates/pine-lite/src/ta.rs` and `tests/ta_ohlcv_pack.rs`, completeness checks in `builtins.rs`, and prompt discovery coverage in `crates/api-gateway/src/pine_codegen.rs`. This is not the full TradingView Pine API. |
 | 6 | Plot statements → `ScriptPane` output contract | Positioning tests in chart-engine | **done** for current plot/drawing types — projection tests in `frontend/chart-engine/src/script.rs` and `scene.rs`; frontend painter in `frontend/app/app.js`. |
 | 7 | Strategy calls → backtester replay intents | Pine execution and `ScriptStrategy` replay agree on supported intents; runtime failures are observable | **done** for the adapter's supported intents — `crates/backtester/src/script_strategy.rs` and `crates/backtester/tests/script_parity.rs`; runtime failures now abort replay with diagnostics. |
-| 8 | Static analyser + sandbox front-end + fuel budgets | Adversarial tests mirror docs/08's list | **partial** — Pine-Lite static limits and fuel/call/array/object guards are in `crates/pine-lite/src/limits.rs` and `interp.rs`, with runaway-loop tests in `tests/model_ergonomics.rs`. The gateway still invokes native `pine_lite::run`; Pine-Lite is not in the Wasmtime guest. See the isolation decision in `docs/08-SANDBOX-WASM.md`. |
-| 9 | Gateway: `/scripts/*` routes, workspace language switch, AI loop | `indicator_workspace_flow`-style gateway tests | **partial** — `/scripts/vet`, generation/edit/repair/preview, and revision storage are implemented in `crates/api-gateway/src/script_routes.rs` and `indicator_workspace_routes.rs`, covered by `indicator_workspace_flow.rs` and `indicator_preview_flow.rs`. Strategy-document and Pine-Lite code representations use distinct flows; no single in-place workspace language switch was found. |
-| 10 | Chart engine + shell: rendering, inputs UI, pane management | Shell check script + visual parity vs RSI sub-pane | **partial** — render/projection and layer tests are in `frontend/chart-engine/src/script.rs` and `scene.rs`; layer controls and boolean/numeric settings are in `frontend/app/app.js`. String/color settings and full pane/visual acceptance remain open. |
+| 8 | Static analyser + sandbox front-end + fuel budgets | Adversarial tests mirror docs/08's list | **implemented; Linux runtime verification pending** — the gateway runs Pine-Lite in `sandbox-guest` under Wasmtime fuel, epoch, and linear-memory limits, then executes it in recycled worker processes with Landlock, thread-synchronized seccomp, OS resource limits, bounded IPC, and fail-closed startup validation. Wasm parity/adversarial tests are in `crates/sandbox/tests/pine_preview.rs`; the Linux-only process-policy probe is in `crates/api-gateway/tests/pine_preview_worker.rs` and must pass on the deployment kernel. Non-Linux development uses the in-process backend. |
+| 9 | Gateway: `/scripts/*` routes, workspace language switch, AI loop | `indicator_workspace_flow`-style gateway tests | **done for the indicator path; distinct strategy flow is intentional** — `/scripts/vet`, generation/edit/repair/preview, and revision storage live in `crates/api-gateway/src/script_routes.rs` and `indicator_workspace_routes.rs`; generated previews use the isolated guest. Indicator workspaces use Pine-Lite, while strategy-document workspaces use the Strategy DSL; there is no implicit in-place conversion between these different contracts. |
+| 10 | Chart engine + shell: rendering, inputs UI, pane management | Shell check script + visual parity vs RSI sub-pane | **partial** — render/projection and layer controls are implemented; boolean/numeric/color/string settings are editable in the shell. The VM supports top-level string assignment, concatenation, history, and host-supplied `input.string`, but not string parameters/returns, UDT fields, or complete string-`na` semantics. Full visual acceptance remains open. |
 
 Phases 1–5 are the language core and land as one reviewable unit; 6–8 make it
 visible and safe; 9–10 wire it to users.
@@ -432,7 +456,7 @@ limitations remain explicit even when the language construct itself is tested.
 | 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", expression)`, keyed host pools, eight-key cap, and `sec=` shorthand. | **partial** — literal collection, cap, raw source fetching, timestamp merge, and chart-engine paths exist in `crates/pine-lite/src/typecheck.rs`, `interp.rs`, `crates/api-gateway/src/indicator_preview.rs`, and `frontend/chart-engine/src/script.rs`. Sub-VM history/rolling evaluation advances once per source candle, missing source bars carry only the last revealed value, and an unfinished final bucket is not revealed. Runtime tests cover cadence and sparse source bars; the chart engine tests raw-history warm-up for a zoomed window. Broader chart-preview/renderer visual acceptance remains open. |
 | 12 | **User-defined functions** with typed call sites, series-passing semantics, and recursion limits. | **done** — parser/checker/runtime in `parse.rs`, `typecheck.rs`, and `interp.rs`; `tests/user_functions.rs` covers execution, TA composition, arity, and recursion refusal. |
 | 13 | **Drawing objects** with bounded VM heap and chart-coordinate projection. | **done** for implemented line/label/box/Fibonacci objects — `tests/drawing_objects.rs`, `frontend/chart-engine/src/scene.rs` projection tests, and `frontend/app/app.js` painter. This does not imply every requested visualization type exists. |
-| 14 | **Provider-backed `request.data`** for ticker snapshots and timestamped funding/open-interest series. Generic HTTP is explicitly not part of this phase. | **done** for the supported provider fields — collection/runtime behavior in `typecheck.rs` and `interp.rs`, gateway loading in `indicator_preview.rs`, and `tests/request_data.rs`. Missing feeds fail visibly; generic HTTP remains unimplemented and permission-gated future work. |
+| 14 | **Provider-backed `request.data`** for ticker snapshots, timestamped futures series, and captured flow/depth. Generic HTTP is explicitly not part of this phase. | **partial** — ticker/funding/OI and trade/book series are implemented in `indicator_preview.rs`; trade flow aggregates retained database records and overlays covered live ticks, while depth reads stored snapshots as-of each bar. Availability depends on collector/backfill coverage and retention. Provider identity in persistent flow storage and an external-backtest data contract remain open. Missing feeds remain visible; generic HTTP is permission-gated future work. |
 | 15 | **v1.1 expressiveness**: `while`, user-function parameter defaults, and 256-object cap. | **done** — implementation in `interp.rs`, `limits.rs`, and `typecheck.rs`; behavior and runaway-loop coverage in `tests/model_ergonomics.rs`, with the heap cap in `tests/drawing_objects.rs`. |
 | 16 | **Time-anchored drawings** and aligned-secondary `request.time()`. | **partial** — VM and chart time-coordinate mapping are tested in `tests/time_anchored_objects.rs` and `frontend/chart-engine/src/scene.rs`; aligned script series now retain source timestamps, including MTF pool bars. Broader chart-preview/renderer visual acceptance remains open. |
 | 17 | **Optional box borders** with backward-compatible serialization. | **done** — constructor/runtime and wire behavior are covered by `tests/drawing_objects.rs` and `frontend/chart-engine/src/scene.rs`; unset borders preserve the fill-only rendering. |
@@ -444,17 +468,15 @@ the quantitative standard library. Phase 14 is provider-backed data only;
 generic HTTP remains out of scope until permissions, response-size caps, and
 caching are designed and tested.
 
-## Implementation notes (2026-09)
+## Implementation notes (2026-11)
 
 Decisions the code made that the spec above only implied:
 
-- **The VM provides budgets, not process isolation.** The interpreter meters
-  itself: `FUEL_PER_1000_BARS` (200k steps per 1000 bars) bounds total work,
-  `MAX_CALL_DEPTH` (16) refuses recursion, zero-step `for` loops do not run,
-  and a script that exceeds fuel is an error, never a half-drawn pane. Gateway
-  preview still executes this VM in-process; the separate server-side WASM
-  guest integration remains pending and must be designed before claiming
-  process isolation for untrusted scripts.
+- **Linux server previews use OS-process isolation.** The interpreter meters
+  itself, and the Wasmtime guest adds fuel, epoch, and linear-memory limits
+  plus an import allowlist. Linux production uses a separate restricted worker;
+  startup fails if the worker or kernel policies are unavailable. Non-Linux
+  development remains in-process and does not provide that OS boundary.
 - **hline acts once.** `hline()` has no series; running it per bar would
   collect one level per bar. It acts at bar 0 only, like Pine's global
   declarations.

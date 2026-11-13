@@ -2618,6 +2618,8 @@ version = "0.1.0"
 dependencies = [
  "analytics-core",
  "backtester",
+ "libc",
+ "pine-lite",
  "sandbox-guest",
  "serde",
  "serde_json",
@@ -2633,6 +2635,7 @@ name = "sandbox-guest"
 version = "0.1.0"
 dependencies = [
  "analytics-core",
+ "pine-lite",
  "serde",
  "serde_json",
  "strategy-dsl",

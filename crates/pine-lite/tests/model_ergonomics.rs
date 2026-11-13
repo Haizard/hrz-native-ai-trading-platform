@@ -75,6 +75,76 @@ fn a_typed_var_declaration_parses_as_a_plain_one() {
 }
 
 #[test]
+fn string_inputs_and_series_variables_can_be_reassigned_and_rendered() {
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"strings\"\n",
+        "string status = input.string(defval=\"WAIT\", title=\"Status\")\n",
+        "status := status + \"!\"\n",
+        "label.new(bar_index, high, status)\n",
+        "plot(close)\n",
+    );
+    let (_, parsed) = vet(src).expect("string input and reassignment vet");
+    let mut inputs = Inputs::default();
+    inputs.strings.insert("status".into(), "READY".into());
+    let output = pine_lite::run(&parsed, &candles(2), &inputs).expect("string run");
+    let labels: Vec<_> = output
+        .objects
+        .iter()
+        .filter_map(|object| match object {
+            pine_lite::ScriptObject::Label { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels, vec!["READY!", "READY!"]);
+
+    let defaults =
+        pine_lite::run(&parsed, &candles(1), &Inputs::default()).expect("string input default");
+    assert!(matches!(
+        defaults.objects.first(),
+        Some(pine_lite::ScriptObject::Label { text, .. }) if text == "WAIT!"
+    ));
+}
+
+#[test]
+fn missing_request_data_values_roundtrip_as_pine_na() {
+    let mut inputs = Inputs::default();
+    inputs
+        .data_series
+        .insert("BTCUSDT.trade_delta".into(), vec![1.0, f64::NAN, -2.0]);
+
+    let encoded = serde_json::to_vec(&inputs).expect("inputs serialize through the guest ABI");
+    let decoded: Inputs =
+        serde_json::from_slice(&encoded).expect("inputs deserialize through the guest ABI");
+    let values = &decoded.data_series["BTCUSDT.trade_delta"];
+    assert_eq!(values[0], 1.0);
+    assert!(values[1].is_nan());
+    assert_eq!(values[2], -2.0);
+}
+
+#[test]
+fn string_series_history_reads_the_prior_bar_value() {
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"string history\"\n",
+        "string status = \"A\"\n",
+        "if bar_index > 0\n",
+        "    status := status[1] + \"!\"\n",
+        "label.new(bar_index, high, status)\n",
+        "plot(close)\n",
+    );
+    let (_, parsed) = vet(src).expect("string history vets");
+    let output = pine_lite::run(&parsed, &candles(3), &Inputs::default()).expect("string run");
+    let labels: Vec<_> = output
+        .objects
+        .iter()
+        .filter_map(|object| match object {
+            pine_lite::ScriptObject::Label { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels, vec!["A", "A!", "A!!"]);
+}
+
+#[test]
 fn a_bare_equals_in_a_comparison_reads_as_eq() {
     let src = concat!(
         "//@pine_lite version=1 overlay=false title=\"t\"\n",
