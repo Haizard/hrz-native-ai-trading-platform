@@ -210,6 +210,17 @@ infer gateway/browser/backtester parity from a Pine-Lite unit test alone.
    arguments and an undefined `htf_open`. These are model/provider failures,
    not accepted results. The repair-path classification was fixed as a
    consequence (§"AI integration" matrix row); visual acceptance remains open.
+
+   **Later the same day:** the primary provider was switched to a user-supplied
+   OpenAI-compatible endpoint (`zai-org/GLM-5.3`). Direct chat completions,
+   including a 22K-token prompt, answer in ~10s, but the same model returns
+   `Overloaded` when a tool definition is present, and the gateway's agent run
+   timed out at 600s with a transport failure. The key is configured locally
+   only (`.env`, gitignored); no credential is recorded here. Separately, the
+   earlier fuel failure is now closed: the Wasmtime budget is 250M and MTF
+   scripts preview over 3 days, so the gold-scalp fixture produces 60 boxes
+   and 60 labels with no truncation, and a sparse stored pool is no longer
+   discarded when venue backfill fails.
 3. **Execution-parity and error handling.** Pine script runtime failures abort
    replay with their interpreter diagnostic. A shared, deterministic drawing
    fixture now verifies preview statistics, chart-engine projection, and
