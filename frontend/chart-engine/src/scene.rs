@@ -45,7 +45,7 @@ use analytics_core::volume_profile::{
     calculate_session_bayesian_profile, calculate_volume_profile_from_candles, VolumeProfile,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::drawing::{
     Anchor, Drawing, Fraction, Overlay, PlacedTimePrice, SceneDrawing, SceneOverlay, ScenePoint,
@@ -3482,7 +3482,46 @@ pub fn build(request: &Request) -> Scene {
         };
         add_note(&mut scene.note, message.into());
     }
+    disambiguate_script_ids(&mut scene);
     scene
+}
+
+/// Make every script-derived id unique within a scene.
+///
+/// Titles are user-facing and not unique: two workspaces can both attach a
+/// script titled "OB". The ids are keys (`script:{title}`, `equity:{title}`),
+/// so a collision would make the shell's legend/chip state and later engine
+/// lookups address the wrong layer. First occurrence keeps the plain id;
+/// later ones gain `~2`, `~3`, ... in deterministic scene order.
+fn disambiguate_script_ids(scene: &mut Scene) {
+    let mut used: HashSet<String> = HashSet::new();
+    fn unique(used: &mut HashSet<String>, id: &mut String) {
+        if used.insert(id.clone()) {
+            return;
+        }
+        let base = id.clone();
+        let mut n = 2usize;
+        loop {
+            let candidate = format!("{base}~{n}");
+            if used.insert(candidate.clone()) {
+                *id = candidate;
+                return;
+            }
+            n += 1;
+        }
+    }
+    for overlay in &mut scene.script_overlays {
+        unique(&mut used, &mut overlay.id);
+    }
+    for pane in &mut scene.script_panes {
+        unique(&mut used, &mut pane.id);
+    }
+    for layer in &mut scene.strategy_layers {
+        unique(&mut used, &mut layer.id);
+    }
+    for pane in &mut scene.equity_panes {
+        unique(&mut used, &mut pane.id);
+    }
 }
 
 /// Height of each requested sub-pane, in request order.
@@ -8224,6 +8263,38 @@ mod tests {
         assert_eq!(boxes.len(), 1, "the visible HTF gap must still draw");
         assert!(boxes[0].0 >= scene.plot.x && boxes[0].1 <= scene.plot.x + scene.plot.w);
         assert!(boxes[0].1 > boxes[0].0);
+    }
+
+    #[test]
+    fn two_scripts_with_the_same_title_get_distinct_ids() {
+        let source = |overlay: bool| crate::script::ScriptSpec {
+            source: format!(
+                "//@pine_lite version=1 overlay={overlay} title=\"Same\"\nplot(close)\n"
+            ),
+            inputs: Default::default(),
+            security: Vec::new(),
+            series_pool: Default::default(),
+            data_series: Default::default(),
+        };
+        let mut request = request(40);
+        request.scripts = vec![source(true), source(true)];
+        let scene = build(&request);
+        let ids: Vec<&str> = scene
+            .script_overlays
+            .iter()
+            .map(|overlay| overlay.id.as_str())
+            .collect();
+        assert_eq!(ids, ["script:Same", "script:Same~2"]);
+
+        // The same rule holds for pane ids and the strategy/equity pair.
+        request.scripts = vec![source(false), source(false)];
+        let scene = build(&request);
+        let ids: Vec<&str> = scene
+            .script_panes
+            .iter()
+            .map(|pane| pane.id.as_str())
+            .collect();
+        assert_eq!(ids, ["script:Same", "script:Same~2"]);
     }
 
     #[test]

@@ -1890,6 +1890,39 @@ mod tests {
     }
 
     #[test]
+    fn deleted_drawings_do_not_reach_the_wire() {
+        let frame = crate::scene::Frame {
+            plot: plot_rect(),
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 99.0,
+            price_max: 111.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "var b = na\n",
+            "var l = na\n",
+            "if bar_index == 0\n",
+            "    b := box.new(5, 104.0, 10, 102.0, color=color.green)\n",
+            "    l := label.new(6, 103.0, \"gone\", color=color.red)\n",
+            "if bar_index == 1\n",
+            "    box.delete(b)\n",
+            "    label.delete(l)\n",
+            "    line.new(5, 100.0, 25, 110.0, color=color.blue)\n",
+            "plot(close)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        assert_eq!(output.objects.len(), 1, "the deleted pair is gone");
+        let objects = scene_overlay_objects(&output, 10.0, &frame);
+        assert_eq!(objects.len(), 1);
+        assert!(matches!(objects[0], ScriptDraw::Line { .. }));
+    }
+
+    #[test]
     fn prompt1_top_down_script_projects_both_closed_timeframe_zones() {
         const SOURCE: &str = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2003,6 +2036,122 @@ mod tests {
             "one positioned zone for each timeframe: {draws:?}"
         );
         assert_eq!(labels, ["15m FVG", "1h FVG"]);
+        for (x1, y1, x2, y2) in boxes {
+            assert!(x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite());
+            assert!(x1 >= frame.plot.x && x1 < frame.plot.x + frame.plot.w);
+            assert!(y1 < y2, "higher zone prices map higher on canvas");
+        }
+    }
+
+    #[test]
+    fn prompt2_gold_scalp_script_projects_the_block_and_the_inverse_gap() {
+        const SOURCE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-fixtures/light-pine/gold_scalp_zones.pine"
+        ));
+        let bar_nanos = 300_000_000_000i64;
+        let start = 1_700_000_000_000_000_000i64;
+        let mk = |i: usize, open: f64, high: f64, low: f64, close: f64| Candle {
+            symbol: "XAUUSD".into(),
+            timeframe: Timeframe::M5,
+            open_time: start + i as i64 * bar_nanos,
+            open,
+            high,
+            low,
+            close,
+            volume: 1.0,
+            buy_volume: 0.5,
+            sell_volume: 0.5,
+        };
+        let mut candles: Vec<Candle> = (0..60).map(|i| mk(i, 100.0, 101.0, 99.0, 100.0)).collect();
+        candles[10] = mk(10, 110.0, 111.0, 110.0, 110.5);
+        candles[11] = mk(11, 110.5, 111.5, 110.2, 111.0);
+        candles[12] = mk(12, 108.0, 109.5, 107.0, 108.5);
+        for i in 13..20 {
+            candles[i] = mk(i, 108.0, 108.5, 107.0, 108.0);
+        }
+        candles[20] = mk(20, 108.0, 113.5, 107.5, 113.0);
+
+        let htf: [(f64, f64, f64, f64); 20] = [
+            (100.0, 102.0, 98.0, 100.5),
+            (100.5, 103.0, 100.0, 101.0),
+            (101.0, 103.5, 100.5, 101.5),
+            (101.5, 102.0, 99.0, 100.0),
+            (100.0, 101.0, 96.0, 101.0),
+            (101.0, 104.5, 100.5, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+        ];
+        let pool15: Vec<Candle> = (0..60)
+            .map(|i| {
+                let period = i / 3;
+                let (open, high, low, close) = htf[period];
+                Candle {
+                    symbol: "XAUUSD".into(),
+                    timeframe: Timeframe::M15,
+                    open_time: start + (period * 3) as i64 * bar_nanos,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume: 1.0,
+                    buy_volume: 0.5,
+                    sell_volume: 0.5,
+                }
+            })
+            .collect();
+        let mut series_pool = std::collections::HashMap::new();
+        series_pool.insert("XAUUSD@15M".into(), pool15);
+        let spec = ScriptSpec {
+            source: SOURCE.into(),
+            inputs: Default::default(),
+            security: Vec::new(),
+            series_pool,
+            data_series: Default::default(),
+        };
+        let (header, parsed) = pine_lite::vet(SOURCE).expect("fixture vets");
+        let output =
+            run(&parsed, &candles, &inputs_from_spec(&spec, "XAUUSD")).expect("fixture runs");
+        assert!(header.overlay, "the output is an overlay");
+
+        let frame = crate::scene::Frame {
+            plot: plot_rect(),
+            from: start,
+            to: start + 60 * bar_nanos,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let draws = scene_overlay_objects(&output, 10.0, &frame);
+        let boxes: Vec<_> = draws
+            .iter()
+            .filter_map(|draw| match draw {
+                ScriptDraw::Box { x1, y1, x2, y2, .. } => Some((*x1, *y1, *x2, *y2)),
+                _ => None,
+            })
+            .collect();
+        let labels: Vec<_> = draws
+            .iter()
+            .filter_map(|draw| match draw {
+                ScriptDraw::Label { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(boxes.len(), 2, "block plus inverse gap: {draws:?}");
+        assert_eq!(labels, ["HTF OB", "IFVG"]);
         for (x1, y1, x2, y2) in boxes {
             assert!(x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite());
             assert!(x1 >= frame.plot.x && x1 < frame.plot.x + frame.plot.w);
