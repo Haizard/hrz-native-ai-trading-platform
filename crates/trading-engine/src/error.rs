@@ -22,6 +22,22 @@ pub enum ExecutionError {
     #[error("kill-switch active: {0}")]
     KillSwitchActive(String),
 
+    /// The live gate authorized a different venue than the adapter trades.
+    ///
+    /// A live bot cannot be built without a [`LiveAuthorization`], and that
+    /// token names one venue. Passing it to a bot trading another venue would
+    /// place orders against an account nobody opted in to, so it is refused at
+    /// construction rather than discovered on the first fill.
+    ///
+    /// [`LiveAuthorization`]: crate::gate::LiveAuthorization
+    #[error("live authorization is for {authorized} but the adapter trades {adapter}")]
+    AuthorizationVenueMismatch {
+        /// The venue the gate approved.
+        authorized: String,
+        /// The venue the adapter reports.
+        adapter: String,
+    },
+
     /// The network failed while talking to the exchange.
     ///
     /// Distinct from [`ExecutionError::OrderRejected`] because the two demand

@@ -80,6 +80,27 @@ impl GateVerdict {
     }
 }
 
+/// Proof that [`LiveGate::check`] allowed one venue.
+///
+/// The engine's constructors require this token, so "the gate was checked"
+/// stops being a comment above a constructor and becomes a value the compiler
+/// demands. There is exactly one way to mint one -- [`LiveGate::authorize`] --
+/// and it refuses when any condition is unmet. A caller that has not run the
+/// gate therefore cannot construct a live bot at all, which is what makes the
+/// authorization boundary testable rather than aspirational.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveAuthorization {
+    venue: String,
+}
+
+impl LiveAuthorization {
+    /// The venue this authorization is for, lowercase.
+    #[must_use]
+    pub fn venue(&self) -> &str {
+        &self.venue
+    }
+}
+
 /// The gate: requirements plus the set of venues the user has opted in to.
 #[derive(Debug, Clone, Default)]
 pub struct LiveGate {
@@ -126,6 +147,27 @@ impl LiveGate {
         let mut venues: Vec<String> = self.venues.iter().cloned().collect();
         venues.sort();
         venues
+    }
+
+    /// Check every condition at once and, on success, mint the authorization a
+    /// live bot requires.
+    ///
+    /// # Errors
+    /// Returns the same [`GateVerdict::Refused`] a [`LiveGate::check`] would,
+    /// so a caller that wants to run the gate exactly once uses this instead of
+    /// `check` and gets the proof in the success case.
+    pub fn authorize(
+        &self,
+        venue: &str,
+        record: TrackRecord,
+        limits: &RiskLimits,
+    ) -> Result<LiveAuthorization, GateVerdict> {
+        match self.check(venue, record, limits) {
+            GateVerdict::Allowed => Ok(LiveAuthorization {
+                venue: venue.to_ascii_lowercase(),
+            }),
+            refused => Err(refused),
+        }
     }
 
     /// Check every condition at once.
@@ -300,5 +342,44 @@ mod tests {
         let requirements = GateRequirements::default();
         assert_eq!(requirements.min_paper_trades, 20);
         assert_eq!(requirements.min_paper_hours, 48.0);
+    }
+
+    #[test]
+    fn authorization_is_minted_only_when_every_condition_holds() {
+        let mut gate = LiveGate::new(GateRequirements::default());
+        gate.opt_in("binance");
+        let authorization = gate
+            .authorize("binance", record(), &RiskLimits::default())
+            .expect("a passing record mints the token");
+        assert_eq!(authorization.venue(), "binance");
+
+        // The same call refuses the moment a condition does not hold, so the
+        // token cannot be minted "provisionally".
+        let mut unproven = LiveGate::new(GateRequirements::default());
+        unproven.opt_in("binance");
+        let refused = unproven.authorize(
+            "binance",
+            TrackRecord {
+                closed_trades: 0,
+                hours: 0.0,
+                cumulative_r: 0.0,
+            },
+            &RiskLimits::default(),
+        );
+        assert!(matches!(refused, Err(GateVerdict::Refused { .. })));
+    }
+
+    #[test]
+    fn authorization_names_the_venue_it_was_checked_against() {
+        let mut gate = LiveGate::new(GateRequirements::default());
+        gate.opt_in("binance");
+        let authorization = gate
+            .authorize("BINANCE", record(), &RiskLimits::default())
+            .expect("the venue is matched case-insensitively");
+        assert_eq!(
+            authorization.venue(),
+            "binance",
+            "the token is normalized, so a comparison against an adapter's venue is stable"
+        );
     }
 }

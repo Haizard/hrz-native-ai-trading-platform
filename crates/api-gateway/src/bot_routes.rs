@@ -678,19 +678,18 @@ async fn start_live(
 
     let record =
         db::paper::strategy_paper_record(database.pool(), user.user_id, strategy_id).await?;
-    let verdict = gate.check(
-        &venue,
-        TrackRecord {
-            closed_trades: record.closed_trades.max(0) as usize,
-            hours: record.hours(now_ns()),
-            cumulative_r: record.cumulative_r,
-        },
-        &limits,
-    );
-
-    let mut reasons = match verdict {
-        GateVerdict::Refused { reasons } => reasons,
-        GateVerdict::Allowed => Vec::new(),
+    let track_record = TrackRecord {
+        closed_trades: record.closed_trades.max(0) as usize,
+        hours: record.hours(now_ns()),
+        cumulative_r: record.cumulative_r,
+    };
+    // `authorize` both runs the gate and, on success, mints the token the bot
+    // constructor requires -- so the check that produced this decision is the
+    // same value that authorizes the orders.
+    let (authorization, mut reasons) = match gate.authorize(&venue, track_record, &limits) {
+        Ok(authorization) => (Some(authorization), Vec::new()),
+        Err(GateVerdict::Refused { reasons }) => (None, reasons),
+        Err(GateVerdict::Allowed) => (None, Vec::new()),
     };
     reasons.extend(account_problems);
 
@@ -704,6 +703,11 @@ async fn start_live(
             ),
         ));
     }
+
+    // A non-empty reason list returned above, so the token is present here.
+    // `expect` documents that rather than defaulting to a second gate check
+    // that could disagree with the first.
+    let authorization = authorization.expect("the gate allowed and minted a token");
 
     // The account is usable, so it is the one this bot trades. Taken from the
     // resolution above rather than re-read, so the row the checks were made
@@ -739,6 +743,7 @@ async fn start_live(
     let bot = LiveBot::with_strategy(
         strategy,
         document,
+        authorization,
         adapter,
         LiveConfig {
             symbol: symbol.clone(),
@@ -748,7 +753,8 @@ async fn start_live(
             equity: ASSUMED_EQUITY,
             min_quantity: 0.0001,
         },
-    );
+    )
+    .map_err(|err| ApiError::internal(format!("the live bot could not be authorized: {err}")))?;
 
     tracing::warn!(
         %bot_id,

@@ -34,8 +34,9 @@ use db::live::LiveOrderRow;
 use db::Database;
 use strategy_runtime::{RuntimeConfig, StrategyEngine};
 use trading_engine::{
-    client_order_id, ExchangeAdapter, ExecutionError, LiveBot, LiveConfig, LiveSession, OrderAck,
-    OrderRequest, OrderStatus, OrderStatusReport, OrderType, RiskLimits,
+    client_order_id, ExchangeAdapter, ExecutionError, GateRequirements, LiveAuthorization, LiveBot,
+    LiveConfig, LiveGate, LiveSession, OrderAck, OrderRequest, OrderStatus, OrderStatusReport,
+    OrderType, RiskLimits, TrackRecord,
 };
 
 /// An owner created by this file is named with this prefix so a previous run
@@ -43,6 +44,24 @@ use trading_engine::{
 const TEST_PREFIX: &str = "live-bot-test-";
 
 const M5: i64 = 5 * 60 * 1_000_000_000;
+
+/// The gate approval the live bot is constructed with, minted the way the
+/// gateway mints one: a venue the account opted in to plus a passing track
+/// record. A bot cannot be built without it.
+fn live_authorization() -> LiveAuthorization {
+    let mut gate = LiveGate::new(GateRequirements::default());
+    gate.opt_in("binance");
+    gate.authorize(
+        "binance",
+        TrackRecord {
+            closed_trades: 30,
+            hours: 72.0,
+            cumulative_r: 1.0,
+        },
+        &RiskLimits::default(),
+    )
+    .expect("the record clears the gate")
+}
 
 /// The strategy the live bot runs.
 ///
@@ -469,6 +488,7 @@ async fn fixture(failure: Option<Failure>) -> Option<Fixture> {
 
     let bot = LiveBot::new(
         engine,
+        live_authorization(),
         venue,
         LiveConfig {
             symbol: "BTCUSDT".into(),
@@ -478,7 +498,8 @@ async fn fixture(failure: Option<Failure>) -> Option<Fixture> {
             equity: 10_000.0,
             min_quantity: 0.0001,
         },
-    );
+    )
+    .expect("the flaky venue matches the authorization");
 
     let session = LiveSession::attach(
         &database,

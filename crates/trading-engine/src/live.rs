@@ -242,13 +242,28 @@ impl<A: ExchangeAdapter> LiveBot<A> {
     /// The reference the sandbox is measured against. **Not the path the gateway
     /// creates a bot on** -- see [`LiveBot::with_strategy`] and principle #6.
     ///
-    /// The caller is responsible for having passed [`crate::gate::LiveGate`]:
-    /// this constructor does not check the venue opt-in, because a bot built in
-    /// a test must be buildable without one.
-    #[must_use]
-    pub fn new(engine: StrategyEngine, adapter: A, config: LiveConfig) -> Self {
+    /// `authorization` is the token [`crate::gate::LiveGate::authorize`] mints
+    /// for a venue that passed every condition. Requiring it here means a bot
+    /// that places real orders cannot be constructed by a caller that skipped
+    /// the gate: the compiler will not let the call compile.
+    ///
+    /// # Errors
+    /// [`ExecutionError::AuthorizationVenueMismatch`] when the token names a
+    /// venue other than the adapter's.
+    pub fn new(
+        engine: StrategyEngine,
+        authorization: crate::gate::LiveAuthorization,
+        adapter: A,
+        config: LiveConfig,
+    ) -> Result<Self, ExecutionError> {
         let shape = Shape::of(engine.document());
-        Self::from_shape(Decisions::Native(engine), adapter, shape, config)
+        Self::from_shape(
+            Decisions::Native(engine),
+            authorization,
+            adapter,
+            shape,
+            config,
+        )
     }
 
     /// Start a live bot around a strategy that has already been prepared.
@@ -257,17 +272,21 @@ impl<A: ExchangeAdapter> LiveBot<A> {
     /// and it matters more here: preparing a sandboxed strategy can fail, and for
     /// a live bot the row carries the id every client order id is built from --
     /// so the failure has to be able to land before the row exists.
-    #[must_use]
+    ///
+    /// # Errors
+    /// [`ExecutionError::AuthorizationVenueMismatch`] when the token names a
+    /// venue other than the adapter's.
     pub fn with_strategy(
         strategy: Decisions,
         document: &ValidatedStrategy,
+        authorization: crate::gate::LiveAuthorization,
         adapter: A,
         config: LiveConfig,
-    ) -> Self {
+    ) -> Result<Self, ExecutionError> {
         let shape = Shape::of(document.document());
-        let mut bot = Self::from_shape(strategy, adapter, shape, config);
+        let mut bot = Self::from_shape(strategy, authorization, adapter, shape, config)?;
         bot.registry_concepts = document.document().registry_concepts.clone();
-        bot
+        Ok(bot)
     }
 
     /// Which path this bot decides on: native or sandboxed.
@@ -283,17 +302,44 @@ impl<A: ExchangeAdapter> LiveBot<A> {
     }
 
     /// A live bot whose decisions come from a Concept-Registry composition.
+    ///
+    /// # Errors
+    /// [`ExecutionError::AuthorizationVenueMismatch`] when the token names a
+    /// venue other than the adapter's.
     pub fn with_composition(
         strategy: Decisions,
         document: &market_data::composer::Composition,
+        authorization: crate::gate::LiveAuthorization,
         adapter: A,
         config: LiveConfig,
-    ) -> Self {
-        Self::from_shape(strategy, adapter, Shape::for_composition(document), config)
+    ) -> Result<Self, ExecutionError> {
+        Self::from_shape(
+            strategy,
+            authorization,
+            adapter,
+            Shape::for_composition(document),
+            config,
+        )
     }
 
-    fn from_shape(strategy: Decisions, adapter: A, shape: Shape, config: LiveConfig) -> Self {
-        Self {
+    fn from_shape(
+        strategy: Decisions,
+        authorization: crate::gate::LiveAuthorization,
+        adapter: A,
+        shape: Shape,
+        config: LiveConfig,
+    ) -> Result<Self, ExecutionError> {
+        // The token and the adapter must name the same venue. A gate approval
+        // for one exchange is not approval for another, and this is the only
+        // place the two meet.
+        let adapter_venue = adapter.venue().to_ascii_lowercase();
+        if authorization.venue() != adapter_venue {
+            return Err(ExecutionError::AuthorizationVenueMismatch {
+                authorized: authorization.venue().to_string(),
+                adapter: adapter_venue,
+            });
+        }
+        Ok(Self {
             symbol: config.symbol,
             bot_id: config.bot_id,
             decision_name: shape.decision_name,
@@ -311,7 +357,7 @@ impl<A: ExchangeAdapter> LiveBot<A> {
             trades: Vec::new(),
             halted_announced: false,
             noted_sandbox_failure: false,
-        }
+        })
     }
 
     /// The symbol traded.
@@ -1045,6 +1091,7 @@ risk:
             StrategyEngine::new(&validated, strategy_runtime::RuntimeConfig::default()).unwrap();
         LiveBot::new(
             engine,
+            authorization(),
             venue,
             LiveConfig {
                 symbol: "BTCUSDT".into(),
@@ -1055,6 +1102,24 @@ risk:
                 ..LiveConfig::default()
             },
         )
+        .expect("the mock venue matches the authorization")
+    }
+
+    /// A gate approval for the `mock` venue, minted the way production mints
+    /// one: through the gate, with a passing track record.
+    fn authorization() -> crate::gate::LiveAuthorization {
+        let mut gate = crate::gate::LiveGate::new(crate::gate::GateRequirements::default());
+        gate.opt_in("mock");
+        gate.authorize(
+            "mock",
+            crate::gate::TrackRecord {
+                closed_trades: 30,
+                hours: 72.0,
+                cumulative_r: 1.0,
+            },
+            &RiskLimits::default(),
+        )
+        .expect("the record clears the gate")
     }
 
     /// Feed 5m candles plus the 1h candle whenever one closes, until the bot
@@ -1266,5 +1331,47 @@ risk:
             "the fixture must open a position for this test to mean anything"
         );
         bot
+    }
+
+    #[tokio::test]
+    async fn a_gate_approval_for_one_venue_cannot_start_a_bot_on_another() {
+        let validated = strategy_dsl::parse_and_validate(DOCUMENT).unwrap();
+        let engine =
+            StrategyEngine::new(&validated, strategy_runtime::RuntimeConfig::default()).unwrap();
+        // The gate approved a venue this adapter does not trade. Placeholder
+        // names make the failure the mismatch, not a missing opt-in.
+        let mut gate = crate::gate::LiveGate::new(crate::gate::GateRequirements::default());
+        gate.opt_in("elsewhere");
+        let authorization = gate
+            .authorize(
+                "elsewhere",
+                crate::gate::TrackRecord {
+                    closed_trades: 30,
+                    hours: 72.0,
+                    cumulative_r: 1.0,
+                },
+                &RiskLimits::default(),
+            )
+            .expect("the record clears the gate");
+
+        let error = match LiveBot::new(
+            engine,
+            authorization,
+            Venue::new(100.0),
+            LiveConfig::default(),
+        ) {
+            Ok(_) => panic!("the mock venue is not `elsewhere`"),
+            Err(error) => error,
+        };
+        match error {
+            ExecutionError::AuthorizationVenueMismatch {
+                authorized,
+                adapter,
+            } => {
+                assert_eq!(authorized, "elsewhere");
+                assert_eq!(adapter, "mock");
+            }
+            other => panic!("expected the venue mismatch, got {other:?}"),
+        }
     }
 }
