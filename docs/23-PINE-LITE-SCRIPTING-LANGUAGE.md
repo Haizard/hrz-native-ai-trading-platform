@@ -355,11 +355,13 @@ language's explicit `na`/series mapping.
   indicator script plus trade markers.
 
 > **Status:** strategy simulation is implemented in the Pine-Lite VM and
-> rendered by the chart engine (docs/24, phases S1–S3). S4 remains pending.
-> `backtester::script_strategy` is a separate replay adapter; it is tested,
-> but the audit found no production path constructing it. Do not treat the
-> adapter or chart preview as live-bot deployment: the production bot path
-> remains based on the Strategy DSL and its sandbox.
+> rendered by the chart engine (docs/24, phases S1–S3). S4 is partially landed:
+> `backtester::script_strategy` is wired to the strategy backtest route, the
+> VM-vs-replay parity suite passes, and `docs/60` records the boundary and the
+> `LiveAuthorization` model. A script→promote→backtest golden and
+> replay-vs-live parity remain open. Do not treat the adapter or chart preview
+> as live-bot deployment: the production bot path remains based on the Strategy
+> DSL and its sandbox.
 
 ## Vetting: "the platform vets scripts" — concretely
 

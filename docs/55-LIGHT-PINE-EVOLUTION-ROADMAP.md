@@ -1,9 +1,16 @@
 # Light Pine Evolution — Engineering Roadmap
 
-- **Status:** Phases 0–3 complete; Phase 4 is next. The audit,
-  host-data contract, runtime baseline, isolation boundary, and
-  evidence-based language architecture decision are recorded. No dependency
-  change is approved by that decision.
+- **Status:** Phases 0–3, 6 and 7 complete. **Phase 5's boundary is landed
+  (authorization token, boundary tests, [`docs/60`](./60-STRATEGY-BOT-BOUNDARY.md));
+  its golden strategy/live parity items remain open.** **Phase 4's contract is
+  audited and documented ([`docs/61`](./61-CHARTING-CONTRACT.md)); its visual
+  acceptance remains open.** The audit, host-data contract, runtime baseline,
+  isolation boundary, and evidence-based language architecture decision are
+  recorded. No dependency change is approved by that decision.
+- **Reconciled:** 2026-11-18 against `docs/23`, `docs/57`, `docs/24` and the
+  `pine-lite` tree. The work still outstanding is listed under "Immediate next
+  actions"; the per-phase rows in `docs/23` remain the detailed status of
+  record.
 - **Scope owner:** QUANTERA platform
 - **Implementation rule:** ship one reviewable, tested capability per phase
 
@@ -116,39 +123,38 @@ a compile-once cache. An initial representative baseline is recorded in
 `docs/58-LIGHT-PINE-PERFORMANCE-BASELINE.md`; comparable follow-up measurements
 are still needed before deciding whether caching or an IR is justified.
 
-### Audit flags to resolve
+### Audit flags (status as of the 2026-11-18 reconciliation)
 
-- `docs/23-PINE-LITE-SCRIPTING-LANGUAGE.md` contains multiple phase/status
-  summaries that may be dated or inconsistent; reconcile them against the
-  current gateway, sandbox, backtester, and frontend before updating the spec.
-- The AI-loop description in `docs/23` calls preview execution sandboxed, but
-  `indicator_preview::replay_script_preview` currently calls
-  `pine_lite::interp::run` in the gateway process. `sandbox-guest` does not
-  depend on `pine-lite`; it serves `strategy-runtime`/`strategy-dsl`. Resolve
-  this wording and record the intended isolation boundary before adding
-  execution capabilities.
-- The Phase 9/10 status table in `docs/23` appears stale: the workspace route
-  already invokes Pine-Lite generation, vet/repair, preview, and revision
-  storage, while `chart-engine` already runs scripts and positions output.
-  Complete the UI/integration audit before changing the status labels.
-- The documented single-source-of-truth rule for indicator math needs an
-  audit against `pine-lite/src/ta.rs` and `analytics-core`. Direct wrappers
-  currently cover SMA, EMA, RSI, and ATR; VWAP now uses the core per-bar
-  series API. `pine-lite/src/ta.rs` also reimplements formulas with existing
-  core counterparts (including MACD, Bollinger, stochastic, CCI, MFI,
-  Williams %R, OBV, and Supertrend). Compare warm-up/edge-case behavior before
-  consolidating; function names alone do not prove parity.
-- Current diagnostics are span-based line/column messages; inspect real model
-  repair failures and determine which diagnostic structure or wording changes
-  would measurably improve repair success.
-- The provided language-evolution folder contains checkouts for Chumsky,
-  Rhai, Rune, Wasmtime, and YATA. The broader research prompt names additional
-  projects that are not present in this local folder; fetch or inspect those
-  separately only when the relevant workstream begins.
-- The user confirmed that
-  `rust indicator language/pine light new changes.md` is the requirements and
-  conversation source to use. No separate `.readme` file was present in the
-  supplied folder.
+Resolved:
+
+- `docs/23`'s phase/status summaries were reconciled against source and
+  executable tests; its phase table is now the detailed status of record.
+- The AI-loop wording and the isolation boundary were both settled: server
+  preview runs `pine-lite` in a restricted worker at the edge (in-process
+  outside Linux), and server-side execution stays preview-only. See
+  `docs/23` Phase 8 and `docs/08`.
+- The stale Phase 9/10 labels were corrected; the workspace route and
+  chart-engine integration are now described as implemented/partial rather
+  than stale.
+- The `analytics-core` consolidation landed with Phase 3: CCI, MFI, DMI,
+  Keltner, Bollinger and A/D now share core formulas, and every advertised
+  `ta.*` builtin has metadata and numeric coverage.
+- Diagnostics gained stable phase codes, spans, and machine-readable repair
+  context (Phase 2).
+- The reference-project comparison is complete in `docs/56`.
+
+Still open:
+
+- WASM/native parity for any future intrabar feature (`varip`) — explicitly
+  excluded from the equivalence guarantee until pinned by tests.
+- MTF history/time semantics and final-bucket reveal, and string locals/`na`
+  inside functions — both carried as partial rows in `docs/23` (Phases 11 and
+  10).
+- Pine-Lite's own guest isolation tests remain separate from the strategy
+  sandbox's adversarial suite; the Linux worker probe has not been recorded as
+  passing on the deployment kernel.
+- `rust indicator language/pine light new changes.md` remains the requirements
+  source; no separate `.readme` was supplied.
 
 ## Baseline evidence
 
@@ -342,15 +348,32 @@ isolation gaps are carried into the next phases with explicit tests and limits.
 
 ### Phase 4 — Charting contract
 
+**Status: contract audited and documented (2026-11-18); visual acceptance
+open.** [`docs/61`](./61-CHARTING-CONTRACT.md) records the end-to-end pipeline,
+identity, anchors, pane ownership, lifecycle, caps, serialization, the
+per-output coverage matrix, and the proven/open lists. One contract bug was
+found and fixed: per-kind caps recycle the oldest drawing's arena slot, so
+serialization now orders by creation sequence rather than slot index (later
+draws still paint on top), pinned by
+`per_kind_caps_rotate_the_oldest_and_keep_creation_order`; box/label deletion
+also gained VM and chart-engine mapping tests. Duplicate titles are now
+disambiguated (`script:X~2`) instead of colliding, pinned by
+`two_scripts_with_the_same_title_get_distinct_ids`. This phase still owns the
+visual-acceptance work that
+`docs/23` carries as partial on Phases 10, 11 and 16, plus `docs/24`'s open S2
+notes. Those rows stay partial until this phase's exit gate is met — a
+pine-lite unit test or a projection test alone is not visual acceptance.
+
 **Work**
 
 - Audit existing plot/object contracts and their end-to-end behavior through
-  the engine and frontend.
+  the engine and frontend. — **done** (`docs/61` §1–§7).
 - Define stable IDs, coordinates/anchors, pane ownership, object lifecycle,
-  limits, serialization, and update semantics.
+  limits, serialization, and update semantics. — **done**; duplicate titles no
+  longer collide (`script:X~2`).
 - Extend the existing renderer contract only for specific missing capabilities
   (for example profiles, heatmaps, or specialized panels), not as a renderer
-  rewrite.
+  rewrite. — no extension added: nothing in the audited requests needs one.
 
 **Exit gate**
 
@@ -359,14 +382,26 @@ isolation gaps are carried into the next phases with explicit tests and limits.
 
 ### Phase 5 — Strategy and bot boundary
 
+**Status: boundary landed (2026-11-18); parity items open.** The trace,
+semantics, and authorization model are recorded in
+[`docs/60`](./60-STRATEGY-BOT-BOUNDARY.md). Landed: `LiveAuthorization` is the
+only way to construct a `LiveBot` (`LiveGate::authorize` mints it; a venue
+mismatch is refused at construction), and `crates/backtester/tests/
+script_boundary.rs` proves scripts have no broker vocabulary, cannot carry
+`qty`, cannot change the risk figure, and can return only a `Signal`.
+`trading-engine` still contains no `pine` reference, so a script reaches a
+backtest but not a bot. Open: a script→promote→backtest golden, carrying or
+refusing script-declared targets, and historical/live parity for a
+script-backed strategy (needs a venue/provider harness).
+
 **Work**
 
 - Trace current strategy declarations, intents, deterministic replay, risk
-  validation, and broker authorization.
+  validation, and broker authorization. — **done** (`docs/60` §2–§7).
 - Specify strategy lifecycle, order/position semantics, sizing, stops/targets,
-  and historical/live parity.
+  and historical/live parity. — **done** for semantics; parity open.
 - Preserve the risk engine as the sole authority for execution; do not expose
-  broker calls to indicator scripts.
+  broker calls to indicator scripts. — **done** and tested.
 
 **Exit gate**
 
@@ -443,9 +478,24 @@ execution test, and the language guide documents version and migration policy.
 
 ## Immediate next actions
 
-1. Complete Phase 0's cross-crate flow map and feature matrix.
-2. Reproduce and resolve the two baseline Fibonacci drawing test failures.
-3. Capture representative AI-generated valid and invalid scripts, diagnostics,
-   and existing benchmark workloads.
-4. Start Phase 1 only after the current implementation and baseline are
-   sufficiently mapped.
+1. **Phase 4 — charting contract.** The contract and audit are in `docs/61`.
+   Remaining: provider-backed visual acceptance for Phases 10/11/16 and the
+   `prompt1`/`prompt2` fixtures, the duplicate-title identity decision, and
+   shell-level update/delete integration tests.
+2. **Phase 5 — strategy/bot boundary.** The boundary, token authorization and
+   "a script cannot bypass risk" tests are landed (`docs/60`). Remaining:
+   golden script→promote→backtest fixture, script-declared target handling, and
+   replay-vs-live parity on the same candles.
+3. **Provider-backed generation acceptance.** The `prompt1.text` top-down run
+   saved a revision but produced one plot and zero drawing objects; that run is
+   still a failed acceptance, not a pass (`docs/57`). `prompt2.text` (gold
+   scalping, 1m/5m) is now a fixture — `test-fixtures/light-pine/
+   gold_scalp_zones.{txt,pine}` — and it passes the language test, the gateway
+   generation gate, and chart-engine projection. What remains is the same
+   provider-backed visual run for both prompts; a deterministic scripted model
+   proves the contract, not the model.
+4. **Close the named partials in `docs/23`** that are not visual acceptance:
+   MTF sub-VM history/rolling semantics and final-bucket reveal (Phase 11), and
+   persistent string locals plus complete string-`na` propagation (Phase 10).
+5. **Linux isolation verification.** Phase 8's worker probe is shipped and in CI
+   but has not been recorded as passing on the deployment kernel.

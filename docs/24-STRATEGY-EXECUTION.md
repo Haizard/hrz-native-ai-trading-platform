@@ -1,6 +1,8 @@
 # 24 — Strategy execution: from signal-only stubs to simulated orders on the chart
 
-Status: **S1 + S2 + S3 implemented (VM sim, header knobs, preview stats, chart trades + equity panes, studio teaching + simulation notes); S4 pending** · Supersedes: none · Extends: docs/23 Phase 7
+Status: **S1 + S2 + S3 implemented (VM sim, header knobs, preview stats, chart trades + equity panes, studio teaching + simulation notes); S4 partially landed — parity and the script backtest path exist, golden promote/live parity remains** · Supersedes: none · Extends: docs/23 Phase 7
+See [`docs/60`](./60-STRATEGY-BOT-BOUNDARY.md) for the source→execution trace,
+sizing/stops/targets, the `LiveAuthorization` model, and the proven/open list.
 Authored 2026-09-30 after the v1.1 language phase (while loops, parameter
 defaults, 256-object heap) landed.
 
@@ -27,16 +29,17 @@ design:
 - **The VM already records intents.** `pine_lite::interp::Intent` is a real
   enum — `Entry { id, long }`, `Exit { id, stop, limit }`,
   `Close { id: Option<String> }` — stamped with the firing bar in
-  `Output.intents`, and `Output.strategy_used` flips true. What is missing is
-  qty/qty_type on the intent (see §4.1).
-- **The replay adapter exists and is tested but wired to nothing.**
+  `Output.intents`, and `Output.strategy_used` flips true. S1 later added
+  `qty` to the entry intent (see §4.1).
+- **The replay adapter is now wired to the strategy backtest route.**
   `backtester::script_strategy::ScriptStrategy` wraps a vetted script as a
   `strategy_runtime::Strategy`: per-candle windowed execution, intent→signal
   lowering with Pine's fill-on-next-open rule, a stop carried from
   `strategy.exit(stop=)`, an ATR(14)×2 default stop when the script declares
   none, and entry-while-in-position refused (pyramiding is out of scope, as
-  docs/23 says). Its tests pass in the backtester suite. **No production code
-  path constructs it** — grep finds only the module's own tests.
+  docs/23 says). `strategy_routes::backtest` constructs it for the script
+  branch; its tests pass in the backtester suite. It is still not a bot path:
+  scripts reach a backtest, never `LiveBot` (`docs/60`).
 - **The browser chart can already paint positions.** The shell has a
   position-box layer with `position_long: "#089981"` / `position_short:
   "#f23645"` vocabulary (frontend/app/app.js) fed by
@@ -261,6 +264,13 @@ same core; gateway preview surfaces orders/equity/report.*
 *Deliverable: generated strategies replay identically through
 `ScriptStrategy` and the VM sim, and strategy-cli can backtest a workspace
 script.*
+
+**Landed 2026-11-18:** the replay adapter is wired to the strategy backtest
+route, the VM-vs-replay parity suite covers five script shapes, and
+`crates/backtester/tests/script_boundary.rs` pins that a script cannot carry
+size, change the risk figure, or return anything but a `Signal`. The remaining
+gap is a script→promote→backtest golden and replay-vs-live parity on the same
+candles; see [`docs/60`](./60-STRATEGY-BOT-BOUNDARY.md) §8.
 
 - CLI/integration: `POST /strategy/backtest` accepts `{"representation":
   "pine-lite", "source": ...}` alongside DSL documents (the route exists;

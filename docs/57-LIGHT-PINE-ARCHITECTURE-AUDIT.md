@@ -75,10 +75,10 @@ not the production bot path.
 | Resource limits | Static statement/plot/fill/function/loop-depth limits; runtime fuel, call-depth, array count/length, object caps; history limit from the header. The strategy Wasmtime sandbox separately enforces fuel, epoch deadlines, guest linear memory, and an import allowlist. | Gateway preview still invokes native `pine_lite::run` in-process. Pine-Lite limits are not memory/OS isolation; the strategy guest tests do not prove a Pine-Lite guest exists. The timeout ticker must start successfully or sandbox construction now fails. |
 | Builtins and indicators | Pine-Lite exposes math, TA, input, strategy, data/security, and drawing APIs; several TA formulas wrap or reuse `analytics-core`. A versioned catalog now records arity/result shape for all entries, with parameter, host-data, and runtime metadata explicitly marked complete only for selected TA, data, and drawing calls. | The catalog remains intentionally partial; the interpreter is still the execution authority, and metadata completeness does not prove numerical parity with `analytics-core`. |
 | Market data | Host supplies candles, aligned secondary candles, pooled symbol/timeframe series, ticker/data series, and instrument metadata where available. | Raw trades, full order books, and footprint data are not general script inputs merely because related Rust data structures exist elsewhere. |
-| Chart output | VM emits structured plot and object output; Rust/WASM chart engine maps it to panes, price overlays, shapes, and drawings. Strategy outputs include chart-side simulation rendering. | Do not imply support for every requested visualization (for example, full order-book heatmaps or native footprint panels) without a script API, renderer mapping, and tests. |
-| AI integration | Gateway supplies a language reference and `submit_script` tool; static errors are fed back through a bounded retry loop; preview failures can trigger a runtime-repair pass. Prompt and repair call bounds now render from the versioned builtin catalog. A provider-backed indicator generation created a validated revision, but its preview emitted no drawings. | The live attempt proves generation and persistence, not semantic correctness: the requested FVG visualization was absent. Unspecified registry entries remain explicitly incomplete. |
+| Chart output | VM emits structured plot and object output; Rust/WASM chart engine maps it to panes, price overlays, shapes, and drawings. Strategy outputs include chart-side simulation rendering. The end-to-end contract (identity, anchors, pane ownership, caps, serialization) is recorded in [`docs/61`](./61-CHARTING-CONTRACT.md). | Do not imply support for every requested visualization (for example, full order-book heatmaps or native footprint panels) without a script API, renderer mapping, and tests. Per-kind caps recycle arena slots; serialization now preserves creation order, but shell-level update/delete integration and duplicate-title identity remain open. |
+| AI integration | Gateway supplies a language reference and `submit_script` tool; static errors are fed back through a bounded retry loop; runtime preview failures (including fuel exhaustion) trigger one runtime-repair pass, with the guest/host classification carried across the worker boundary. Prompt and repair call bounds now render from the versioned builtin catalog. A provider-backed indicator generation created a validated revision, but its preview emitted no drawings. | The earlier live attempt proves generation and persistence, not semantic correctness: the requested FVG visualization was absent. Unspecified registry entries remain explicitly incomplete. |
 | Script storage | Workspace revisions store source and validated preview; edits use the active Pine-Lite source as the next model input. | Revision history is intentionally immutable; this is not a compiler cache. |
-| Strategy/backtesting | Pine strategy calls can be simulated in the VM/chart; `ScriptStrategy` adapts Pine source to the existing replay. | The replay adapter is not constructed by a production bot path; live bot execution remains Strategy DSL/sandbox based. |
+| Strategy/backtesting | Pine strategy calls can be simulated in the VM/chart; `ScriptStrategy` adapts Pine source to the existing replay and is wired to the strategy backtest route. `docs/60` records the source→execution boundary; a script cannot carry size, change the risk figure, or return anything but a `Signal`. | The replay adapter is not constructed by a production bot path; live bot execution remains Strategy DSL/sandbox based. Golden script→promote→backtest and replay-vs-live parity remain open. |
 | Diagnostics | Errors carry a kind, line/column span, and message, and the vet path returns multiple errors. | No stable machine-readable diagnostic code, severity, byte range, or related-location contract was found. |
 
 ## Architectural findings
@@ -137,8 +137,10 @@ the platform's existing risk and authorization boundary.
 
 The language document previously described the chart-side strategy simulator
 and in-VM account state as open work. `docs/24-STRATEGY-EXECUTION.md` records
-S1–S3 as implemented and S4 as pending; the source has VM simulation and chart
-projection paths. The old status note in docs/23 is corrected to point to
+S1–S3 as implemented and S4 as partially landed: the VM-vs-replay parity suite
+and the "a script cannot bypass risk" tests exist, while a
+script→promote→backtest golden and replay-vs-live parity remain open
+(`docs/60`). The old status note in docs/23 is corrected to point to
 docs/24 and to distinguish chart simulation from live-bot deployment.
 
 The language phase table in `docs/23` has now been reconciled against source
@@ -183,6 +185,13 @@ infer gateway/browser/backtester parity from a Pine-Lite unit test alone.
    timestamps while FVG conditions used chart-timeframe OHLC; the bullish
    condition also required `low > high[length]` and `close < high[length]`,
    which cannot both hold. Therefore this is not a successful MTF FVG test.
+   The second transcript (`prompt2.text`, gold scalping 1m/5m) now has its own
+   first-stage fixture: `test-fixtures/light-pine/gold_scalp_zones.pine` draws
+   a 15m sweep -> BOS order block and a reclaimed 5m inverse FVG, exercised by
+   `crates/pine-lite/tests/ai_fixtures.rs`, the gateway generation gate, and a
+   chart-engine projection test. It is a different shape (lower timeframe,
+   entry-model zones) from prompt1, but it too still needs a provider-backed
+   visual run before either transcript counts as accepted.
    Provider-backed generation exhaustion now has a distinct indicator error
    instead of being mislabeled as a strategy document failure.
 3. **Execution-parity and error handling.** Pine script runtime failures abort
