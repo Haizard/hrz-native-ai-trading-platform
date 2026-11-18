@@ -486,14 +486,16 @@ execution test, and the language guide documents version and migration policy.
    "a script cannot bypass risk" tests are landed (`docs/60`). Remaining:
    golden script→promote→backtest fixture, script-declared target handling, and
    replay-vs-live parity on the same candles.
-3. **Provider-backed generation acceptance.** The `prompt1.text` top-down run
-   saved a revision but produced one plot and zero drawing objects; that run is
-   still a failed acceptance, not a pass (`docs/57`). `prompt2.text` (gold
-   scalping, 1m/5m) is now a fixture — `test-fixtures/light-pine/
-   gold_scalp_zones.{txt,pine}` — and it passes the language test, the gateway
-   generation gate, and chart-engine projection. What remains is the same
-   provider-backed visual run for both prompts; a deterministic scripted model
-   proves the contract, not the model.
+3. **Provider-backed generation acceptance.** Still failed, for provider and
+   model reasons now recorded in `docs/57`: the full prompt2 transcript exceeds
+   every configured provider's context, the distilled fixture against a
+   mismatched symbol failed pooled-data prefetch after one repair, and against
+   a matching symbol the model never produced a vetting script in five
+   attempts. The local gateway is now wired to Postgres 18 on `127.0.0.1:5432`
+   (`.env` points there; the previous remote DSN is saved in the ignored
+   `.env.remote`), so attempts can be repeated without redeployment. A
+   scripted model proves the contract, not a live model's ability to infer the
+   strategy from the transcript.
 4. **Close the named partials in `docs/23`** that are not visual acceptance:
    MTF sub-VM history/rolling semantics and final-bucket reveal (Phase 11), and
    persistent string locals plus complete string-`na` propagation (Phase 10).

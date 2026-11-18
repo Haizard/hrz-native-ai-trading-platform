@@ -194,6 +194,22 @@ infer gateway/browser/backtester parity from a Pine-Lite unit test alone.
    visual run before either transcript counts as accepted.
    Provider-backed generation exhaustion now has a distinct indicator error
    instead of being mislabeled as a strategy document failure.
+
+   **Provider-backed attempts on 18 November 2026 (still not accepted).** The
+   gateway was run against local Postgres 18 (`ai_trading`, migrations 21) with
+   the repository's configured provider chain. (a) The full `prompt2.text`
+   transcript (~19K characters) expands to ~119K input tokens; all four
+   providers refused it (out-of-balance primary, two context/payload limits,
+   one transport failure), and an earlier attempt that did generate a script
+   died at preview on fuel exhaustion. (b) The distilled gold fixture against
+   a BTCUSDT workspace produced a script that requested `XAUUSD@15M` pooled
+   data the host had not fetched; the new runtime-fault repair round ran and
+   still failed, so no revision was saved. (c) The same fixture against an
+   XAUUSD workspace with locally seeded candles failed vetting after five
+   model attempts: the model used dynamic `request.security_lower_tf`
+   arguments and an undefined `htf_open`. These are model/provider failures,
+   not accepted results. The repair-path classification was fixed as a
+   consequence (§"AI integration" matrix row); visual acceptance remains open.
 3. **Execution-parity and error handling.** Pine script runtime failures abort
    replay with their interpreter diagnostic. A shared, deterministic drawing
    fixture now verifies preview statistics, chart-engine projection, and
