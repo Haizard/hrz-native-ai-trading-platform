@@ -1,0 +1,67 @@
+//@pine_lite version=1 overlay=true title="Gold scalp zones"
+// prompt2, strategy 1 — 15m liquidity sweep -> break of structure -> order
+// block, plus a violated 5m fair value gap (inverse FVG) as the entry
+// confirmation. Stage 1 draws the two zones only: no entries, stops, or
+// trade execution.
+ht = request.security("XAUUSD", "15m", time)
+ho = request.security("XAUUSD", "15m", open)
+hh = request.security("XAUUSD", "15m", high)
+hl = request.security("XAUUSD", "15m", low)
+hc = request.security("XAUUSD", "15m", close)
+nb = ht != ht[1]
+
+far = 10000000000000000.0
+
+// Completed higher-timeframe bars, newest first.
+var h1 = na
+var h2 = na
+var h3 = na
+var l1 = na
+var l2 = na
+var l3 = na
+
+// Candidate order block: the last down-close higher-timeframe bar.
+var obT = na
+var obTop = na
+var obBot = na
+
+// A sweep arms the setup; the next break of structure confirms it.
+var armed = false
+
+if nb and not na(l3)
+    if hl < math.min(math.min(l1, l2), l3) and hc > math.min(math.min(l1, l2), l3)
+        armed = true
+    if armed and hc > math.max(math.max(h1, h2), h3) and not na(obT)
+        box.new_time(obT, obTop, ht + far, obBot, color=color.green)
+        label.new_time(obT, obTop, "HTF OB", color=color.green)
+        armed = false
+
+if nb
+    h3 = h2
+    h2 = h1
+    h1 = hh
+    l3 = l2
+    l2 = l1
+    l1 = hl
+    if hc < ho
+        obT = ht
+        obTop = hh
+        obBot = hl
+
+// Chart timeframe: a bearish gap that a close flips into support.
+var fvgT = na
+var fvgTop = na
+var fvgBot = na
+if high < low[2]
+    fvgT = time[2]
+    fvgTop = low[2]
+    fvgBot = high
+if not na(fvgT) and not na(fvgTop)
+    if close > fvgTop
+        box.new_time(fvgT, fvgTop, time + far, fvgBot, color=color.aqua)
+        label.new_time(fvgT, fvgTop, "IFVG", color=color.aqua)
+        fvgT = na
+        fvgTop = na
+        fvgBot = na
+
+plot(close)

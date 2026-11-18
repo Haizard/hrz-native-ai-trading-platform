@@ -1,0 +1,10 @@
+Build the first stage of a gold scalping overlay (XAUUSD, 5m chart) from a
+top-down entry model. On the 15m higher timeframe, detect a sell-side liquidity
+sweep that closes back above the prior three-bar low, then a bullish break of
+structure: a close above the prior three-bar high. The order block is the last
+down-close 15m bar before that expansion; draw it as a time-anchored zone. On
+the chart timeframe, find a bearish fair value gap (a candle high below the low
+two candles earlier) and mark it as an inverse FVG once a close takes its top,
+because it then acts as support for the long entry. Label each zone with its
+role, anchor both by absolute time, use completed higher-timeframe bars only,
+and do not add entries, stops, or trade execution yet.
