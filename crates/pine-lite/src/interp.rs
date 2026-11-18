@@ -692,6 +692,9 @@ pub struct Vm<'a> {
     call_sites: Vec<usize>,
     /// `var`/`varip` string state, scoped to a call-site path and local name.
     persistent_string_locals: std::collections::HashMap<(Vec<usize>, String), Option<String>>,
+    /// Per-bar values of string locals inside user functions, keyed the same
+    /// way as persistent locals so two call sites never share history.
+    string_local_history: std::collections::HashMap<(Vec<usize>, String), Vec<Option<String>>>,
     /// Plot statements deferred to after the bar loop: replaying a plot's
     /// expression needs *completed* buffers, and one AST call site is one
     /// plot no matter how many bars its branch fires on.
@@ -762,7 +765,7 @@ pub struct Vm<'a> {
     /// The string-array heap; handles are tagged STR_TAG + index so they
     /// share the array functions' handle space without colliding with the
     /// float arrays.
-    str_heap: Vec<Vec<String>>,
+    str_heap: Vec<Vec<Option<String>>>,
     /// The security_lower_tf slice heap; handles are tagged LTF_TAG +
     /// index. Slices rotate per call site (64 deep), so short history
     /// reads (w[1]..w[63]) stay valid.
@@ -955,6 +958,7 @@ impl<'a> Vm<'a> {
             string_local_modes: Vec::new(),
             call_sites: Vec::new(),
             persistent_string_locals: std::collections::HashMap::new(),
+            string_local_history: std::collections::HashMap::new(),
             deferred: Vec::new(),
             deferred_seen: std::collections::HashSet::new(),
             heap: Vec::new(),
@@ -1070,6 +1074,7 @@ impl<'a> Vm<'a> {
             string_local_modes: Vec::new(),
             call_sites: Vec::new(),
             persistent_string_locals: std::collections::HashMap::new(),
+            string_local_history: std::collections::HashMap::new(),
             deferred: Vec::new(),
             deferred_seen: std::collections::HashSet::new(),
             heap: Vec::new(),
@@ -1299,6 +1304,7 @@ impl<'a> Vm<'a> {
         self.str_vars.clear();
         self.str_vars_written.clear();
         self.str_heap.clear();
+        self.string_local_history.clear();
         self.ltf_heap.clear();
         self.matrices_live.clear();
         self.ltf_slots.clear();
@@ -1501,7 +1507,9 @@ impl<'a> Vm<'a> {
                 if is_string_target {
                     if self.call_depth > 0 && *mode != VarMode::Auto {
                         let key = (self.call_sites.clone(), name.clone());
-                        if let Some(persisted) = self.persistent_string_locals.get(&key) {
+                        let persisted = self.persistent_string_locals.get(&key).cloned();
+                        if let Some(persisted) = persisted {
+                            self.record_string_local(name, &persisted);
                             if let Some(frame) = self.string_scopes.last_mut() {
                                 frame.insert(name.clone(), persisted.clone());
                             }
@@ -1513,6 +1521,7 @@ impl<'a> Vm<'a> {
                     }
                     let value = self.eval_s_value(expr)?;
                     if self.call_depth > 0 {
+                        self.record_string_local(name, &value);
                         let key = (self.call_sites.clone(), name.clone());
                         if *mode != VarMode::Auto {
                             self.persistent_string_locals.insert(key, value.clone());
@@ -2793,7 +2802,9 @@ impl<'a> Vm<'a> {
                 self.tick()?;
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
                 if (STR_TAG..LTF_TAG).contains(&handle) {
-                    let v = self.eval_s(&args[1].value)?;
+                    // Keep na as na, not as an empty string: a string array
+                    // carries the same missing-value semantics as a string var.
+                    let v = self.eval_s_value(&args[1].value)?;
                     let list = self.str_array_ref(handle)?;
                     if list.len() >= MAX_ARRAY_LEN {
                         return Err(crate::ScriptError {
@@ -2900,7 +2911,7 @@ impl<'a> Vm<'a> {
             "array.fill" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
                 if (STR_TAG..LTF_TAG).contains(&handle) {
-                    let v = self.eval_s(&args[1].value)?;
+                    let v = self.eval_s_value(&args[1].value)?;
                     let from = self.arg_f(args, 2)?.unwrap_or(0.0);
                     let to = self.arg_f(args, 3)?.unwrap_or(NA);
                     let list = self.str_array_ref(handle)?;
@@ -2946,7 +2957,7 @@ impl<'a> Vm<'a> {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
                 if (STR_TAG..LTF_TAG).contains(&handle) {
                     let index = self.arg_f(args, 1)?.unwrap_or(NA);
-                    let v = self.eval_s(&args[2].value)?;
+                    let v = self.eval_s_value(&args[2].value)?;
                     let list = self.str_array_ref(handle)?;
                     let span = args
                         .get(1)
@@ -3925,6 +3936,31 @@ impl<'a> Vm<'a> {
                                 _ => None,
                             })
                             .is_some_and(|expr| {
+                                // A function that returns the history of a
+                                // declared string local is still a text
+                                // function, even though the local is not in
+                                // any scope while the CALLER infers the type.
+                                if let ExprKind::History { base, .. } = &expr.kind {
+                                    if let ExprKind::Ident(name) = &base.kind {
+                                        return body
+                                            .iter()
+                                            .rev()
+                                            .find_map(|item| match item {
+                                                Item::Assign {
+                                                    name: assigned,
+                                                    decl_type,
+                                                    expr,
+                                                    ..
+                                                } if assigned == name => Some(
+                                                    decl_type.as_deref() == Some("string")
+                                                        || self
+                                                            .expr_is_string_inner(expr, resolving),
+                                                ),
+                                                _ => None,
+                                            })
+                                            .unwrap_or(false);
+                                    }
+                                }
                                 if let ExprKind::Ident(name) = &expr.kind {
                                     body.iter()
                                         .rev()
@@ -4039,6 +4075,22 @@ impl<'a> Vm<'a> {
     /// Read a string var at the current bar with the float buffers' carry
     /// rules: an assigned slot is authoritative (None = na), unassigned
     /// slots carry the last assigned value.
+    /// Remember a function string local's value for this bar, keyed by call
+    /// site so two calls to the same function keep independent histories.
+    fn record_string_local(&mut self, name: &str, value: &Option<String>) {
+        let key = (self.call_sites.clone(), name.to_string());
+        let history = self
+            .string_local_history
+            .entry(key)
+            .or_insert_with(|| vec![None; self.candles.len()]);
+        if history.len() < self.candles.len() {
+            history.resize(self.candles.len(), None);
+        }
+        if let Some(slot) = history.get_mut(self.bar) {
+            *slot = value.clone();
+        }
+    }
+
     fn read_str_var(&self, name: &str) -> Result<Option<String>, crate::ScriptError> {
         let Some(buf) = self.str_vars.get(name) else {
             return Ok(None);
@@ -4062,7 +4114,10 @@ impl<'a> Vm<'a> {
 
     /// Route an array handle: the float heap below STR_TAG, the string
     /// heap at and above it.
-    fn str_array_ref(&mut self, handle: f64) -> Result<&mut Vec<String>, crate::ScriptError> {
+    fn str_array_ref(
+        &mut self,
+        handle: f64,
+    ) -> Result<&mut Vec<Option<String>>, crate::ScriptError> {
         if !handle.is_finite() || handle < STR_TAG || handle >= STR_TAG + self.str_heap.len() as f64
         {
             return Err(crate::ScriptError {
@@ -4513,7 +4568,11 @@ impl<'a> Vm<'a> {
                     Ok(f64::from(self.eval_s_value(&arg.value)?.is_none()))
                 } else {
                     #[cfg(test)]
-                    eprintln!("na numeric arg {:?}; string vars {:?}", args.first().map(|a| &a.value.kind), self.str_vars.keys().collect::<Vec<_>>());
+                    eprintln!(
+                        "na numeric arg {:?}; string vars {:?}",
+                        args.first().map(|a| &a.value.kind),
+                        self.str_vars.keys().collect::<Vec<_>>()
+                    );
                     Ok(f64::from(!a!(0)?.is_finite()))
                 }
             }
@@ -5196,7 +5255,7 @@ impl<'a> Vm<'a> {
                     }
                     let mut list = Vec::with_capacity(args.len());
                     for a in args {
-                        list.push(self.eval_s(&a.value)?);
+                        list.push(self.eval_s_value(&a.value)?);
                     }
                     self.str_heap.push(list);
                     return Ok(STR_TAG + (self.str_heap.len() - 1) as f64);
@@ -5854,11 +5913,8 @@ impl<'a> Vm<'a> {
                 }
                 let idx = self.arg_f(args, 1)?.unwrap_or(NA);
                 let idx = if idx.is_finite() && idx >= 0.0 { idx as usize } else { usize::MAX };
-                Ok(Some(self
-                    .str_array_ref(handle)?
-                    .get(idx)
-                    .cloned()
-                    .unwrap_or_default()))
+                // Out of range is na for text, just as it is for numbers.
+                Ok(self.str_array_ref(handle)?.get(idx).cloned().unwrap_or(None))
             }
             ExprKind::Call { callee, args } if callee == "array.join" => {
                 let handle = self
@@ -5876,7 +5932,13 @@ impl<'a> Vm<'a> {
                     None => ",".to_string(),
                 };
                 if (STR_TAG..LTF_TAG).contains(&handle) {
-                    return Ok(Some(self.str_array_ref(handle)?.join(&sep)));
+                    return Ok(Some(
+                        self.str_array_ref(handle)?
+                            .iter()
+                            .map(|value| value.clone().unwrap_or_default())
+                            .collect::<Vec<_>>()
+                            .join(&sep),
+                    ));
                 }
                 Ok(Some(self
                     .array_ref(handle)?
@@ -5945,6 +6007,31 @@ impl<'a> Vm<'a> {
                         let v = self.read_str_var(name);
                         self.bar = saved;
                         v
+                    }
+                    ExprKind::Ident(name)
+                        if self
+                            .string_scopes
+                            .iter()
+                            .rev()
+                            .any(|frame| frame.contains_key(name)) =>
+                    {
+                        let key = (self.call_sites.clone(), name.clone());
+                        let saved = self.bar;
+                        self.bar = saved.saturating_sub(off);
+                        let value = self
+                            .string_local_history
+                            .get(&key)
+                            .and_then(|history| history.get(self.bar).cloned())
+                            .flatten()
+                            .or_else(|| {
+                                self.string_scopes
+                                    .iter()
+                                    .rev()
+                                    .find_map(|frame| frame.get(name).cloned())
+                                    .flatten()
+                            });
+                        self.bar = saved;
+                        Ok(value)
                     }
                     _ => Ok(None),
                 }
@@ -6352,6 +6439,61 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["a!", "a!!", "a!", "a!!"]
         );
+    }
+
+    #[test]
+    fn a_function_string_local_can_read_its_own_history() {
+        // `state[1]` used to return na inside a function: the history arm only
+        // knew chart-level str_vars. Call-site keyed history also keeps two
+        // invocations of the same function independent.
+        let candles: Vec<Candle> = (0..4).map(|i| candle(i, 100.0 + i as f64)).collect();
+        let out = run_src(
+            concat!(
+                "//@pine_lite version=1 overlay=true title=\"string history\"\n",
+                "prior() =>\n",
+                "    var string state = \"a\"\n",
+                "    state := state + \"!\"\n",
+                "    state[1]\n",
+                "if bar_index > 0\n",
+                "    label.new(bar_index, close, prior())\n",
+                "    label.new(bar_index, close, prior())\n",
+            ),
+            &candles,
+        );
+        let texts: Vec<&str> = out
+            .objects
+            .iter()
+            .filter_map(|object| match object {
+                crate::interp::ScriptObject::Label { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            ["a!", "a!", "a!", "a!", "a!!", "a!!"],
+            "each call site reads its own previous bar"
+        );
+    }
+
+    #[test]
+    fn string_arrays_carry_na_and_out_of_range_is_na() {
+        let candles = vec![candle(0, 100.0)];
+        let source = concat!(
+            "//@pine_lite version=1 overlay=true title=\"text array na\"\n",
+            "var words = array.new_string()\n",
+            "if bar_index == 0\n",
+            "    array.push(words, na)\n",
+            "    array.push(words, \"x\")\n",
+            "string first = array.get(words, 0)\n",
+            "string second = array.get(words, 1)\n",
+            "string missing = array.get(words, 9)\n",
+            "plotshape(na(first), text=\"first is na\")\n",
+            "plotshape(bar_index == 0, text=nz(second, \"fallback\"))\n",
+            "plotshape(na(missing), text=\"out of range is na\")\n",
+        );
+        let out = run_src(source, &candles);
+        let texts: Vec<&str> = out.shapes.iter().map(|shape| shape.text.as_str()).collect();
+        assert_eq!(texts, ["first is na", "x", "out of range is na"]);
     }
 
     #[test]

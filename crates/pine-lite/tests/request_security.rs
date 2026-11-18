@@ -224,6 +224,65 @@ fn higher_timeframe_history_advances_once_per_source_bar_and_hides_partial_final
 }
 
 #[test]
+fn a_revealed_source_value_is_invariant_to_future_source_candles() {
+    // The counterpart of "an unfinished final bucket is not revealed": once a
+    // bucket has closed, adding later source candles must not change any chart
+    // value already visible. The sub-VM evaluates the whole pool on every run,
+    // so a regression that trimmed or extended it at the wrong edge would show
+    // up here even though the single-pool cadence test still passes.
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"MTF prefix\"\n",
+        "htf_time = request.security(\"ETHUSDT\", \"5m\", time)\n",
+        "htf_sma = request.security(\"ETHUSDT\", \"5m\", ta.sma(close, 2))\n",
+        "htf_gaps = request.security(\"ETHUSDT\", \"5m\", ta.sma(close, 2), gaps=barmerge.gaps_on)\n",
+        "plot(htf_time)\n",
+        "plot(htf_sma)\n",
+        "plot(htf_gaps)\n",
+    );
+    let (_, parsed) = vet(src).expect("vet");
+    let candles: Vec<Candle> = (0..13)
+        .map(|i| candle("BTCUSDT", i, Timeframe::M1, 100.0, 0.0))
+        .collect();
+    let pool = |buckets: usize| -> Vec<Candle> {
+        (0..buckets)
+            .map(|bucket| {
+                let mut source = candle("ETHUSDT", bucket, Timeframe::M5, 10.0, 10.0);
+                source.open_time = bucket as i64 * Timeframe::M5.nanos();
+                source
+            })
+            .collect()
+    };
+    let run_pool = |buckets: usize| {
+        let inputs = Inputs {
+            series_pool: [("ETHUSDT@5M".to_string(), pool(buckets))].into(),
+            ..Inputs::default()
+        };
+        run(&parsed, &candles, &inputs).expect("run")
+    };
+    let short = run_pool(3);
+    let long = run_pool(6);
+
+    for plot in 0..3 {
+        for bar in 0..candles.len() {
+            let a = short.plots[plot].values[bar];
+            let b = long.plots[plot].values[bar];
+            assert!(
+                (a.is_nan() && b.is_nan()) || (a - b).abs() < 1e-9,
+                "plot {plot} bar {bar} changed when future source candles were added: {a} -> {b}"
+            );
+        }
+    }
+    // Extra future source data must not make the still-incomplete bucket
+    // visible either.
+    assert!(
+        long.plots[1].values[10..]
+            .iter()
+            .all(|value| (value - 15.0).abs() < 1e-9),
+        "the partial final bucket was revealed"
+    );
+}
+
+#[test]
 fn gaps_off_carries_the_last_source_value_across_missing_bars() {
     let src = concat!(
         "//@pine_lite version=1 overlay=false title=\"Missing HTF bar\"\n",

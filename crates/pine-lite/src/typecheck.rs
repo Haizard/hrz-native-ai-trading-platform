@@ -93,6 +93,7 @@ pub fn check_with_header(script: &Script, header: &crate::Header) -> Vec<ScriptE
         input_symbols: std::collections::HashMap::new(),
         type_fields: std::collections::HashMap::new(),
         var_udt_types: std::collections::HashMap::new(),
+        string_array_vars: std::collections::HashSet::new(),
         methods: std::collections::HashMap::new(),
     };
     cx.items(&script.items);
@@ -123,6 +124,7 @@ pub fn collect_series_pool(script: &Script, header: &crate::Header) -> Vec<Strin
         input_symbols: std::collections::HashMap::new(),
         type_fields: std::collections::HashMap::new(),
         var_udt_types: std::collections::HashMap::new(),
+        string_array_vars: std::collections::HashSet::new(),
         methods: std::collections::HashMap::new(),
     };
     cx.items(&script.items);
@@ -213,6 +215,9 @@ struct Cx {
     type_fields: std::collections::HashMap<String, Vec<(String, String)>>,
     /// Vars known to hold a UDT instance: var name -> type name.
     var_udt_types: std::collections::HashMap<String, String>,
+    /// Vars holding `array.new_string()` (or a string `array.from`): their
+    /// `array.get` yields text, including `na` on an empty slot.
+    string_array_vars: std::collections::HashSet<String>,
     /// Declared methods: (receiver type, name) -> params (receiver first).
     methods: std::collections::HashMap<(String, String), Vec<String>>,
     /// Names in scope OUTSIDE the innermost `request.security` third
@@ -490,6 +495,14 @@ impl Cx {
                     }
                 }
                 let mut ty = self.expr(expr);
+                if let ExprKind::Call { callee, args } = &expr.kind {
+                    let text_array = callee == "array.new_string"
+                        || (callee == "array.from"
+                            && args.iter().any(|arg| expression_is_string(&arg.value)));
+                    if text_array {
+                        self.string_array_vars.insert(name.clone());
+                    }
+                }
                 // `p = Point.new(...)`: the var holds that type's instances.
                 if let ExprKind::Call { callee, .. } = &expr.kind {
                     if let Some(tn) = callee.strip_suffix(".new") {
@@ -1173,6 +1186,17 @@ impl Cx {
     }
 
     fn call_inner(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
+        if callee == "array.get" {
+            for arg in args {
+                self.expr(&arg.value);
+            }
+            let from_text_array = args.iter().find(|a| a.name.is_none()).is_some_and(|arg| {
+                matches!(&arg.value.kind, ExprKind::Ident(name) if self.string_array_vars.contains(name))
+            });
+            if from_text_array {
+                return Ty::String;
+            }
+        }
         // `p.dist(q)`: a method call on a var whose type we know. The
         // receiver is not an argument; the rest bind by the signature.
         if let Some((base, mname)) = callee.split_once('.') {
