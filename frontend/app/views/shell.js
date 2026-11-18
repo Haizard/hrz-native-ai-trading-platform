@@ -80,7 +80,7 @@
   const DEST_FROM_LEGACY = {
     chat: "charts", thesis: "charts", book: "charts", trade: "charts",
     watchlist: "charts",
-    indicator: "indicator-workspace", scan: "charts", strategy: "charts", skills: "charts",
+    indicator: "indicator-workspace", scan: "studio", strategy: "studio", skills: "studio",
     community: "community", bots: "bots",
     billing: "account", brokers: "account", aimodel: "account",
   };
@@ -210,7 +210,9 @@
     if (state.destination === "charts") {
       if (state.inspectorOpen) visible.add(INSPECTOR_VIEWS[state.inspectorTab]);
     } else if (state.destination === "indicator-workspace") {
-      visible.add("pane-indicator");
+      // Studio panes now live on the Indicator Workspace page; selecting one
+      // by its legacy name changes which pane that page shows.
+      visible.add(STUDIO_PANES[state.studioPane] || "pane-indicator");
     } else if (state.destination === "studio") {
       visible.add(STUDIO_PANES[state.studioPane]);
     }
@@ -699,6 +701,11 @@
       state.inspectorOpen = true;
       load = true;
     }
+    if (opts.studioPane && STUDIO_PANES[opts.studioPane] &&
+        opts.studioPane !== state.studioPane) {
+      state.studioPane = opts.studioPane;
+      load = true;
+    }
     if (destination === "indicator-workspace") {
       state.dockOpen = false;
       load = true;
@@ -1014,7 +1021,9 @@
       return;
     }
     if (destination === "studio") {
-      go("studio", { studioPane: name });
+      // `studio` is a legacy pane name, not a nav page any more: the panes
+      // live on the Indicator Workspace page, selected by `studioPane`.
+      go("indicator-workspace", { studioPane: name });
       return;
     }
     if (destination === "account") {

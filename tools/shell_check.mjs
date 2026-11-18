@@ -3130,11 +3130,14 @@ const responsiveBlock = (width) => {
   return responsiveText.slice(at, next < 0 ? responsiveText.length : next);
 };
 
+// The breakpoint SYSTEM lives in responsive.css. Other stylesheets may use a
+// 1100px rule for a local component (the community feed grid); that is not a
+// second shell breakpoint, so only the responsive file is in scope here.
 check(
-  "the old 1100 and 900 breakpoints are gone",
-  !styleText.includes("@media (max-width: 1100px)") &&
-    !styleText.includes("@media (max-width: 900px)"),
-  `1100=${styleText.indexOf("@media (max-width: 1100px)")} 900=${styleText.indexOf("@media (max-width: 900px)")}`
+  "the old 1100 and 900 shell breakpoints are gone",
+  !responsiveText.includes("@media (max-width: 1100px)") &&
+    !responsiveText.includes("@media (max-width: 900px)"),
+  `1100=${responsiveText.indexOf("@media (max-width: 1100px)")} 900=${responsiveText.indexOf("@media (max-width: 900px)")}`
 );
 check(
   "three breakpoints, widest first",
@@ -7390,7 +7393,7 @@ if (chatOption) {
   await settle();
   check(
     "and selecting one deep-links into Studio",
-    window.location.hash === "#/studio/ws-liquidity",
+    window.location.hash === "#/indicator-workspace/ws-liquidity",
     window.location.hash
   );
 }
