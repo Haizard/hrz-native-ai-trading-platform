@@ -89,3 +89,49 @@ pub enum SandboxError {
     #[error("the sandbox is not ready: {0}")]
     NotReady(String),
 }
+
+impl SandboxError {
+    /// Whether the *guest's own work* caused this, rather than the host or the
+    /// module's build.
+    ///
+    /// The distinction decides whether feeding the error back to the author is
+    /// useful: a script that loops past its fuel or traps can be rewritten,
+    /// while a missing export or a denied import is a build problem no
+    /// re-prompt fixes.
+    #[must_use]
+    pub const fn is_script_fault(&self) -> bool {
+        matches!(
+            self,
+            Self::FuelExhausted { .. }
+                | Self::Timeout(_)
+                | Self::MemoryLimitExceeded { .. }
+                | Self::Trap(_)
+                | Self::Guest(_)
+                | Self::TooManySignals { .. }
+                | Self::StateLimitExceeded(_)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_guests_own_work_counts_as_a_script_fault() {
+        assert!(SandboxError::FuelExhausted {
+            used: 10,
+            budget: 5
+        }
+        .is_script_fault());
+        assert!(SandboxError::Trap("unreachable".into()).is_script_fault());
+        // Build/host faults are not repairable by rewriting the script.
+        assert!(!SandboxError::CapabilityDenied("sock_open".into()).is_script_fault());
+        assert!(!SandboxError::MissingExport("run".into()).is_script_fault());
+        assert!(!SandboxError::AbiMismatch {
+            found: 1,
+            expected: 2
+        }
+        .is_script_fault());
+    }
+}

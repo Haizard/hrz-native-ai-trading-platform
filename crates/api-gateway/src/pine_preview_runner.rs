@@ -19,6 +19,45 @@ pub const MAX_WORKER_REQUESTS_PER_PROCESS: u32 = 32;
 const WORKER_POOL_SIZE: usize = 4;
 const WORKER_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// A preview that did not complete.
+///
+/// `script_fault` is the classification the repair loop needs: a guest-side
+/// failure (fuel, trap, memory) is worth feeding back to the author, while a
+/// worker/host failure is not. It is carried across the worker protocol rather
+/// than re-derived from the message text, so the two backends agree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinePreviewError {
+    /// Human-readable reason, the same text the preview route shows.
+    pub message: String,
+    /// Whether the guest's own work caused it.
+    pub script_fault: bool,
+}
+
+impl PinePreviewError {
+    /// A host-side failure: not repairable by rewriting the script.
+    fn host(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            script_fault: false,
+        }
+    }
+}
+
+impl From<String> for PinePreviewError {
+    fn from(message: String) -> Self {
+        Self::host(message)
+    }
+}
+
+impl From<sandbox::SandboxError> for PinePreviewError {
+    fn from(error: sandbox::SandboxError) -> Self {
+        Self {
+            script_fault: error.is_script_fault(),
+            message: error.to_string(),
+        }
+    }
+}
+
 /// Preview execution backend shared by the gateway routes.
 #[async_trait::async_trait]
 pub trait PinePreviewExecutor: Send + Sync {
@@ -26,7 +65,7 @@ pub trait PinePreviewExecutor: Send + Sync {
     async fn execute(
         &self,
         request: sandbox::PinePreviewRequest,
-    ) -> Result<sandbox::PinePreview, String>;
+    ) -> Result<sandbox::PinePreview, PinePreviewError>;
 }
 
 /// Development and test backend that runs the Wasmtime guest in this process.
@@ -46,11 +85,11 @@ impl PinePreviewExecutor for InProcessPinePreview {
     async fn execute(
         &self,
         request: sandbox::PinePreviewRequest,
-    ) -> Result<sandbox::PinePreview, String> {
+    ) -> Result<sandbox::PinePreview, PinePreviewError> {
         self.sandbox
             .execute_pine_preview(request)
             .map(|(preview, _)| preview)
-            .map_err(|error| error.to_string())
+            .map_err(PinePreviewError::from)
     }
 }
 
@@ -124,15 +163,15 @@ impl PinePreviewWorker {
     async fn execute_inner(
         &self,
         request: sandbox::PinePreviewRequest,
-    ) -> Result<sandbox::PinePreview, String> {
+    ) -> Result<sandbox::PinePreview, PinePreviewError> {
         let request = serde_json::to_vec(&request)
             .map_err(|error| format!("could not encode Pine preview request: {error}"))?;
         if request.len() > MAX_WORKER_REQUEST_BYTES {
-            return Err(format!(
+            return Err(PinePreviewError::host(format!(
                 "Pine preview request is {} bytes, exceeding the {} byte worker limit",
                 request.len(),
                 MAX_WORKER_REQUEST_BYTES
-            ));
+            )));
         }
 
         let _permit = self
@@ -145,14 +184,16 @@ impl PinePreviewWorker {
                 return self.execute_in_slot(&mut worker, &request).await;
             }
         }
-        Err("no Pine preview worker slot was available".to_string())
+        Err(PinePreviewError::host(
+            "no Pine preview worker slot was available",
+        ))
     }
 
     async fn execute_in_slot(
         &self,
         slot: &mut Option<WorkerProcess>,
         request: &[u8],
-    ) -> Result<sandbox::PinePreview, String> {
+    ) -> Result<sandbox::PinePreview, PinePreviewError> {
         if slot.is_none() {
             *slot = Some(WorkerProcess::spawn(&self.executable)?);
         }
@@ -169,15 +210,15 @@ impl PinePreviewWorker {
                 if let Some(mut worker) = slot.take() {
                     worker.stop().await;
                 }
-                return Err(error);
+                return Err(error.into());
             }
             Err(_) => {
                 if let Some(mut worker) = slot.take() {
                     worker.stop().await;
                 }
-                return Err(format!(
+                return Err(PinePreviewError::host(format!(
                     "Pine preview worker exceeded its {WORKER_TIMEOUT:?} deadline"
-                ));
+                )));
             }
         };
 
@@ -192,10 +233,16 @@ impl PinePreviewWorker {
             *slot = None;
             return match response {
                 WorkerResponse::Success { preview } if status.success() => Ok(preview),
-                WorkerResponse::Success { .. } => Err(format!(
+                WorkerResponse::Success { .. } => Err(PinePreviewError::host(format!(
                     "Pine preview worker returned success with failing exit status {status}"
-                )),
-                WorkerResponse::Failure { message } => Err(message),
+                ))),
+                WorkerResponse::Failure {
+                    message,
+                    script_fault,
+                } => Err(PinePreviewError {
+                    message,
+                    script_fault,
+                }),
             };
         }
         let recycle = worker.requests_served >= MAX_WORKER_REQUESTS_PER_PROCESS;
@@ -207,15 +254,21 @@ impl PinePreviewWorker {
                 .map_err(|error| format!("could not reap Pine preview worker: {error}"))?;
             *slot = None;
             if !status.success() {
-                return Err(format!(
+                return Err(PinePreviewError::host(format!(
                     "Pine preview worker exited with {status} while being recycled"
-                ));
+                )));
             }
         }
 
         match response {
             WorkerResponse::Success { preview } => Ok(preview),
-            WorkerResponse::Failure { message } => Err(message),
+            WorkerResponse::Failure {
+                message,
+                script_fault,
+            } => Err(PinePreviewError {
+                message,
+                script_fault,
+            }),
         }
     }
 }
@@ -301,7 +354,7 @@ impl PinePreviewExecutor for PinePreviewWorker {
     async fn execute(
         &self,
         request: sandbox::PinePreviewRequest,
-    ) -> Result<sandbox::PinePreview, String> {
+    ) -> Result<sandbox::PinePreview, PinePreviewError> {
         self.execute_inner(request).await
     }
 }
@@ -319,5 +372,46 @@ pub enum WorkerResponse {
     Failure {
         /// Explicit failure message.
         message: String,
+        /// Whether the guest's own work caused it (`SandboxError::
+        /// is_script_fault`). Defaults false so an older worker's frame still
+        /// deserializes, and a host failure is never fed back as a script bug.
+        #[serde(default)]
+        script_fault: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failure_frame_without_the_flag_is_a_host_failure() {
+        // Rolling deploys can run a worker built before the field existed; it
+        // must read as "not the script's fault" rather than fail to decode.
+        let frame: WorkerResponse =
+            serde_json::from_str(r#"{"status":"failure","message":"worker died"}"#)
+                .expect("the frame decodes");
+        match frame {
+            WorkerResponse::Failure {
+                message,
+                script_fault,
+            } => {
+                assert_eq!(message, "worker died");
+                assert!(!script_fault);
+            }
+            WorkerResponse::Success { .. } => panic!("expected a failure"),
+        }
+    }
+
+    #[test]
+    fn a_script_fault_survives_the_wire() {
+        let frame: WorkerResponse = serde_json::from_str(
+            r#"{"status":"failure","message":"fuel exhausted","script_fault":true}"#,
+        )
+        .expect("the frame decodes");
+        match frame {
+            WorkerResponse::Failure { script_fault, .. } => assert!(script_fault),
+            WorkerResponse::Success { .. } => panic!("expected a failure"),
+        }
+    }
 }

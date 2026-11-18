@@ -60,6 +60,31 @@ async fn worker_roundtrips_missing_provider_values_and_preview_evidence() {
     assert_eq!((repeated.plots[0].low, repeated.plots[0].high), (4.0, 4.0));
 }
 
+#[tokio::test]
+async fn a_worker_fuel_exhaustion_is_reported_as_the_scripts_fault() {
+    // The gateway's repair loop keys off this flag. It has to survive the
+    // worker process boundary, which is why the frame carries it rather than
+    // the host re-parsing the message.
+    let request = PinePreviewRequest {
+        source: concat!(
+            "//@pine_lite version=1 overlay=true title=\"Loop\"\n",
+            "i = 0\n",
+            "while i >= 0\n",
+            "    i += 1\n",
+            "plot(close)\n",
+        )
+        .into(),
+        candles: candles(&[1.0, 2.0]),
+        inputs: Inputs::default(),
+    };
+    let error = worker()
+        .execute(request)
+        .await
+        .expect_err("an unbounded loop must exhaust its fuel");
+    assert!(error.script_fault, "{error:?}");
+    assert!(error.message.contains("fuel exhausted"), "{error:?}");
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn linux_worker_proves_filesystem_network_and_environment_denial() {

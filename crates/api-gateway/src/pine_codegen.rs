@@ -2303,6 +2303,18 @@ mod tests {
         "/../../test-fixtures/light-pine/top_down_zones.pine"
     ));
 
+    /// The gold-scalping ask distilled from `prompt2.text`: a 1m/5m entry
+    /// model rather than an overlay, so the gate is exercised on a lower
+    /// timeframe and on sweep/order-block/IFVG vocabulary.
+    const GOLD_SCALP_REQUEST: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-fixtures/light-pine/gold_scalp_zones_request.txt"
+    ));
+    const GOLD_SCALP_SCRIPT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-fixtures/light-pine/gold_scalp_zones.pine"
+    ));
+
     #[test]
     fn the_taught_multi_timeframe_idiom_vets_and_runs_over_two_pools() {
         let errs = pine_lite::vet(MTF_SYNTHESIS_SCRIPT);
@@ -2473,6 +2485,60 @@ mod tests {
         assert_eq!(labels, ["15m FVG", "1h FVG"]);
     }
 
+    /// `prompt2` is a different shape from `prompt1`: a lower-timeframe entry
+    /// model (sweep -> break of structure -> order block, then an inverse FVG)
+    /// rather than a pure overlay. The gate must vet and run it too.
+    #[tokio::test]
+    async fn prompt2_gold_scalp_feature_runs_through_the_indicator_generation_gate() {
+        let llm = CapturingScriptedLlm {
+            script: GOLD_SCALP_SCRIPT.to_string(),
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+        let generated = generate_script(
+            &llm,
+            script_system_prompt("XAUUSD", "5m"),
+            GOLD_SCALP_REQUEST,
+            None,
+            4096,
+            0.0,
+            None,
+            &[],
+        )
+        .await
+        .expect("the gold-scalp script should pass the real generation gate");
+
+        assert_eq!(generated.attempts, 1);
+        assert_eq!(generated.source, GOLD_SCALP_SCRIPT);
+        assert!(
+            generated.report.is_some(),
+            "the model's receipt rides along"
+        );
+        assert!(pine_lite::vet(&generated.source).is_ok());
+
+        let requests = llm.requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(
+            matches!(
+                &requests[0].messages[0].content[0],
+                ContentBlock::Text(text) if text == GOLD_SCALP_REQUEST
+            ),
+            "the gold request reaches the generator unchanged"
+        );
+
+        let (_, parsed) = pine_lite::vet(&generated.source).expect("generated script vets");
+        let (candles, inputs) = gold_scalp_fixture_inputs();
+        let output = pine_lite::run(&parsed, &candles, &inputs).expect("generated script executes");
+        let labels: Vec<_> = output
+            .objects
+            .iter()
+            .filter_map(|object| match object {
+                pine_lite::interp::ScriptObject::LabelTime { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, ["HTF OB", "IFVG"]);
+    }
+
     fn candles_for_mtf_fixture() -> Vec<analytics_core::types::Candle> {
         (0..40)
             .map(|i| analytics_core::types::Candle {
@@ -2545,6 +2611,85 @@ mod tests {
             series_pool,
             ..pine_lite::Inputs::default()
         }
+    }
+
+    /// The gold fixture's data: a reclaimed bearish gap on the 5m chart, and a
+    /// 15m sweep + break whose order block is period 3. Kept beside
+    /// `mtf_fixture_inputs` so the two acceptance shapes are comparable.
+    fn gold_scalp_fixture_inputs() -> (Vec<analytics_core::types::Candle>, pine_lite::Inputs) {
+        let start = 1_700_000_000_000_000_000i64;
+        let bar_nanos = 300_000_000_000i64;
+        let mk =
+            |i: usize, open: f64, high: f64, low: f64, close: f64| analytics_core::types::Candle {
+                symbol: "XAUUSD".into(),
+                timeframe: analytics_core::types::Timeframe::M5,
+                open_time: start + i as i64 * bar_nanos,
+                open,
+                high,
+                low,
+                close,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            };
+        let mut candles: Vec<_> = (0..60).map(|i| mk(i, 100.0, 101.0, 99.0, 100.0)).collect();
+        candles[10] = mk(10, 110.0, 111.0, 110.0, 110.5);
+        candles[11] = mk(11, 110.5, 111.5, 110.2, 111.0);
+        candles[12] = mk(12, 108.0, 109.5, 107.0, 108.5);
+        for i in 13..20 {
+            candles[i] = mk(i, 108.0, 108.5, 107.0, 108.0);
+        }
+        candles[20] = mk(20, 108.0, 113.5, 107.5, 113.0);
+
+        let htf: [(f64, f64, f64, f64); 20] = [
+            (100.0, 102.0, 98.0, 100.5),
+            (100.5, 103.0, 100.0, 101.0),
+            (101.0, 103.5, 100.5, 101.5),
+            (101.5, 102.0, 99.0, 100.0),
+            (100.0, 101.0, 96.0, 101.0),
+            (101.0, 104.5, 100.5, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+            (104.0, 105.0, 103.0, 104.0),
+        ];
+        let pool15: Vec<_> = (0..60)
+            .map(|i| {
+                let period = i / 3;
+                let (open, high, low, close) = htf[period];
+                analytics_core::types::Candle {
+                    symbol: "XAUUSD".into(),
+                    timeframe: analytics_core::types::Timeframe::M15,
+                    open_time: start + (period * 3) as i64 * bar_nanos,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume: 1.0,
+                    buy_volume: 0.5,
+                    sell_volume: 0.5,
+                }
+            })
+            .collect();
+        let mut series_pool = std::collections::HashMap::new();
+        series_pool.insert("XAUUSD@15M".to_string(), pool15);
+        (
+            candles,
+            pine_lite::Inputs {
+                series_pool,
+                ..pine_lite::Inputs::default()
+            },
+        )
     }
 
     /// A scripted LLM: each completion pops the next canned tool call, so a

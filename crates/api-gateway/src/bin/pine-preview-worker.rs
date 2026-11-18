@@ -31,6 +31,7 @@ fn main() -> ExitCode {
     if std::env::args_os().nth(1).is_some() {
         let response = WorkerResponse::Failure {
             message: "unknown Pine preview worker argument".to_string(),
+            script_fault: false,
         };
         let _ = write_frame(&mut io::stdout(), &response);
         return ExitCode::FAILURE;
@@ -39,7 +40,10 @@ fn main() -> ExitCode {
     match run_worker() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            let response = WorkerResponse::Failure { message: error };
+            let response = WorkerResponse::Failure {
+                message: error,
+                script_fault: false,
+            };
             if write_frame(&mut io::stdout(), &response).is_err() {
                 return ExitCode::FAILURE;
             }
@@ -89,11 +93,13 @@ fn run_worker() -> Result<(), String> {
             Ok(request) => match sandbox.execute_pine_preview(request) {
                 Ok((preview, _)) => WorkerResponse::Success { preview },
                 Err(error) => WorkerResponse::Failure {
+                    script_fault: error.is_script_fault(),
                     message: error.to_string(),
                 },
             },
             Err(error) => WorkerResponse::Failure {
                 message: format!("invalid Pine preview worker request: {error}"),
+                script_fault: false,
             },
         };
         write_frame(&mut output, &response)?;

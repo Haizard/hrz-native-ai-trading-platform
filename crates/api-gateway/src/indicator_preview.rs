@@ -1227,7 +1227,20 @@ pub async fn replay_script_preview(
         })
         .await
         .map_err(|error| {
-            format!("the sandbox could not complete the Pine-Lite preview: {error}")
+            // A guest-side failure is the script's own doing, so it gets one
+            // repair round like a vet failure. `replay_script_preview`'s
+            // callers only retry on this prefix; without it a generated loop
+            // that burns its fuel is a dead 422 instead of a rewrite. The
+            // worker carries the classification across the process boundary,
+            // so this is not message-text sniffing.
+            if error.script_fault {
+                format!("the script failed at run time: {}", error.message)
+            } else {
+                format!(
+                    "the sandbox could not complete the Pine-Lite preview: {}",
+                    error.message
+                )
+            }
         })?;
     // Run notes ride the preview_note slot -- non-fatal, but the user must see
     // them.
