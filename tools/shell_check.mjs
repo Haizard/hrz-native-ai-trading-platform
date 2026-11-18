@@ -180,6 +180,12 @@ const context = new Proxy(
   {
     get(_target, prop) {
       if (prop === "measureText") return () => ({ width: 10 });
+      // A fresh plotshape paints a radial glow. Returning a real gradient
+      // object here matters: the harness records painting, not whether the
+      // browser happened to supply a canvas implementation.
+      if (prop === "createRadialGradient" || prop === "createLinearGradient") {
+        return () => ({ addColorStop() {} });
+      }
       if (prop === "save")
         return () => {
           painted.ops.push("save");
@@ -726,6 +732,31 @@ const backend = {
     },
   ],
 };
+
+// A script that mutates and deletes its own drawings through handles. The
+// engine re-runs the source on every frame, so the shell must paint the VM's
+// FINAL object list -- not the state at creation time. This is the script
+// half of the drawing lifecycle contract in docs/61.
+const DRAW_LIFECYCLE_SOURCE = [
+  '//@pine_lite version=1 overlay=true title="Lifecycle parity"',
+  'var b = na',
+  'var l = na',
+  'var gone = na',
+  'if bar_index == 0',
+  '    b := box.new(5, 104.0, 10, 102.0, color=color.teal)',
+  '    l := label.new(6, 103.0, "draft", color=color.blue)',
+  '    gone := line.new(2, 99.0, 8, 101.0, color=color.red)',
+  'if bar_index == 2',
+  '    box.set_right(b, 40.0)',
+  '    box.set_bottom(b, 98.0)',
+  '    label.set_text(l, "final")',
+  '    label.set_x(l, 20.0)',
+  'if bar_index == 3',
+  '    line.delete(gone)',
+  'plot(close)',
+  'plotshape(bar_index == 5, shape="circle", location_value=high, text="ping")',
+  '',
+].join("\n");
 
 const json = (status, body) => ({
   ok: status >= 200 && status < 300,
@@ -1421,6 +1452,26 @@ window.fetch = async (path, options = {}) => {
         backtests: { used: 3, limit: 2_000, remaining: 1_997 },
       },
       community_indicators_available: true,
+    });
+  }
+
+  // The script-drawing lifecycle fixture. Exact routes must precede the
+  // /indicator-workspaces prefix list below, which would swallow them.
+  if (url === "/indicator-workspaces/ws-draw") {
+    return json(200, {
+      id: "ws-draw",
+      name: "Drawing lifecycle",
+      symbol: "BTCUSDT",
+      timeframe: "5m",
+      active_revision_id: "rev-draw",
+    });
+  }
+  if (url === "/indicator-workspaces/ws-draw/revisions/rev-draw") {
+    return json(200, {
+      revision_number: 1,
+      preview: { name: "Drawing lifecycle" },
+      validation: { engine: "pine-lite-v1", inputs: [] },
+      source: DRAW_LIFECYCLE_SOURCE,
     });
   }
 
@@ -5129,6 +5180,109 @@ check(
   "hiding did not delete it",
   backend.drawings.some((d) => d.id === "ai-seeded-1"),
   `${backend.drawings.length} stored`
+);
+
+// --- a script's drawings ------------------------------------------------------
+//
+// The VM owns a drawing's lifecycle: setters mutate through a handle and
+// delete removes the object from the run's output. This section follows one
+// vetted script from attach, through the real WASM scene, to the painted
+// canvas, and proves the shell shows the FINAL state, not the creation state.
+
+console.log("\na script's drawings");
+
+await window.HRZApp.attachWorkspace("ws-draw");
+await waitFor(
+  () => (lastRequest().scripts || []).length === 1,
+  "the script's source to reach the engine"
+);
+await waitFor(
+  () => (lastScene().script_overlays || []).length === 1,
+  "the engine's script overlay"
+);
+await settle();
+
+check(
+  "the vetted script is attached as a layer on the active pane",
+  window.HRZApp.activePaneInfo().layers.length === 1 &&
+    window.HRZApp.activePaneInfo().layers[0].name === "Drawing lifecycle",
+  JSON.stringify(window.HRZApp.activePaneInfo().layers)
+);
+check(
+  "its source, not a second copy, is what the engine runs",
+  (lastRequest().scripts || []).length === 1 &&
+    lastRequest().scripts[0].source.includes("box.set_right"),
+  JSON.stringify((lastRequest().scripts || []).map((s) => s.source.slice(0, 60)))
+);
+check("the script ran without a note", !note().includes("a script could not run"), note() || "(empty)");
+
+const lifecycle = lastScene().script_overlays[0];
+const boxDraws = (lifecycle.objects || []).filter((o) => o.Box);
+const labelDraws = (lifecycle.objects || []).filter((o) => o.Label);
+const lineDraws = (lifecycle.objects || []).filter((o) => o.Line);
+
+check(
+  "the box and label carry the values their setters wrote on later bars",
+  boxDraws.length === 1 && labelDraws.length === 1 &&
+    labelDraws[0].Label.text === "final" &&
+    !labelDraws[0].Label.text.includes("draft") &&
+    Math.abs(
+      boxDraws[0].Box.x2 -
+        (lastScene().candles[40].x + lastScene().candles[40].w / 2)
+    ) < 1 &&
+    boxDraws[0].Box.y2 > boxDraws[0].Box.y1,
+  `box ${JSON.stringify(boxDraws[0]?.Box)} · label ${JSON.stringify(labelDraws[0]?.Label)}`
+);
+check(
+  "and the line deleted on a later bar never reaches the scene",
+  lineDraws.length === 0,
+  JSON.stringify(lifecycle.objects)
+);
+check(
+  "the plotshape is a positioned marker on the same overlay",
+  (lifecycle.shapes || []).length === 1 &&
+    lifecycle.shapes[0].text === "ping" &&
+    lifecycle.shapes[0].bar === 5,
+  JSON.stringify(lifecycle.shapes)
+);
+
+// Force a repaint of the scene just inspected, then read the recording stub.
+const scriptGeomBefore = painted.geom.length;
+const scriptTextBefore = painted.text.length;
+window.HRZApp.resizePanes();
+await settle();
+await settle();
+
+const scriptGeom = painted.geom.slice(scriptGeomBefore);
+const scriptText = painted.text.slice(scriptTextBefore);
+const drawnBox = boxDraws[0]?.Box;
+
+check(
+  "the shell strokes the box at its UPDATED right edge, not its creation width",
+  Boolean(drawnBox) && scriptGeom.some(([op, x, , w]) =>
+    op === "strokeRect" &&
+    Math.abs(x - (Math.round(drawnBox.x1) + 0.5)) < 0.6 &&
+    Math.abs(w - (Math.round(drawnBox.x2 - drawnBox.x1) - 1)) < 0.6
+  ),
+  `box ${drawnBox?.x1}..${drawnBox?.x2} · rects ${scriptGeom
+    .filter(([op]) => op === "strokeRect")
+    .slice(-4)
+    .join(" | ")}`
+);
+check(
+  "and paints the label's new text, never the draft",
+  scriptText.includes("final") && !scriptText.includes("draft"),
+  scriptText.slice(-8).join(" | ")
+);
+
+// Leave the pane as the following sections found it.
+window.HRZApp.removeLayer(0);
+await settle();
+check(
+  "removing the layer takes the script off the wire and out of the scene",
+  (lastRequest().scripts || []).length === 0 &&
+    (lastScene().script_overlays || []).length === 0,
+  JSON.stringify(lastRequest().scripts || [])
 );
 
 // --- a resize ----------------------------------------------------------------
