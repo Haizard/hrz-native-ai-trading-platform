@@ -480,8 +480,8 @@ execution test, and the language guide documents version and migration policy.
 
 1. **Phase 4 — charting contract.** The contract and audit are in `docs/61`.
    Remaining: provider-backed visual acceptance for Phases 10/11/16 and the
-   `prompt1`/`prompt2` fixtures, the duplicate-title identity decision, and
-   shell-level update/delete integration tests.
+   `prompt1`/`prompt2` fixtures, and a shell-level update/delete integration
+   test. Duplicate-title ids and the drawing-lifecycle wire tests landed.
 2. **Phase 5 — strategy/bot boundary.** The boundary, token authorization and
    "a script cannot bypass risk" tests are landed (`docs/60`). Remaining:
    golden script→promote→backtest fixture, script-declared target handling, and
