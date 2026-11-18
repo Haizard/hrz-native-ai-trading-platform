@@ -52,6 +52,20 @@ use strategy_runtime::signal::Signal;
 /// constant, not a request field, so the preview a user sees does not depend on
 /// what they happened to type.
 const PREVIEW_WINDOW_NS: i64 = 7 * 24 * 60 * 60 * 1_000_000_000;
+/// Each `request.security` call re-evaluates its source series once per chart
+/// bar. A week of 5m bars with several pairs blows the sandbox fuel budget on
+/// legitimate work, so MTF scripts preview over a shorter window. Language and
+/// chart-engine tests cover the full-history semantics separately.
+const MTF_PREVIEW_WINDOW_NS: i64 = 3 * 24 * 60 * 60 * 1_000_000_000;
+
+/// The window a given script is previewed over.
+fn preview_window_ns(header: &pine_lite::Header, parsed: &pine_lite::parse::Script) -> i64 {
+    if pine_lite::typecheck::collect_series_pool(parsed, header).is_empty() {
+        PREVIEW_WINDOW_NS
+    } else {
+        MTF_PREVIEW_WINDOW_NS
+    }
+}
 
 /// Pair a replay's flat signal list into setups with their exits.
 ///
@@ -899,7 +913,7 @@ pub async fn replay_script_preview(
         )
     })?;
     let to_ns = crate::now_ns();
-    let from_ns = to_ns - PREVIEW_WINDOW_NS;
+    let from_ns = to_ns - preview_window_ns(&header, &parsed);
     let tf = timeframe.parse::<Timeframe>().unwrap_or(Timeframe::M1);
     // The document replay backfills its window from the venue first; a script
     // preview over an empty store would "draw nothing" for data reasons, so
@@ -1250,7 +1264,7 @@ pub async fn replay_script_preview(
         serde_json::Value::String(output.notes.join("; "))
     };
     let stats = crate::indicator_workspace_routes::ScriptPreviewStats {
-        window_days: (PREVIEW_WINDOW_NS / 86_400_000_000_000) as i64,
+        window_days: ((to_ns - from_ns) / 86_400_000_000_000) as i64,
         bars: candles.len(),
         plots: output.plot_count,
         levels: output.levels,
@@ -1725,6 +1739,22 @@ use uuid::Uuid;
 mod tests {
     use super::*;
     use strategy_runtime::signal::{EnterSignal, ExitSignal, ExitTrigger};
+
+    #[test]
+    fn multi_timeframe_scripts_preview_over_a_shorter_window() {
+        let vet_src = |source: &str| pine_lite::vet(source).expect("the fixture vets");
+        let (header, parsed) = vet_src(concat!(
+            "//@pine_lite version=1 overlay=false title=\"Plain\"\n",
+            "plot(ta.rsi(close, 14))\n",
+        ));
+        assert_eq!(preview_window_ns(&header, &parsed), PREVIEW_WINDOW_NS);
+        let (header, parsed) = vet_src(concat!(
+            "//@pine_lite version=1 overlay=false title=\"MTF\"\n",
+            "htf = request.security(\"ETHUSDT\", \"15m\", close)\n",
+            "plot(htf)\n",
+        ));
+        assert_eq!(preview_window_ns(&header, &parsed), MTF_PREVIEW_WINDOW_NS);
+    }
 
     #[test]
     fn candle_flow_series_preserves_split_and_is_missing_without_it() {

@@ -53,7 +53,12 @@ pub struct SandboxLimits {
 impl Default for SandboxLimits {
     fn default() -> Self {
         Self {
-            fuel: 100_000_000,
+            // A 7-day 5m preview with several request.security call sites
+            // re-evaluates the source series thousands of times; 100M was
+            // exhausted by legitimate MTF scripts. 250M still ends a runaway
+            // loop deterministically (~9s here), under the worker's 15s wall
+            // clock, so the isolation guarantee is unchanged.
+            fuel: 250_000_000,
             timeout: Duration::from_millis(250),
             max_memory_bytes: 64 * 1024 * 1024,
             max_signals: 4,

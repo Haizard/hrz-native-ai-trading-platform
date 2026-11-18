@@ -345,6 +345,13 @@ pub(crate) fn script_system_prompt(symbol: &str, timeframe: &str) -> String {
     format!(
         r##"You write indicators as **pine-lite** scripts: TradingView-Pine-style imperative code the platform compiles and runs bar-by-bar. The user's chart is {symbol} on the {timeframe} timeframe; write for that.
 
+## MTF hard rules (the vet refuses anything else)
+- `request.security` and `request.security_lower_tf` arguments 1 and 2 must be quoted literals ("BTCUSDT", "15m") or variables declared with `input.symbol` / `input.timeframe`. Never pass a string expression, a local variable, or a concatenated name.
+- Declare a variable before you read it. `var` keeps state across bars; `na` is the missing value. An undeclared name is a hard vet error, not a warning.
+- Request only pairs the host can supply. This chart is {symbol} on {timeframe}. If the user names a different instrument, say so in the report and use this chart's data or `request.data` instead of inventing a pool the host cannot fetch.
+- Use at most three `request.security` call sites. Each one re-evaluates the source series and consumes the preview fuel budget; combine related measurements into one expression when you can.
+- Higher-timeframe values must come from closed bars: keep the default `lookahead=barmerge.lookahead_off` and shift history with `[1]` instead of reading the bar that is still forming.
+
 ## Output contract
 Call `submit_script` with `script` (the whole pine-lite source) AND `report` (the user-facing write-up). The report is what the user actually reads: what the script detects, what it draws and where, the parameters and their defaults, what it deliberately does not do, and suggested adjustments -- written like a colleague explaining the build, ending with one question that invites feedback. Never a bare "generated and validated" receipt. The FIRST line must be the header:
 
@@ -2269,6 +2276,20 @@ mod tests {
             "one HTF gap, one time-anchored box: {:?}",
             output.objects
         );
+    }
+
+    #[test]
+    fn the_prompt_pins_mtf_argument_and_declaration_rules() {
+        let prompt = script_system_prompt("BTCUSDT", "5m");
+        for rule in [
+            "arguments 1 and 2 must be quoted literals",
+            "Declare a variable before you read it",
+            "at most three `request.security` call sites",
+            "lookahead=barmerge.lookahead_off",
+            "Request only pairs the host can supply",
+        ] {
+            assert!(prompt.contains(rule), "the prompt must teach: {rule}");
+        }
     }
 
     #[test]

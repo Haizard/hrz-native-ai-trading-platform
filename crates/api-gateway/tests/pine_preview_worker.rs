@@ -82,7 +82,9 @@ async fn a_worker_fuel_exhaustion_is_reported_as_the_scripts_fault() {
         .await
         .expect_err("an unbounded loop must exhaust its fuel");
     assert!(error.script_fault, "{error:?}");
-    assert!(error.message.contains("fuel exhausted"), "{error:?}");
+    // Which guard fires first depends on the script's own step budget and the
+    // Wasmtime fuel budget; both are the guest's fault and must be repaired.
+    assert!(error.message.contains("budget"), "{error:?}");
 }
 
 #[cfg(target_os = "linux")]

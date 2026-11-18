@@ -105,8 +105,10 @@ host and the guest only evaluates that snapshot.
 The gateway preflights no more than 50,000 chart candles, 100,000 total candle
 and provider values, eight secondary market pools, 64 provider series, and
 16 MiB of serialized input. The guest response is capped at 4 MiB; Wasmtime's
-default 64 MiB linear-memory limit, 100,000,000 fuel, and 250 ms epoch
-deadline apply. A gateway semaphore allows four active Pine preview jobs and
+default 64 MiB linear-memory limit, 250,000,000 fuel, and 250 ms epoch
+deadline apply. The fuel was raised from 100,000,000 so a legitimate 7-day
+multi-timeframe preview with several `request.security` call sites finishes;
+a runaway loop still fails deterministically inside the worker's 15 s wall clock. A gateway semaphore allows four active Pine preview jobs and
 rejects excess work instead of queueing it without bound. The guest returns
 reduced chart evidence, not its full per-bar plot buffers.
 
