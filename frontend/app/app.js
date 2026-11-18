@@ -439,10 +439,21 @@ function refreshSecurityCandles(symbols, timeframe, barCount) {
     securityCache.set(sec, entry);
     // Scale the pool request to cover the same loaded time span as the chart;
     // lower-timeframe pools need more candles than chart bars.
-    api(`/candles?symbol=${encodeURIComponent(keySym)}&timeframe=${encodeURIComponent(fetchTf)}&limit=${requestedLimit}`)
+    const query = `symbol=${encodeURIComponent(keySym)}&timeframe=${encodeURIComponent(fetchTf)}&limit=${requestedLimit}`;
+    api(`/candles?${query}`)
       .then((resp) => {
         const list = resp && Array.isArray(resp.candles) ? resp.candles : [];
-        if (!list.length) throw new Error(`empty candle list for ${sec}`);
+        // No live feed for this pair (gold, synthetic, or a historical
+        // dataset). The workspace preview backfilled it into Postgres; read
+        // that stored series through the one route allowed to serve it.
+        if (!list.length) return api(`/script-candles?${query}`).then((stored) => {
+          const backfilled = stored && Array.isArray(stored.candles) ? stored.candles : [];
+          if (!backfilled.length) throw new Error(`empty candle list for ${sec}`);
+          return backfilled;
+        });
+        return list;
+      })
+      .then((list) => {
         securityCache.set(sec, { candles: list, fetchedAt: Date.now(), pending: false, timeframe: fetchTf, requestedLimit });
         // The scene must rebuild with the data now that it exists. The
         // listener is the chart closure's `renderNow`, registered below;

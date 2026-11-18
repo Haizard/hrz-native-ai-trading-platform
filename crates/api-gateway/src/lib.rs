@@ -376,6 +376,7 @@ pub fn router(state: AppState) -> Router {
             post(community_routes::report),
         )
         .route("/candles", get(market_routes::candles))
+        .route("/script-candles", get(market_routes::script_pool_candles))
         .route("/symbols", get(market_routes::symbols))
         // Both literal paths must be registered before any `/symbols/{symbol}`
         // wildcard, or they would be read as a symbol named "search".

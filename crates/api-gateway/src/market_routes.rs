@@ -174,6 +174,60 @@ pub async fn candles(
     }))
 }
 
+/// `GET /script-candles`
+///
+/// The one deliberate exception to this module's RAM/venue rule. Pine
+/// scripts may name a symbol the live feed does not carry (a gold pair, a
+/// synthetic feed, a historical dataset). Their candles were backfilled by
+/// the workspace preview and live in Postgres, but `/candles` correctly
+/// refuses to invent a live feed for them. The browser's script pool needs a
+/// way to read that stored series; this route is that way, and it reports
+/// the bars as `memory` so a client never mistakes them for a live venue
+/// answer.
+pub async fn script_pool_candles(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<CandlesQuery>,
+) -> Result<Json<CandlesResponse>, ApiError> {
+    let timeframe: Timeframe = query.timeframe.parse().map_err(|_| {
+        ApiError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("unknown timeframe `{}`", query.timeframe),
+        )
+    })?;
+    let symbol = query.symbol.to_uppercase();
+    let limit = query.limit.unwrap_or(500).clamp(1, MAX_LIMIT);
+    let to_ns = query.to.map_or_else(crate::now_ns, ms_to_ns);
+    let from_ns = query
+        .from
+        .map_or(to_ns - (limit as i64) * timeframe.nanos(), ms_to_ns);
+    let database = state.db.as_ref().ok_or_else(|| {
+        ApiError::unavailable("the script pool needs a database; none is configured")
+    })?;
+    let timeframes = std::collections::BTreeMap::from([("sec".to_string(), timeframe)]);
+    let series = db::loading::load_timeframe_series(
+        database.pool(),
+        &symbol,
+        &timeframes,
+        from_ns,
+        to_ns,
+        timeframe,
+    )
+    .await
+    .map_err(|error| ApiError::internal(format!("could not load the script pool: {error}")))?;
+    let candles = series.get("sec").cloned().unwrap_or_default();
+    Ok(Json(CandlesResponse {
+        symbol,
+        timeframe: timeframe.to_string(),
+        source: CandleSourceResponse {
+            memory: candles.len(),
+            venue: 0,
+        },
+        candles,
+        history_days: -1,
+        history_clamped: false,
+    }))
+}
+
 /// The window for "the most recent `limit` bars".
 ///
 /// Measured from the newest bar this process knows about, not from `now` -- the

@@ -747,3 +747,53 @@ async fn the_capability_report_does_not_require_a_token() {
     let (status, _) = h.get("/capabilities", None).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// Script pools may name a symbol the live feed does not carry. Those bars
+/// live in Postgres after a workspace backfill, and the shell must be able to
+/// read them: `/candles` deliberately refuses to invent a feed for them.
+#[tokio::test]
+async fn the_script_pool_route_serves_stored_candles_without_a_live_feed() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let symbol = format!("ZZPOOL{}", uuid::Uuid::new_v4().simple()).to_uppercase();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the epoch")
+        .as_nanos() as i64;
+    let tf = analytics_core::Timeframe::M15;
+    let candles: Vec<analytics_core::Candle> = (0..8)
+        .map(|i| analytics_core::Candle {
+            symbol: symbol.clone(),
+            timeframe: tf,
+            open_time: now - (8 - i) * tf.nanos(),
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.5,
+            volume: 1.0,
+            buy_volume: 0.5,
+            sell_volume: 0.5,
+        })
+        .collect();
+    db::repositories::insert_candles(h.database.pool(), &candles)
+        .await
+        .expect("storing the backfilled pool must succeed");
+
+    let (status, body) = h
+        .get(
+            &format!("/script-candles?symbol={symbol}&timeframe=15m&limit=8"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["symbol"], symbol);
+    let served = body["candles"].as_array().map_or(0, Vec::len);
+    assert!(served >= 7, "the backfilled pool must be served: {body}");
+    assert_eq!(body["source"]["memory"], served);
+    assert_eq!(body["source"]["venue"], 0);
+
+    db::repositories::delete_candles_for_symbol(&h.database.pool(), &symbol)
+        .await
+        .expect("cleanup");
+}

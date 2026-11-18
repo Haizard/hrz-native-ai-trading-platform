@@ -814,7 +814,7 @@ async fn run_workspace_turn(
     )
     .await?;
     let system_prompt =
-        crate::pine_codegen::script_system_prompt(&workspace.symbol, &workspace.timeframe);
+        crate::pine_codegen::script_system_prompt_compact(&workspace.symbol, &workspace.timeframe);
     let mut generated = crate::pine_codegen::generate_script(
         agent.llm().as_ref(),
         system_prompt.clone(),

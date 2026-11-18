@@ -758,6 +758,72 @@ A sweep reversal is a STATE machine with three latched stages; each stage's `var
         )
 }
 
+/// A short generation prompt.
+///
+/// The full [`script_system_prompt`] is exhaustive and is still used by tests
+/// and by the repair cheatsheet. Some providers stall for minutes on a ~84K
+/// character system message even though they answer ordinary requests in
+/// seconds, so live generation sends this compact form: the same output
+/// contract and MTF hard rules, a one-page syntax sheet, call NAMES instead
+/// of the full parameter catalogue (the vet still enforces arity), and the
+/// two reference scripts that pin the shapes we know work.
+#[must_use]
+pub(crate) fn script_system_prompt_compact(symbol: &str, timeframe: &str) -> String {
+    let catalogue = pine_lite::builtins::prompt_reference();
+    let names: Vec<&str> = catalogue
+        .lines()
+        .filter_map(|line| line.strip_prefix("- `"))
+        .filter_map(|line| line.split('`').next())
+        .collect();
+    format!(
+        r##"You write pine-lite indicators: TradingView-Pine-style code compiled bar-by-bar by Rust. The chart is {symbol} on {timeframe}; write for it.
+
+## MTF hard rules (the vet refuses anything else)
+- `request.security` / `request.security_lower_tf` arguments 1 and 2 must be quoted literals ("BTCUSDT", "15m") or variables declared with `input.symbol` / `input.timeframe`. Never a string expression, a local variable, or a concatenation.
+- Declare a variable before reading it. `var` keeps state across bars; `na` is missing. An undeclared name is a hard vet error.
+- Request only pairs the host can supply. This chart is {symbol} on {timeframe}; if the user names another instrument, say so in the report and use this chart's data or `request.data` instead of inventing a pool.
+- Use at most three `request.security` call sites; each re-evaluates the source series and spends the preview budget.
+- Higher-timeframe values must come from CLOSED bars: keep the default `lookahead=barmerge.lookahead_off` and shift history with `[1]`.
+
+## Output contract
+Call `submit_script` with `script` (the whole source) and `report` (a colleague-style explanation of what it detects/draws, parameters, deliberate omissions, and a closing question). First line of the source:
+
+//@pine_lite version=1 overlay=false title="My Indicator"
+
+`overlay=true` shares the price pane; `overlay=false` gets its own sub-pane.
+
+## Syntax (the compiler is strict)
+- One statement per line, no `;`; indent block bodies exactly 4 spaces. Assign with `=`, reassign with `:=`; `var` keeps state. Type words: `float/int/bool/color/string` and handle types; they must match the value.
+- Brackets are ONLY history on a named series: `close[1]`, `s[3]`. Never `ta.sma(close,9)[1]` or list literals. Arrays use functions: `var a = array.new()`, `array.push(a, v)`, `array.get(a, i)`, `array.size(a)`, `array.set(a, i, na)`; allocate with `var`.
+- `na` propagates; test with `na(x)`. Ternary `cond ? a : b`; boolean `and`/`or`/`not` need bool operands. `for i = 0 to 99` / `while cond` with a 4-space body and a terminating condition.
+- Drawings: `line.new`, `box.new`, `label.new` and their `*_time` twins return handles; mutate with `line.set_*`/`box.set_*`/`label.set_*`, remove with `*.delete`. Draw zones as BOXES extended past the last bar (`bar_index + 10000`); `plotshape` marks EVENTS, never zones. Keep new objects under the 256 heap and per-kind caps.
+- Scope: build only what the user named; extra concepts are noise, not value. Keep every `plotshape` at top level, gated by a visibility input. The script is self-contained: no imports, no network calls.
+
+## Builtins (names only; the vet enforces arity and result kind)
+{names}
+
+## A higher timeframe
+`htf = request.security("XAUUSD", "15m", close)` then `fresh = htf != htf[1]` uses completed higher bars. Draw time-anchored zones with `box.new_time(t0, top, t1, bottom, color=...)` and `label.new_time`; `request.time()` reads the aligned higher-bar timestamp.
+
+## Multi-timeframe synthesis
+Measure the 15m FVG (or sweep -> BOS -> order block) on its own bars, then project it onto the chart with `box.new_time`. A reclaimed bearish gap becomes an inverse FVG (IFVG) and acts as support. Use `request.data("...trade_buy_volume")` or `request.data("...book_bid_depth")` only when the user asks for flow or depth.
+
+## Strategies
+{strategy_rule}
+
+## Reference script (this exact shape vets and runs)
+```
+{reference}
+```
+"##,
+        symbol = symbol,
+        timeframe = timeframe,
+        names = names.join(" "),
+        strategy_rule = "strategy.* intents feed deterministic replay; no broker calls, pyramiding, or account state in the language.",
+        reference = REFERENCE_SCRIPT,
+    )
+}
+
 /// Pull the script out of the model's reply.
 ///
 /// Preference order: a fenced ```pine_lite block (what the system prompt
@@ -2276,6 +2342,32 @@ mod tests {
             "one HTF gap, one time-anchored box: {:?}",
             output.objects
         );
+    }
+
+    #[test]
+    fn the_compact_prompt_keeps_the_rules_and_fits_a_small_context() {
+        let prompt = script_system_prompt_compact("XAUUSD", "5m");
+        assert!(
+            prompt.len() < 30_000,
+            "compact prompt is {} bytes",
+            prompt.len()
+        );
+        for rule in [
+            "arguments 1 and 2 must be quoted literals",
+            "Declare a variable before reading it",
+            "at most three `request.security` call sites",
+            "lookahead=barmerge.lookahead_off",
+            "Request only pairs the host can supply",
+            "ta.sma",
+            "box.new_time",
+            "request.time()",
+            "15m FVG",
+            "trade_buy_volume",
+            "book_bid_depth",
+            REFERENCE_SCRIPT,
+        ] {
+            assert!(prompt.contains(rule), "compact prompt must keep: {rule}");
+        }
     }
 
     #[test]
