@@ -157,6 +157,62 @@ fn a_box_border_is_distinct_from_the_fill_and_optional() {
 }
 
 #[test]
+fn per_kind_caps_rotate_the_oldest_and_keep_creation_order() {
+    // `max_labels_count=2`: the third label retires the first *and reuses its
+    // arena slot*. The wire must still be in creation order (later draws on
+    // top), so the surviving pair is B then C -- walking arena slots would
+    // yield C then B.
+    let src = concat!(
+        "//@pine_lite version=1 overlay=true title=\"Caps\" max_labels_count=2\n",
+        "if bar_index == 0\n",
+        "    label.new(0, close, \"A\")\n",
+        "if bar_index == 1\n",
+        "    label.new(1, close, \"B\")\n",
+        "if bar_index == 2\n",
+        "    label.new(2, close, \"C\")\n",
+        "plot(close)\n",
+    );
+    let (_, parsed) = vet(src).expect("a bounded cap vets");
+    let output = run(&parsed, &candles(10), &Inputs::default()).expect("run");
+    assert_eq!(output.objects.len(), 2, "{:?}", output.objects);
+    let texts: Vec<&str> = output
+        .objects
+        .iter()
+        .map(|object| match object {
+            pine_lite::interp::ScriptObject::Label { text, .. } => text.as_str(),
+            other => panic!("expected a label: {other:?}"),
+        })
+        .collect();
+    assert_eq!(texts, ["B", "C"], "newest two, in creation order");
+}
+
+#[test]
+fn deleting_a_box_and_a_label_removes_them_from_the_wire() {
+    // A handle the script kept is the only way back to the object; deleting
+    // it removes it from the run's output, while unrelated objects survive.
+    let src = concat!(
+        "//@pine_lite version=1 overlay=true title=\"Delete\"\n",
+        "var b = na\n",
+        "var l = na\n",
+        "if bar_index == 0\n",
+        "    b := box.new(1, 104.0, 4, 99.0, color=color.red)\n",
+        "    l := label.new(2, 103.0, \"gone\", color=color.blue)\n",
+        "if bar_index == 1\n",
+        "    box.delete(b)\n",
+        "    label.delete(l)\n",
+        "    line.new(1, 99.0, 3, 103.0, color=color.green)\n",
+        "plot(close)\n",
+    );
+    let (_, parsed) = vet(src).expect("vet");
+    let output = run(&parsed, &candles(10), &Inputs::default()).expect("run");
+    assert_eq!(output.objects.len(), 1, "{:?}", output.objects);
+    assert!(matches!(
+        output.objects[0],
+        pine_lite::interp::ScriptObject::Line { .. }
+    ));
+}
+
+#[test]
 fn a_fib_is_one_object_with_four_anchors() {
     // docs/37: the VM stores the raw anchors; the decomposition into levels
     // and labels is the engine registry's job, never the VM's.

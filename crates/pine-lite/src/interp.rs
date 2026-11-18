@@ -1221,18 +1221,27 @@ impl<'a> Vm<'a> {
         // Serialize the arena: creation order, deleted slots gone. One
         // drain serves every pass -- a rerun cleared and refilled the
         // arena, so the LAST pass's arena is the one that ships.
-        self.out.objects = self.objects_live.iter().filter_map(|o| o.clone()).collect();
+        //
+        // Creation order is `objects_seq`, not slot order: the per-kind caps
+        // retire the oldest drawing by REUSING ITS SLOT, so a full arena's
+        // slot 0 can hold the newest line. Walking slots would then hand the
+        // renderer a list whose paint order (later = on top) disagrees with
+        // the order the script created them in.
+        let mut order: Vec<usize> = (0..self.objects_live.len())
+            .filter(|i| self.objects_live[*i].is_some())
+            .collect();
+        order.sort_by_key(|i| self.objects_seq[*i]);
+        self.out.objects = order
+            .iter()
+            .filter_map(|i| self.objects_live[*i].clone())
+            .collect();
         self.out.tables = self.tables_live.clone();
-        // out.objects is the FILTERED arena (deleted slots gone), so the
-        // fills' arena indices shift: remap them, and drop a fill whose
-        // line was deleted -- Pine's behavior too.
+        // out.objects is the ordered, deleted-slots-gone list; the fills'
+        // arena indices shift: remap them, and drop a fill whose line was
+        // deleted -- Pine's behavior too.
         let mut remap = vec![usize::MAX; self.objects_live.len()];
-        let mut next = 0usize;
-        for (i, o) in self.objects_live.iter().enumerate() {
-            if o.is_some() {
-                remap[i] = next;
-                next += 1;
-            }
+        for (position, slot) in order.iter().enumerate() {
+            remap[*slot] = position;
         }
         self.out.linefills = self
             .linefills_live
