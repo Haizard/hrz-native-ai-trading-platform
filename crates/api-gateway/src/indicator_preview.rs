@@ -278,15 +278,14 @@ async fn fetch_security_candles(
     to_ns: i64,
 ) -> Vec<types::Candle> {
     let timeframes = std::collections::BTreeMap::from([("sec".to_string(), tf)]);
-    if let Ok(series) =
-        db::loading::load_timeframe_series(database.pool(), sec, &timeframes, from_ns, to_ns, tf)
-            .await
-    {
-        let stored = series.get("sec").cloned().unwrap_or_default();
-        let expected = ((to_ns - from_ns).max(1) / tf.nanos().max(1)) as usize;
-        if stored.len() + 8 >= expected {
-            return stored;
-        }
+    let stored = db::loading::load_timeframe_series(database.pool(), sec, &timeframes, from_ns, to_ns, tf)
+        .await
+        .ok()
+        .and_then(|series| series.get("sec").cloned())
+        .unwrap_or_default();
+    let expected = ((to_ns - from_ns).max(1) / tf.nanos().max(1)) as usize;
+    if stored.len() + 8 >= expected {
+        return stored;
     }
     // The store is thin: backfill from the venue, then read again.
     if let Ok(fresh) = state
@@ -301,7 +300,11 @@ async fn fetch_security_candles(
             return fresh;
         }
     }
-    Vec::new()
+    // A few missing bars at the edge are not a reason to throw away a real,
+    // mostly-complete pool. Synthesised feeds and markets the venue does not
+    // list (gold symbols, for one) can never be backfilled, and the VM's
+    // timestamp merge already handles sparse sources. Return what we have.
+    stored
 }
 
 /// Time-align the second instrument's candles onto the primary series' bars.
