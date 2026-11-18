@@ -56,9 +56,14 @@ jobs:
       - name: Run the worker self-test
         run: |
           set -e
-          echo "starting worker isolation self-test"
-          cargo run -p api-gateway --bin pine-preview-worker -- --self-test
-          echo "worker isolation self-test completed"
+          # Record the exact kernel the probe ran on: "it passed somewhere in
+          # Linux" is not evidence for the deployment kernel.
+          echo "kernel: $(uname -a)" | tee -a "$GITHUB_STEP_SUMMARY"
+          cargo run -p api-gateway --bin pine-preview-worker -- --self-test | tee /tmp/worker-self-test.txt
+          # The binary's own success contract is exactly this one line; a
+          # green exit alone would not prove the restrictions were installed.
+          grep -qx isolated /tmp/worker-self-test.txt
+          echo "worker isolation self-test completed" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Confirm the worker ran isolated, not unprotected
         run: echo "worker isolation probe completed"
 

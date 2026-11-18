@@ -171,7 +171,10 @@ Open items for the Phase 4 exit gate:
 3. **Z-order between distinct script panes/overlays** is scene order
    (attach order); it is not configurable and not documented on the wire. If
    users can reorder layers, that needs an explicit field.
-4. **Wire-level update/delete tests**: box/label deletion now has a VM test and
-   a chart-engine mapping test; a shell-level integration test is still owed.
+4. ~~**Wire-level update/delete tests**: box/label deletion now has a VM test
+   and a chart-engine mapping test; a shell-level integration test is still
+   owed.~~ Done: `tools/shell_check.mjs` now attaches a script whose setters
+   widen a box and rename a label and whose `line.delete` removes a line, then
+   asserts the scene and the painted canvas show only the final state.
 5. **`ScriptDraw` has no style/width on `Label`** beyond the VM's own knobs;
    confirm that is intentional before calling the label contract complete.

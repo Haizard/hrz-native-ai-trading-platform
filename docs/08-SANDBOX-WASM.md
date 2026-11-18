@@ -134,7 +134,10 @@ and bounded output conversion. `cargo check -p pine-lite --target
 wasm32-unknown-unknown` preserves the browser build. These checks do not claim
 process isolation by themselves; the Linux child-process boundary and its
 kernel-policy probes are covered by the gateway worker integration tests and
-must pass on the deployment kernel.
+must pass on the deployment kernel. The CI `isolation` job prints the running
+kernel (`uname -a`) and asserts the worker's exact `isolated` self-test output
+into the step summary, so a green run carries its own kernel evidence; the
+deployment-host run is still not recorded.
 
 Existing evidence is deliberately kept separate: Pine-Lite's runaway-loop
 tests prove its interpreter fuel guard; `sandbox/tests/adversarial.rs` tests

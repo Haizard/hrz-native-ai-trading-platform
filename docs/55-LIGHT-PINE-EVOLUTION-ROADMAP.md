@@ -147,9 +147,9 @@ Still open:
 
 - WASM/native parity for any future intrabar feature (`varip`) — explicitly
   excluded from the equivalence guarantee until pinned by tests.
-- MTF history/time semantics and final-bucket reveal, and string locals/`na`
-  inside functions — both carried as partial rows in `docs/23` (Phases 11 and
-  10).
+- MTF history/time semantics and string locals/`na` are now runtime-complete
+  and tested; only their chart-preview/renderer visual acceptance remains
+  (`docs/23` Phases 11 and 10).
 - Pine-Lite's own guest isolation tests remain separate from the strategy
   sandbox's adversarial suite; the Linux worker probe has not been recorded as
   passing on the deployment kernel.
@@ -246,8 +246,9 @@ remain subject to Phase 0 baselines and review.
   before/after speed comparison.
 - Specify host-provided series, alignment/carry-forward, and missing-data
   behavior. **Host-data contract done:** documented in `docs/23`, with a
-  regression test for sparse `sec=` gaps. MTF rolling-history/time semantics
-  and the partial-final-bucket behavior remain open.
+  regression test for sparse `sec=` gaps, source-cadence/final-bucket reveal,
+  and prefix invariance under future source candles
+  (`request_security.rs`).
 - **Isolation boundary decided:** the gateway's current native preview stays
   preview-only; do not broaden server-side execution or add trading
   capabilities until Pine-Lite runs as a bounded Wasmtime guest. Wasmtime's
@@ -480,8 +481,9 @@ execution test, and the language guide documents version and migration policy.
 
 1. **Phase 4 — charting contract.** The contract and audit are in `docs/61`.
    Remaining: provider-backed visual acceptance for Phases 10/11/16 and the
-   `prompt1`/`prompt2` fixtures, and a shell-level update/delete integration
-   test. Duplicate-title ids and the drawing-lifecycle wire tests landed.
+   `prompt1`/`prompt2` fixtures. Duplicate-title ids, the drawing-lifecycle
+   wire tests, and the shell-level attach→scene→paint update/delete test
+   (`tools/shell_check.mjs`) landed.
 2. **Phase 5 — strategy/bot boundary.** The boundary, token authorization and
    "a script cannot bypass risk" tests are landed (`docs/60`). Remaining:
    golden script→promote→backtest fixture, script-declared target handling, and
@@ -496,8 +498,10 @@ execution test, and the language guide documents version and migration policy.
    `.env.remote`), so attempts can be repeated without redeployment. A
    scripted model proves the contract, not a live model's ability to infer the
    strategy from the transcript.
-4. **Close the named partials in `docs/23`** that are not visual acceptance:
-   MTF sub-VM history/rolling semantics and final-bucket reveal (Phase 11), and
-   persistent string locals plus complete string-`na` propagation (Phase 10).
-5. **Linux isolation verification.** Phase 8's worker probe is shipped and in CI
-   but has not been recorded as passing on the deployment kernel.
+4. **Close the visual-acceptance partials in `docs/23`** (Phases 10, 11, 16).
+   The named runtime partials are done: MTF sub-VM history/final-bucket reveal
+   (Phase 11) and persistent string locals plus string-`na` propagation
+   (Phase 10) now have executable tests.
+5. **Linux isolation verification.** Phase 8's worker probe is shipped and CI
+   now records the kernel and the worker's `isolated` self-test output, but a
+   green run on the deployment host is still not recorded.

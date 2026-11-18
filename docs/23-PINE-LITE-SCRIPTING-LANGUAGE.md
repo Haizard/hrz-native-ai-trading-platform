@@ -126,9 +126,11 @@ User-function parameters and returns support strings when the function body
 uses the parameter in string concatenation, string ternaries/switches, or a
 string-valued local assignment. These parameters accept strings and numeric
 values (formatted as text at runtime); defaults are checked against the
-inferred kind. Persistent (`var`/`varip`) string locals inside
-functions are refused; other inferred function parameter kinds are checked at
-the call site. UDT constructors and field assignments check declared
+inferred kind. Persistent (`var`/`varip`) string locals inside functions are
+supported and keyed by call site, so two calls keep independent state and
+history (`interp.rs` test `persistent_string_locals_are_independent_per_function_call_site`
+and `a_function_string_local_can_read_its_own_history`). Other inferred
+function parameter kinds are checked at the call site. UDT constructors and field assignments check declared
 `string`, `bool`, and `color` fields distinctly; other implemented fields are
 numeric/handles.
 Input defaults are checked against their supported kind (`input.bool` retains
@@ -432,9 +434,11 @@ backtest, or a bot.
   cache a compiled script by source hash. The current settings popover edits
   boolean, numeric, color, and string inputs. The VM supports string-valued
   assignments, concatenation, history reads, host-supplied `input.string`
-  values, inferred string parameters/returns in user functions, and string UDT
-  fields. Persistent string locals inside functions and complete string `na`
-  propagation remain unsupported.
+  values, inferred string parameters/returns in user functions, string UDT
+  fields, persistent string locals in functions, and string `na` propagation
+  through functions, history, UDT fields, `nz`, and string arrays
+  (`array.get` on a string array yields `na` for an empty slot). Full visual
+  acceptance remains open.
 
 ## Phased plan
 
@@ -447,9 +451,9 @@ backtest, or a bot.
 | 5 | Quantitative standard library: complete advertised `ta.*` surface | Numeric fixtures, complete catalog metadata, and AI-reference coverage | **done** for every advertised builtin — numeric tests in `crates/pine-lite/src/ta.rs` and `tests/ta_ohlcv_pack.rs`, completeness checks in `builtins.rs`, and prompt discovery coverage in `crates/api-gateway/src/pine_codegen.rs`. This is not the full TradingView Pine API. |
 | 6 | Plot statements → `ScriptPane` output contract | Positioning tests in chart-engine | **done** for current plot/drawing types — projection tests in `frontend/chart-engine/src/script.rs` and `scene.rs`; frontend painter in `frontend/app/app.js`. |
 | 7 | Strategy calls → backtester replay intents | Pine execution and `ScriptStrategy` replay agree on supported intents; runtime failures are observable | **done** for the adapter's supported intents — `crates/backtester/src/script_strategy.rs` and `crates/backtester/tests/script_parity.rs`; runtime failures now abort replay with diagnostics. |
-| 8 | Static analyser + sandbox front-end + fuel budgets | Adversarial tests mirror docs/08's list | **implemented; Linux runtime verification pending** — the gateway runs Pine-Lite in `sandbox-guest` under Wasmtime fuel, epoch, and linear-memory limits, then executes it in recycled worker processes with Landlock, thread-synchronized seccomp, OS resource limits, bounded IPC, and fail-closed startup validation. Wasm parity/adversarial tests are in `crates/sandbox/tests/pine_preview.rs`; the Linux-only process-policy probe is in `crates/api-gateway/tests/pine_preview_worker.rs` and must pass on the deployment kernel. Non-Linux development uses the in-process backend. |
+| 8 | Static analyser + sandbox front-end + fuel budgets | Adversarial tests mirror docs/08's list | **implemented; Linux runtime verification pending on the deployment kernel** — the gateway runs Pine-Lite in `sandbox-guest` under Wasmtime fuel, epoch, and linear-memory limits, then executes it in recycled worker processes with Landlock, thread-synchronized seccomp, OS resource limits, bounded IPC, and fail-closed startup validation. Wasm parity/adversarial tests are in `crates/sandbox/tests/pine_preview.rs`; the Linux-only process-policy probe is in `crates/api-gateway/tests/pine_preview_worker.rs` and must pass on the deployment kernel; CI records the kernel version and the worker's `isolated` self-test output, but a green run on the deployment host is still not recorded. Non-Linux development uses the in-process backend. |
 | 9 | Gateway: `/scripts/*` routes, workspace language switch, AI loop | `indicator_workspace_flow`-style gateway tests | **done for the indicator path; distinct strategy flow is intentional** — `/scripts/vet`, generation/edit/repair/preview, and revision storage live in `crates/api-gateway/src/script_routes.rs` and `indicator_workspace_routes.rs`; generated previews use the isolated guest. Indicator workspaces use Pine-Lite, while strategy-document workspaces use the Strategy DSL; there is no implicit in-place conversion between these different contracts. |
-| 10 | Chart engine + shell: rendering, inputs UI, pane management | Shell check script + visual parity vs RSI sub-pane | **partial** — render/projection and layer controls are implemented; boolean/numeric/color/string settings are editable in the shell. The VM supports string assignment, concatenation, history, `input.string`, inferred string parameters/returns in user functions, and string UDT fields. Persistent string locals inside functions and complete string-`na` semantics remain open. Full visual acceptance remains open. |
+| 10 | Chart engine + shell: rendering, inputs UI, pane management | Shell check script + visual parity vs RSI sub-pane | **partial** — render/projection and layer controls are implemented; boolean/numeric/color/string settings are editable in the shell. The VM supports string assignment, concatenation, history, `input.string`, inferred string parameters/returns, persistent string locals in functions, string UDT fields, and string `na` through functions/history/arrays. Runtime semantics are done and tested; full visual acceptance remains open. |
 
 Phases 1–5 are the language core and land as one reviewable unit; 6–8 make it
 visible and safe; 9–10 wire it to users.
@@ -462,7 +466,7 @@ limitations remain explicit even when the language construct itself is tested.
 
 | Phase | Delivered capability | Status, evidence, and remaining limitation |
 | --- | --- | --- |
-| 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", expression)`, keyed host pools, eight-key cap, and `sec=` shorthand. | **partial** — literal collection, cap, raw source fetching, timestamp merge, and chart-engine paths exist in `crates/pine-lite/src/typecheck.rs`, `interp.rs`, `crates/api-gateway/src/indicator_preview.rs`, and `frontend/chart-engine/src/script.rs`. Sub-VM history/rolling evaluation advances once per source candle, missing source bars carry only the last revealed value, and an unfinished final bucket is not revealed. Runtime tests cover cadence and sparse source bars; the chart engine tests raw-history warm-up for a zoomed window. Broader chart-preview/renderer visual acceptance remains open. |
+| 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", expression)`, keyed host pools, eight-key cap, and `sec=` shorthand. | **done for runtime semantics; visual acceptance open** — literal collection, cap, raw source fetching, timestamp merge, and chart-engine paths exist in `crates/pine-lite/src/typecheck.rs`, `interp.rs`, `crates/api-gateway/src/indicator_preview.rs`, and `frontend/chart-engine/src/script.rs`. Sub-VM history/rolling evaluation advances once per source candle, missing source bars carry only the last revealed value, and an unfinished final bucket is not revealed. Runtime tests cover cadence, sparse source bars, and prefix invariance when future source candles are added (`request_security.rs`); the chart engine tests raw-history warm-up for a zoomed window. Broader chart-preview/renderer visual acceptance remains open. |
 | 12 | **User-defined functions** with typed call sites, series-passing semantics, and recursion limits. | **done** — parser/checker/runtime in `parse.rs`, `typecheck.rs`, and `interp.rs`; `tests/user_functions.rs` covers execution, TA composition, arity, and recursion refusal. |
 | 13 | **Drawing objects** with bounded VM heap and chart-coordinate projection. | **done** for implemented line/label/box/Fibonacci objects — `tests/drawing_objects.rs`, `frontend/chart-engine/src/scene.rs` projection tests, and `frontend/app/app.js` painter. This does not imply every requested visualization type exists. |
 | 14 | **Provider-backed `request.data`** for ticker snapshots, timestamped futures series, and captured flow/depth. Generic HTTP is explicitly not part of this phase. | **implemented for the defined feeds** — ticker/funding/OI and trade/book series are implemented in `indicator_preview.rs`; flow aggregates retained records and overlays live ticks only when their source matches, while depth reads source-specific snapshots as-of each bar. `db::MarketDataSource` is the provider-neutral persistence contract, with source-aware pumps, writes, and history queries for Binance, Bybit, legacy rows, and external dataset adapters. `MARKET_HISTORY_SOURCE` selects a non-default retained dataset. Availability still reflects actual capture/backfill coverage and retention; missing data remains `na`. Generic HTTP is permission-gated future work. |
