@@ -215,7 +215,9 @@ infer gateway/browser/backtester parity from a Pine-Lite unit test alone.
    OpenAI-compatible endpoint (`zai-org/GLM-5.3`). Direct chat completions,
    including a 22K-token prompt, answer in ~10s, but the same model returns
    `Overloaded` when a tool definition is present, and the gateway's agent run
-   timed out at 600s with a transport failure. The key is configured locally
+   timed out at 600s with a transport failure. A retry on a ~24K-character
+   compact prompt still returned HTTP 529 `Overloaded` from the primary, with
+   the fallback providers out of quota. The key is configured locally
    only (`.env`, gitignored); no credential is recorded here. Separately, the
    earlier fuel failure is now closed: the Wasmtime budget is 250M and MTF
    scripts preview over 3 days, so the gold-scalp fixture produces 60 boxes
