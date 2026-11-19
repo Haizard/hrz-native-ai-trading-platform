@@ -155,12 +155,14 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     let pine_preview: Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor> = {
         let fallback = || {
-            Arc::new(api_gateway::pine_preview_runner::InProcessPinePreview::new(Arc::clone(&sandbox)))
-                as Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor>
+            Arc::new(api_gateway::pine_preview_runner::InProcessPinePreview::new(
+                Arc::clone(&sandbox),
+            )) as Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor>
         };
         match api_gateway::pine_preview_runner::PinePreviewWorker::from_env() {
             Ok(worker) => match worker.validate_isolation().await {
-                Ok(()) => Arc::new(worker) as Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor>,
+                Ok(()) => Arc::new(worker)
+                    as Arc<dyn api_gateway::pine_preview_runner::PinePreviewExecutor>,
                 Err(error) => {
                     warn!(%error, "Pine preview worker isolation self-test failed; falling back to in-process previews");
                     fallback()
@@ -321,6 +323,21 @@ async fn main() -> anyhow::Result<()> {
 
 /// Build the deployment's primary agent from the environment, if configured.
 ///
+/// The output cap can be lowered for fallback providers whose quota is per
+/// output-token-per-minute (Groq's free tier is 1000). A smaller cap lets the
+/// fallback chain actually answer instead of being rejected before generation.
+fn agent_config_from_env() -> AgentConfig {
+    let mut config = AgentConfig::default();
+    if let Ok(raw) = std::env::var("AI_MAX_TOKENS") {
+        if let Ok(tokens) = raw.trim().parse::<u32>() {
+            if tokens > 0 {
+                config.max_tokens = tokens;
+            }
+        }
+    }
+    config
+}
+
 /// The provider is chosen by `AI_PROVIDER` (default `bedrock`, which keeps
 /// the original `AWS_BEDROCK_*` contract intact); the Chat Completions family
 /// reads `AI_MODEL` / `AI_API_KEY` / `AI_BASE_URL`. Users can still bring
@@ -333,7 +350,7 @@ fn build_agent(skills: &SkillLibrary) -> Option<Arc<Agent>> {
             Some(Arc::new(Agent::new(
                 client,
                 skills.clone(),
-                AgentConfig::default(),
+                agent_config_from_env(),
             )))
         }
         Err(e) => {
