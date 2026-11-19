@@ -5372,23 +5372,42 @@ const pz = await gesture(() => wheel(PANE, -120, true));
 const pWin = candleWindow();
 const pZones = boxLabelOf();
 check(
-  "shift+wheel zooms the price axis into a usable positive range",
+  "shift+wheel keeps a positive price axis that contains every candle",
   pz.rebuilt && pz.sent?.kind === "zoom_price" && pz.sent.factor > 1 &&
     pWin.price_max > pWin.price_min &&
-    pWin.price_max - pWin.price_min < baseWin.price_max - baseWin.price_min,
-  `${pWin.price_min}..${pWin.price_max}`
+    pWin.bars.every((b) => Number.isFinite(b.top) && Number.isFinite(b.bottom)) &&
+    pWin.bars.every((b) => insidePlotVertically(b, pWin.plot)),
+  `${pWin.price_min}..${pWin.price_max}, ${pWin.bars.filter((b) => insidePlotVertically(b, pWin.plot)).length}/${pWin.bars.length} inside`
 );
 check(
-  "price zoom leaves finite candles with at least one in view",
-  pWin.bars.every((b) => Number.isFinite(b.top) && Number.isFinite(b.bottom)) &&
-    pWin.bars.some((b) => insidePlotVertically(b, pWin.plot)),
-  `${pWin.bars.filter((b) => insidePlotVertically(b, pWin.plot)).length} of ${pWin.bars.length} inside`
+  "a vertical drag never moves candles off the price window",
+  pWin.bars.every((b) => insidePlotVertically(b, pWin.plot)),
+  `${pWin.bars.filter((b) => insidePlotVertically(b, pWin.plot)).length}/${pWin.bars.length} inside`
 );
 check(
   "price zoom keeps the script's box and label",
   pZones.boxes === 1 && pZones.labels === 1 && pZones.lines === 0 &&
     pZones.label?.text === "final" && pZones.box?.y2 > pZones.box?.y1,
   JSON.stringify(pZones)
+);
+
+// A drag pans the series forward/backward. The vertical component of the
+// same drag is deliberately ignored: candles never move up or down.
+pickTool("cursor", PANE);
+const panPlot = lastScene().plot;
+const px = panPlot.x + panPlot.w * 0.6;
+const py = panPlot.y + panPlot.h * 0.5;
+const pg = await gesture(() => {
+  pointer("pointerdown", px, py);
+  pointer("pointermove", px - 60, py + 40);
+  pointer("pointerup", px - 60, py + 40);
+});
+const panWin = candleWindow();
+check(
+  "a drag pans time only, leaving every candle inside the price window",
+  pg.rebuilt && pg.sent?.kind === "pan" && Math.abs(pg.sent.time) > 0 &&
+    panWin.bars.length > 0 && panWin.bars.every((b) => insidePlotVertically(b, panWin.plot)),
+  `${JSON.stringify(pg.sent)}, ${panWin.bars.filter((b) => insidePlotVertically(b, panWin.plot)).length}/${panWin.bars.length} inside`
 );
 
 const fit = await gesture(() => window.HRZApp.fitActivePane());

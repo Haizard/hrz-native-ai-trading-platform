@@ -2412,7 +2412,7 @@ pub fn build(request: &Request) -> Scene {
         // sit entirely above or below the bars now on screen; using it
         // verbatim paints an empty chart until the user hits Fit. Keep it only
         // while it still shows part of the current series.
-        .filter(|range| range.overlap_fraction(visible_fit) >= 0.10)
+        .filter(|range| range.min <= visible_fit.min && range.max >= visible_fit.max)
     {
         Some(range) => range,
         None => {

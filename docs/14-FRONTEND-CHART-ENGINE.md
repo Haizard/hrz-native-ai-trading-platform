@@ -367,7 +367,10 @@ CPU calc   GPU-friendly buffers
   give the same candle a different open depending on how far the user had scrolled. The window
   must not change the data.
 
-  The gestures are `zoom_time`, `zoom_price`, `pan`, and `fit`. A hostile factor or anchor is
+  The gestures are `zoom_time`, `zoom_price`, `pan`, and `fit`. The window is defined by the
+  candles: `zoom_time` changes bar width so the window's bars still fill the plot, a drag pans
+  **time only** (its price component is ignored), and `zoom_price` may add air but never crops a
+  candle. Fit returns to the whole series. A hostile factor or anchor is
   **bounded rather than rejected** — `NaN` is a no-op, an infinite factor is capped at ten —
   because the failure mode of trusting one is a chart with nothing on it and no error anywhere.
   `no_hostile_input_can_produce_an_unusable_window` sweeps 1,715 combinations to say so.

@@ -56,11 +56,6 @@ const MIN_PRICE_FRACTION: f64 = 1.0e-6;
 /// double-click remain the explicit reset.
 const MIN_VISIBLE_PRICE_OVERLAP: f64 = 0.50;
 
-/// The weaker overlap a price *zoom* must keep. A zoom is meant to frame a
-/// narrow band, so it may push most candles off screen; it must not push all
-/// of them off, which would leave an empty chart with no obvious way back.
-const MIN_ZOOM_PRICE_OVERLAP: f64 = 1.0e-9;
-
 /// How much empty space the user may drag in past the newest bar, as a
 /// fraction of the window's own width.
 ///
@@ -408,8 +403,13 @@ impl Viewport {
                 let zoomed = PriceRange {
                     min: max - span,
                     max,
-                }
-                .kept_in_view(fitted, MIN_ZOOM_PRICE_OVERLAP);
+                };
+                // A price zoom may add air around the candles but may never
+                // crop them: the window is defined by the bars, not the axis.
+                let zoomed = PriceRange {
+                    min: zoomed.min.min(fitted.min),
+                    max: zoomed.max.max(fitted.max),
+                };
                 Self {
                     from: self.from,
                     count: self.count,
@@ -421,15 +421,13 @@ impl Viewport {
                 let Some(time) = sane_fraction(time) else {
                     return *self;
                 };
-                let Some(price) = sane_fraction(price) else {
-                    return *self;
-                };
+                // The price half of a drag is deliberately ignored. Candles
+                // move forward and backward, never up or down: the axis is a
+                // function of the bars in the window, not a second thing the
+                // trader has to keep aligned. This is the TradingView rule the
+                // chart contract follows.
+                let _ = price;
 
-                // `self.count` is preserved when the drag is purely vertical.
-                // Pinning it unconditionally would turn a price drag into a time
-                // zoom: a chart that was showing everything would suddenly be
-                // showing "these five hundred bars", and would stop growing as
-                // new ones arrived.
                 let (from, count) = if time == 0.0 {
                     (window.from, self.count)
                 } else {
@@ -440,34 +438,10 @@ impl Viewport {
                     )
                 };
 
-                let range = if price == 0.0 {
-                    self.price
-                } else {
-                    match self.price.unwrap_or(fitted) {
-                        base if base.is_usable() => {
-                            let shift = price * base.span();
-                            let mut min = base.min + shift;
-                            let mut max = base.max + shift;
-                            // The drag may carry the bars to the screen's edge
-                            // but not past it: keep at least half the fitted
-                            // span on screen so a small drag back finds them.
-                            // A fitted axis (price == 0) has nothing to clamp.
-                            Some(PriceRange { min, max })
-                                .map(|range| range.kept_in_view(fitted, MIN_VISIBLE_PRICE_OVERLAP))
-                        }
-                        // A flat window has no price axis to move, so that half
-                        // of the drag is dropped. The time half still happens:
-                        // one unusable axis must not freeze the other, or
-                        // dragging a quiet chart would stop scrolling sideways
-                        // as well.
-                        _ => self.price,
-                    }
-                };
-
                 Self {
                     from,
                     count,
-                    price: range,
+                    price: self.price,
                 }
             }
         }
@@ -728,51 +702,30 @@ mod tests {
 
     #[test]
     fn a_price_pan_cannot_leave_the_series_visible() {
-        // The vertical half of the same rule: a drag may carry the bars to the
-        // screen's edge but never past it, or the chart shows empty space with
-        // no way back short of knowing about Fit.
-        let mut viewport = Viewport {
-            from: 0,
-            count: Some(100),
-            price: None,
-        };
-        for _ in 0..100 {
-            viewport = viewport.apply(
-                Gesture::Pan {
-                    time: 0.0,
-                    price: 5.0,
-                },
-                TOTAL,
-                fitted(),
+        // A vertical drag is dropped entirely: candles move in time, never
+        // up or down. No amount of dragging may invent a price range that
+        // crops the series.
+        for drag in [5.0, -5.0, f64::NAN] {
+            let mut viewport = Viewport {
+                from: 0,
+                count: Some(100),
+                price: None,
+            };
+            for _ in 0..100 {
+                viewport = viewport.apply(
+                    Gesture::Pan {
+                        time: 0.0,
+                        price: drag,
+                    },
+                    TOTAL,
+                    fitted(),
+                );
+            }
+            assert!(
+                viewport.price.is_none(),
+                "a vertical drag must not move the price axis: {viewport:?}"
             );
         }
-        let range = viewport.price.expect("a price drag sets the axis");
-        let keep = fitted().span() * MIN_VISIBLE_PRICE_OVERLAP;
-        assert!(
-            range.min <= fitted().max - keep,
-            "the series' top stays on screen no matter how far the drag runs"
-        );
-
-        let mut viewport = Viewport {
-            from: 0,
-            count: Some(100),
-            price: None,
-        };
-        for _ in 0..100 {
-            viewport = viewport.apply(
-                Gesture::Pan {
-                    time: 0.0,
-                    price: -5.0,
-                },
-                TOTAL,
-                fitted(),
-            );
-        }
-        let range = viewport.price.expect("a price drag sets the axis");
-        assert!(
-            range.max >= fitted().min + keep,
-            "and the series' bottom stays on screen dragging the other way"
-        );
     }
 
     #[test]
@@ -795,30 +748,20 @@ mod tests {
     }
 
     #[test]
-    fn a_price_zoom_holds_the_price_under_the_anchor() {
-        let viewport = Viewport::default();
-        let anchor = 0.25;
-        let held = fitted().max - anchor * fitted().span();
-
-        let zoomed = viewport.apply(
+    fn a_price_zoom_cannot_crop_any_candle() {
+        let zoomed = Viewport::default().apply(
             Gesture::ZoomPrice {
                 factor: 2.0,
-                anchor,
+                anchor: 0.25,
             },
             TOTAL,
             fitted(),
         );
         let price = zoomed.price.expect("a price zoom sets an explicit range");
-
         assert!(
-            (price.span() - fitted().span() / 2.0).abs() < 1e-9,
-            "span should halve, got {}",
-            price.span()
-        );
-        let still_held = price.max - anchor * price.span();
-        assert!(
-            (still_held - held).abs() < 1e-9,
-            "the price under the cursor moved: {held} -> {still_held}"
+            price.min <= fitted().min && price.max >= fitted().max,
+            "every candle must stay inside the price window: {price:?} vs {:?}",
+            fitted()
         );
     }
 
@@ -849,11 +792,9 @@ mod tests {
         let price = viewport.price.expect("an explicit range");
         assert!(price.is_usable(), "span collapsed to {}", price.span());
 
-        let floor = fitted().span() * MIN_PRICE_FRACTION;
         assert!(
-            (price.span() / floor - 1.0).abs() < 1e-6,
-            "200 halvings must come to rest on the floor {floor}, not on {}",
-            price.span()
+            price.min <= fitted().min && price.max >= fitted().max,
+            "200 zoom ticks must still contain every candle, got {price:?}"
         );
     }
 
@@ -919,8 +860,10 @@ mod tests {
             (panned.span() - base.span()).abs() < 1e-9,
             "panning must not change the price scale"
         );
-        let expected = base.span() * 0.5;
-        assert!((panned.min - (base.min + expected)).abs() < 1e-9);
+        assert!(
+            (panned.min - base.min).abs() < 1e-9,
+            "and must not slide it: {base:?} -> {panned:?}"
+        );
     }
 
     #[test]
