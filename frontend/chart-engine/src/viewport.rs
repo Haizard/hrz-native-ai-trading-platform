@@ -27,11 +27,13 @@ use serde::{Deserialize, Serialize};
 
 /// Fewest bars the chart will show.
 ///
-/// Below this the view stops being a chart: one bar stretched across the plot
-/// looks like a data outage, and a wheel tick has nowhere left to go. The limit
-/// is what makes "zoomed all the way in" a state the chart reports rather than a
-/// blank canvas.
-pub const MIN_BARS: usize = 10;
+/// Ten bars makes each candle enormous and leaves no context around the setup
+/// a trader is studying. TradingView-style zoom stops while candles are still
+/// legible AND neighbouring bars remain on screen. On a ~780px price plot this
+/// floor keeps each slot around 15px -- clear candles with about thirty bars
+/// of context. The limit is also what makes "zoomed all the way in" a state the
+/// chart reports rather than a blank canvas.
+pub const MIN_BARS: usize = 40;
 
 /// How far the price axis may be squeezed relative to the range the visible bars
 /// would have produced on their own.

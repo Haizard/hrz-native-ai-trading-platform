@@ -5356,6 +5356,22 @@ check(
   `box ${JSON.stringify(inZones.box)} vs bar centres ${inWin.bars.slice(20, 26).map((b) => b.x + b.w / 2).join(",")}`
 );
 
+// TradingView-style zoom stops while candles are still legible and a set of
+// neighbouring bars remains on screen. Ten wheel ticks must not collapse the
+// chart into a handful of giant candles.
+const deep = await gesture(() => {
+  for (let i = 0; i < 10; i++) wheel(PANE, -120);
+});
+const deepWin = candleWindow();
+check(
+  "maximum zoom keeps at least 30 legible candles in the window",
+  deep.rebuilt && deep.sent?.kind === "zoom_time" &&
+    deepWin.bars.length >= 30 && deepWin.bars[0].w >= 10 &&
+    deepWin.bars.every((b) => insidePlotVertically(b, deepWin.plot)),
+  `${deepWin.bars.length} bars, width ${deepWin.bars[0]?.w}`
+);
+await gesture(() => window.HRZApp.fitActivePane());
+
 const zout = await gesture(() => wheel(PANE, 120));
 const outWin = candleWindow();
 const outZones = boxLabelOf();
