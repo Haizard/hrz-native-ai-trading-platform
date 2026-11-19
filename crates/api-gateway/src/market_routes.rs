@@ -197,14 +197,17 @@ pub async fn script_pool_candles(
     let symbol = query.symbol.to_uppercase();
     let limit = query.limit.unwrap_or(500).clamp(1, MAX_LIMIT);
     let to_ns = query.to.map_or_else(crate::now_ns, ms_to_ns);
+    // A backfilled pool can be days old: a "last N bars" window from `now`
+    // would miss it entirely. Read a wide default window and return its newest
+    // `limit` bars; an explicit from/to from the caller is still honoured.
     let from_ns = query
         .from
-        .map_or(to_ns - (limit as i64) * timeframe.nanos(), ms_to_ns);
+        .map_or(to_ns - 30 * 86_400 * 1_000_000_000, ms_to_ns);
     let database = state.db.as_ref().ok_or_else(|| {
         ApiError::unavailable("the script pool needs a database; none is configured")
     })?;
     let timeframes = std::collections::BTreeMap::from([("sec".to_string(), timeframe)]);
-    let series = db::loading::load_timeframe_series(
+    let mut candles = db::loading::load_timeframe_series(
         database.pool(),
         &symbol,
         &timeframes,
@@ -213,8 +216,13 @@ pub async fn script_pool_candles(
         timeframe,
     )
     .await
-    .map_err(|error| ApiError::internal(format!("could not load the script pool: {error}")))?;
-    let candles = series.get("sec").cloned().unwrap_or_default();
+    .ok()
+    .and_then(|series| series.get("sec").cloned())
+    .unwrap_or_default();
+    if candles.len() > limit {
+        let start = candles.len() - limit;
+        candles.drain(..start);
+    }
     Ok(Json(CandlesResponse {
         symbol,
         timeframe: timeframe.to_string(),
