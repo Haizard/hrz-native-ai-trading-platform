@@ -459,6 +459,33 @@ struct WireUsage {
     completion_tokens: Option<i32>,
 }
 
+/// Recover a script from a provider that put the source directly in the
+/// tool-arguments string instead of wrapping it in JSON.
+fn fenced_or_raw_script(raw: &str) -> String {
+    let lines: Vec<&str> = raw.lines().collect();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim().starts_with("```") {
+            let start = index + 1;
+            let mut end = lines.len();
+            for (offset, line) in lines[start..].iter().enumerate() {
+                if line.trim() == "```" {
+                    end = start + offset;
+                    break;
+                }
+            }
+            let body = lines[start..end].join("\n");
+            if !body.trim().is_empty() {
+                return body;
+            }
+            index = end + 1;
+        } else {
+            index += 1;
+        }
+    }
+    raw.trim().to_string()
+}
+
 /// Decode a successful body into an [`LlmResponse`].
 fn into_response(wire: WireResponse) -> LlmResponse {
     let mut content = Vec::new();
@@ -482,7 +509,26 @@ fn into_response(wire: WireResponse) -> LlmResponse {
                 let input = match &call.function.arguments {
                     Value::String(raw) => serde_json::from_str::<Value>(raw).unwrap_or_else(|_| {
                         warn!(target: "ai_agent", name = %call.function.name, "tool arguments were not valid JSON; wrapping raw");
-                        json!({ "_raw": raw })
+                        // Some providers put the script itself in the
+                        // arguments string instead of a JSON object. For the
+                        // generation tool the only required field is `script`,
+                        // so recover it from the fence (or the whole string)
+                        // rather than failing all five attempts on a shape the
+                        // model got almost right.
+                        if call.function.name == "submit_script" {
+                            let script = fenced_or_raw_script(raw);
+                            let report = content
+                                .iter()
+                                .filter_map(|block| match block {
+                                    ContentBlock::Text(text) => Some(text.as_str()),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            json!({ "script": script, "report": report })
+                        } else {
+                            json!({ "_raw": raw })
+                        }
                     }),
                     other => other.clone(),
                 };
@@ -988,6 +1034,29 @@ mod tests {
         });
         let response = into_response(serde_json::from_value(raw).unwrap());
         assert_eq!(response.tool_calls()[0].input, json!({"_raw": "not json"}));
+    }
+
+    #[test]
+    fn a_raw_submit_script_argument_is_recovered_as_a_script() {
+        let raw = json!({
+            "choices": [{
+                "message": {
+                    "content": "Here is the indicator.",
+                    "tool_calls": [{
+                        "id": "call_s1",
+                        "function": {
+                            "name": "submit_script",
+                            "arguments": "```pine_lite\nplot(close)\n```"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let response = into_response(serde_json::from_value(raw).unwrap());
+        let call = &response.tool_calls()[0];
+        assert_eq!(call.input["script"], "plot(close)");
+        assert_eq!(call.input["report"], "Here is the indicator.");
     }
 
     #[test]
