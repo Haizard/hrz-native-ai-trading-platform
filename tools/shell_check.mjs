@@ -349,6 +349,44 @@ const seriesSeen = () => [...new Set(engine.frames.map((f) => f.series))];
 /// `-1` rather than a throw: a series that never drew is a *failing check*, and a
 /// check that takes the process down with it reports nothing at all -- including
 /// the failure it was written to find.
+/// The candle geometry the engine positioned for the current frame.
+const candleWindow = (scene = lastScene()) => ({
+  plot: { ...scene.plot },
+  price_min: scene.price_min,
+  price_max: scene.price_max,
+  viewport: scene.viewport,
+  bars: scene.candles.map((c) => ({
+    x: c.x, w: c.w, top: c.wick_top, bottom: c.wick_bottom,
+  })),
+});
+const insidePlotVertically = (bar, plot, tol = 1) =>
+  Number.isFinite(bar.top) && Number.isFinite(bar.bottom) &&
+  bar.top >= plot.y - tol && bar.bottom <= plot.y + plot.h + tol;
+
+/// Count and measure the drawing objects of the first script overlay.
+const boxLabelOf = (scene = lastScene()) => {
+  const overlay = (scene.script_overlays || [])[0];
+  const objects = (overlay && overlay.objects) || [];
+  const box = objects.find((o) => o.Box)?.Box;
+  const label = objects.find((o) => o.Label)?.Label;
+  return {
+    boxes: objects.filter((o) => o.Box).length,
+    labels: objects.filter((o) => o.Label).length,
+    lines: objects.filter((o) => o.Line).length,
+    box: box && { x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2 },
+    label: label && { x: label.x, y: label.y, text: label.text },
+  };
+};
+
+/// Fire a gesture and wait for the coalesced rebuild, then report what was sent.
+const gesture = async (fire) => {
+  const before = engine.requests.length;
+  fire();
+  await settle();
+  await settle();
+  return { sent: lastRequest().gesture, rebuilt: engine.requests.length > before };
+};
+
 const drawingsIn = (series) => {
   const scene = sceneOf(series);
   return scene ? scene.drawings.length : -1;
@@ -5276,6 +5314,93 @@ check(
   "and paints the label's new text, never the draft",
   scriptText.includes("final") && !scriptText.includes("draft"),
   scriptText.slice(-8).join(" | ")
+);
+
+// --- zoom, price zoom, pan and fit -----------------------------------------
+//
+// TradingView-like control means the chart stays usable after every gesture:
+// candles remain in the plot, the price axis stays positive, and a script's
+// zones keep their identity instead of being rediscovered from a different
+// window. The script is still attached from the section above.
+
+console.log("\nchart controls");
+
+const baseWin = candleWindow();
+const baseZones = boxLabelOf();
+check(
+  "baseline: one script box, one label, no line",
+  baseZones.boxes === 1 && baseZones.labels === 1 && baseZones.lines === 0 &&
+    baseZones.label?.text === "final",
+  JSON.stringify(baseZones)
+);
+check(
+  "baseline: every candle fits inside the plot vertically",
+  baseWin.bars.length > 40 && baseWin.bars.every((b) => insidePlotVertically(b, baseWin.plot)),
+  `${baseWin.bars.length} bars, plot y ${baseWin.plot.y}..${baseWin.plot.y + baseWin.plot.h}`
+);
+
+const zin = await gesture(() => wheel(PANE, -120));
+const inWin = candleWindow();
+const inZones = boxLabelOf();
+check(
+  "zoom-in sends zoom_time and keeps every candle in the plot",
+  zin.rebuilt && zin.sent?.kind === "zoom_time" && zin.sent.factor > 1 &&
+    inWin.bars.length > 40 && inWin.bars.every((b) => insidePlotVertically(b, inWin.plot)),
+  JSON.stringify({ sent: zin.sent, bars: inWin.bars.length })
+);
+check(
+  "zoom-in keeps one box and one label anchored to the visible slice",
+  inZones.boxes === 1 && inZones.labels === 1 && inZones.lines === 0 &&
+    inZones.label?.text === "final" &&
+    Math.abs(inZones.box.x2 - (inWin.bars[40].x + inWin.bars[40].w / 2)) < 1,
+  `box ${JSON.stringify(inZones.box)} vs candle40 ${inWin.bars[40].x + inWin.bars[40].w / 2}`
+);
+
+const zout = await gesture(() => wheel(PANE, 120));
+const outWin = candleWindow();
+const outZones = boxLabelOf();
+check(
+  "a zoom in/out round trip restores the window and the box geometry",
+  zout.rebuilt && zout.sent?.kind === "zoom_time" && zout.sent.factor < 1 &&
+    outWin.bars.length === baseWin.bars.length &&
+    outZones.boxes === 1 && outZones.labels === 1 &&
+    Math.abs(outZones.box.x2 - baseZones.box.x2) < 1,
+  `bars ${outWin.bars.length} vs ${baseWin.bars.length}, box x2 ${outZones.box?.x2} vs ${baseZones.box?.x2}`
+);
+
+const pz = await gesture(() => wheel(PANE, -120, true));
+const pWin = candleWindow();
+const pZones = boxLabelOf();
+check(
+  "shift+wheel zooms the price axis into a usable positive range",
+  pz.rebuilt && pz.sent?.kind === "zoom_price" && pz.sent.factor > 1 &&
+    pWin.price_max > pWin.price_min &&
+    pWin.price_max - pWin.price_min < baseWin.price_max - baseWin.price_min,
+  `${pWin.price_min}..${pWin.price_max}`
+);
+check(
+  "price zoom leaves finite candles with at least one in view",
+  pWin.bars.every((b) => Number.isFinite(b.top) && Number.isFinite(b.bottom)) &&
+    pWin.bars.some((b) => insidePlotVertically(b, pWin.plot)),
+  `${pWin.bars.filter((b) => insidePlotVertically(b, pWin.plot)).length} of ${pWin.bars.length} inside`
+);
+check(
+  "price zoom keeps the script's box and label",
+  pZones.boxes === 1 && pZones.labels === 1 && pZones.lines === 0 &&
+    pZones.label?.text === "final" && pZones.box?.y2 > pZones.box?.y1,
+  JSON.stringify(pZones)
+);
+
+const fit = await gesture(() => window.HRZApp.fitActivePane());
+const fitWin = candleWindow();
+const fitZones = boxLabelOf();
+check(
+  "Fit restores every candle and the script's box",
+  fit.rebuilt && fit.sent?.kind === "fit" && fitWin.bars.length === baseWin.bars.length &&
+    fitWin.bars.every((b) => insidePlotVertically(b, fitWin.plot)) &&
+    fitZones.boxes === 1 && fitZones.labels === 1 &&
+    Math.abs(fitZones.box.x2 - baseZones.box.x2) < 1,
+  `bars ${fitWin.bars.length}, box x2 ${fitZones.box?.x2} vs ${baseZones.box?.x2}`
 );
 
 // Leave the pane as the following sections found it.

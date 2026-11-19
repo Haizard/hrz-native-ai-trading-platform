@@ -2402,6 +2402,12 @@ pub fn build(request: &Request) -> Scene {
     let drawn = match viewport
         .price
         .filter(crate::viewport::PriceRange::is_usable)
+        // An explicit price range is a choice about THIS window's candles.
+        // After a time pan, a zoom, or new candles arriving, the old band can
+        // sit entirely above or below the bars now on screen; using it
+        // verbatim paints an empty chart until the user hits Fit. Keep it only
+        // while it still shows part of the current series.
+        .filter(|range| range.overlap_fraction(visible_fit) >= 0.10)
     {
         Some(range) => range,
         None => {
@@ -8632,6 +8638,39 @@ mod tests {
             clamped.candles.len(),
             50,
             "panning must not change the zoom"
+        );
+    }
+
+    #[test]
+    fn a_stale_price_range_is_dropped_when_the_visible_candles_are_elsewhere() {
+        // A price band chosen on one part of the series can be far away after
+        // a time pan or as new candles arrive. Honouring it verbatim paints an
+        // empty chart; the engine must re-fit to the bars it now draws.
+        let scene = build(&Request {
+            viewport: crate::viewport::Viewport {
+                from: 400,
+                count: Some(50),
+                price: Some(crate::viewport::PriceRange {
+                    min: 1_000.0,
+                    max: 1_100.0,
+                }),
+            },
+            ..request(500)
+        });
+        // Bars 400..450 trade around 300..325, nowhere near the stale band.
+        assert!(
+            scene.price_min < 300.0 && scene.price_max > 325.0,
+            "the axis still shows the stale band: {}..{}",
+            scene.price_min,
+            scene.price_max
+        );
+        assert!(
+            scene
+                .candles
+                .iter()
+                .all(|bar| bar.wick_top >= scene.plot.y - 1.0
+                    && bar.wick_bottom <= scene.plot.y + scene.plot.h + 1.0),
+            "the re-fitted candles must be inside the plot"
         );
     }
 

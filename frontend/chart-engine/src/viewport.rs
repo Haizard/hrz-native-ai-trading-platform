@@ -56,6 +56,11 @@ const MIN_PRICE_FRACTION: f64 = 1.0e-6;
 /// double-click remain the explicit reset.
 const MIN_VISIBLE_PRICE_OVERLAP: f64 = 0.50;
 
+/// The weaker overlap a price *zoom* must keep. A zoom is meant to frame a
+/// narrow band, so it may push most candles off screen; it must not push all
+/// of them off, which would leave an empty chart with no obvious way back.
+const MIN_ZOOM_PRICE_OVERLAP: f64 = 1.0e-9;
+
 /// How much empty space the user may drag in past the newest bar, as a
 /// fraction of the window's own width.
 ///
@@ -111,6 +116,39 @@ impl PriceRange {
     #[must_use]
     pub fn is_usable(&self) -> bool {
         self.min.is_finite() && self.max.is_finite() && self.span() > 0.0
+    }
+
+    /// How much of `series` this range still shows, as a fraction of the
+    /// series' span. Zero means every candle is off the price axis.
+    #[must_use]
+    pub fn overlap_fraction(&self, series: PriceRange) -> f64 {
+        if !self.is_usable() || !series.is_usable() {
+            return 0.0;
+        }
+        let shared = self.max.min(series.max) - self.min.max(series.min);
+        (shared.max(0.0) / series.span()).min(1.0)
+    }
+
+    /// Shift a range just far enough to keep at least `keep` of `series`
+    /// visible. Used by both price drags and price zooms so neither can leave
+    /// an empty chart behind.
+    #[must_use]
+    pub fn kept_in_view(mut self, series: PriceRange, keep: f64) -> Self {
+        if !self.is_usable() || !series.is_usable() {
+            return self;
+        }
+        let keep = (keep.clamp(0.0, 1.0) * series.span()).max(f64::EPSILON);
+        if self.max < series.min + keep {
+            let deficit = series.min + keep - self.max;
+            self.min += deficit;
+            self.max += deficit;
+        }
+        if self.min > series.max - keep {
+            let excess = self.min - (series.max - keep);
+            self.min -= excess;
+            self.max -= excess;
+        }
+        self
     }
 }
 
@@ -367,13 +405,15 @@ impl Viewport {
                 // under the anchor is `max - anchor * span`.
                 let held = base.max - anchor * base.span();
                 let max = held + anchor * span;
+                let zoomed = PriceRange {
+                    min: max - span,
+                    max,
+                }
+                .kept_in_view(fitted, MIN_ZOOM_PRICE_OVERLAP);
                 Self {
                     from: self.from,
                     count: self.count,
-                    price: Some(PriceRange {
-                        min: max - span,
-                        max,
-                    }),
+                    price: Some(zoomed),
                 }
             }
 
@@ -409,27 +449,11 @@ impl Viewport {
                             let mut min = base.min + shift;
                             let mut max = base.max + shift;
                             // The drag may carry the bars to the screen's edge
-                            // but not past it: keep at least
-                            // MIN_VISIBLE_PRICE_OVERLAP of the window's fitted
-                            // span in view, so the series is always where a
-                            // small drag back finds it. `fitted` is stable
-                            // across a vertical drag (a price pan never moves
-                            // the time window), so the clamp cannot fight the
-                            // gesture mid-drag.
-                            if fitted.is_usable() {
-                                let keep = fitted.span() * MIN_VISIBLE_PRICE_OVERLAP;
-                                if max < fitted.min + keep {
-                                    let deficit = fitted.min + keep - max;
-                                    min += deficit;
-                                    max += deficit;
-                                }
-                                if min > fitted.max - keep {
-                                    let excess = min - (fitted.max - keep);
-                                    min -= excess;
-                                    max -= excess;
-                                }
-                            }
+                            // but not past it: keep at least half the fitted
+                            // span on screen so a small drag back finds them.
+                            // A fitted axis (price == 0) has nothing to clamp.
                             Some(PriceRange { min, max })
+                                .map(|range| range.kept_in_view(fitted, MIN_VISIBLE_PRICE_OVERLAP))
                         }
                         // A flat window has no price axis to move, so that half
                         // of the drag is dropped. The time half still happens:
@@ -830,6 +854,30 @@ mod tests {
             (price.span() / floor - 1.0).abs() < 1e-6,
             "200 halvings must come to rest on the floor {floor}, not on {}",
             price.span()
+        );
+    }
+
+    #[test]
+    fn a_price_zoom_cannot_leave_every_candle_offscreen() {
+        // Zooming at the top edge used to pin `max` and let `min` rise until
+        // the whole fitted candle range sat below the axis. The chart then
+        // showed empty space with no hint of where the candles went.
+        let mut viewport = Viewport::default();
+        for _ in 0..40 {
+            viewport = viewport.apply(
+                Gesture::ZoomPrice {
+                    factor: 2.0,
+                    anchor: 0.0,
+                },
+                TOTAL,
+                fitted(),
+            );
+        }
+        let price = viewport.price.expect("an explicit price range");
+        assert!(
+            price.overlap_fraction(fitted()) > 0.0,
+            "the zoomed range {price:?} shows no candles from {:?}",
+            fitted()
         );
     }
 
