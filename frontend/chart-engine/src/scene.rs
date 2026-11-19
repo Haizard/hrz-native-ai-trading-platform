@@ -79,6 +79,11 @@ const SUB_PANE_HEIGHT: f64 = 90.0;
 /// The price plot's floor: however many panes the stack carries, the chart
 /// keeps at least this much height for price itself. The pane budget is
 /// whatever the canvas leaves above it.
+/// How many bars before the visible window a script may warm up on. Enough
+/// to keep multi-bar SMC setups alive through ordinary zoom/pan, bounded so a
+/// long chart still repaints in a frame.
+const MAX_SCRIPT_WARMUP: usize = 1000;
+
 const PRICE_PLOT_FLOOR: f64 = 200.0;
 /// Vertical gap between the price plot and the first sub-pane, and between
 /// panes. A pane that touches its neighbour shares a pixel row with it.
@@ -3369,20 +3374,30 @@ pub fn build(request: &Request) -> Scene {
                     continue;
                 }
             };
+            // Warm the script on earlier bars so a zone whose setup formed
+            // before `window.from` is still detected. The run is bounded: a
+            // chart with years of history must not re-run all of it on every
+            // frame. Bar-based output is rebased back onto the visible slice
+            // before any of it reaches a mapper.
+            let warmup = window.from.min(MAX_SCRIPT_WARMUP);
+            let script_from = window.from - warmup;
+            let script_candles =
+                &request.candles[script_from..window.end().min(request.candles.len())];
             match pine_lite::run(
                 &parsed,
-                visible_real,
+                script_candles,
                 &crate::script::inputs_from_spec_for_window(
                     spec,
-                    visible_real
+                    script_candles
                         .first()
                         .map(|c| c.symbol.as_str())
                         .unwrap_or(""),
-                    window.from,
-                    visible_real.len(),
+                    script_from,
+                    script_candles.len(),
                 ),
             ) {
-                Ok(output) => {
+                Ok(mut output) => {
+                    crate::script::rebase_output(&mut output, warmup, visible_real.len());
                     let plots = crate::script::scene_overlay_plots(&output, slot, &frame);
                     let shapes = crate::script::scene_overlay_shapes(&output, slot, &frame);
                     let mut objects = crate::script::scene_overlay_objects(&output, slot, &frame);
@@ -8212,6 +8227,55 @@ mod tests {
         // axis label is built from.
         assert_eq!(scene.from, 100 * 300_000_000_000);
         assert_eq!(scene.to, 150 * 300_000_000_000);
+    }
+
+    #[test]
+    fn a_zone_born_before_the_window_survives_zooming_into_later_bars() {
+        // The canonical generated zone idiom: detect on an early bar, draw in
+        // a `last_bar_index` pass. Without warm-up the detection bar vanishes
+        // from the run as soon as the user zooms past it and the zone count
+        // drops -- the chart looks like the trader's setup never happened.
+        let source = concat!(
+            "//@pine_lite version=1 overlay=true title=\"Stable zone\"\n",
+            "var born = na\n",
+            "if close < 103.0 and na(born)\n",
+            "    born := time\n",
+            "if bar_index == last_bar_index and not na(born)\n",
+            "    box.new_time(born, high[1], time, low[1], color=color.teal)\n",
+        );
+        let scene_for = |from: usize, visible: usize| {
+            build(&Request {
+                scripts: vec![crate::script::ScriptSpec {
+                    source: source.into(),
+                    inputs: Default::default(),
+                    security: Vec::new(),
+                    series_pool: Default::default(),
+                    data_series: Default::default(),
+                }],
+                ..windowed(100, from, visible)
+            })
+        };
+        let left = scene_for(0, 50);
+        let right = scene_for(50, 50);
+        let boxes = |scene: &Scene| {
+            scene.script_overlays[0]
+                .objects
+                .iter()
+                .filter(|object| matches!(object, crate::script::ScriptDraw::Box { .. }))
+                .count()
+        };
+        assert_eq!(boxes(&left), 1, "the setup is detected on the early low-price bars");
+        assert_eq!(
+            boxes(&right),
+            1,
+            "the same zone must survive zooming into the later half"
+        );
+        assert!(
+            left.note.is_none() && right.note.is_none(),
+            "both runs must be clean: {:?} / {:?}",
+            left.note,
+            right.note
+        );
     }
 
     #[test]

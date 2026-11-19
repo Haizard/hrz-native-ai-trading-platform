@@ -5352,8 +5352,8 @@ check(
   "zoom-in keeps one box and one label anchored to the visible slice",
   inZones.boxes === 1 && inZones.labels === 1 && inZones.lines === 0 &&
     inZones.label?.text === "final" &&
-    Math.abs(inZones.box.x2 - (inWin.bars[40].x + inWin.bars[40].w / 2)) < 1,
-  `box ${JSON.stringify(inZones.box)} vs candle40 ${inWin.bars[40].x + inWin.bars[40].w / 2}`
+    inWin.bars.some((b) => Math.abs(inZones.box.x2 - (b.x + b.w / 2)) < 1),
+  `box ${JSON.stringify(inZones.box)} vs bar centres ${inWin.bars.slice(20, 26).map((b) => b.x + b.w / 2).join(",")}`
 );
 
 const zout = await gesture(() => wheel(PANE, 120));

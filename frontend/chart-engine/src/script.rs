@@ -292,6 +292,105 @@ pub struct ScriptOverlay {
     pub objects: Vec<ScriptDraw>,
 }
 
+/// Rebase a script run over a longer history back onto the visible window.
+///
+/// The chart runs scripts on a warm-up slice so zones whose setup formed
+/// before the window are still detected. Pine's bar indices in that run start
+/// at the warm-up bar; the renderer's `bx()` maps index 0 to the plot's left
+/// edge. Shifting every bar-based field by the warm-up count makes the same
+/// zone keep the same bar anchor when the user zooms or pans.
+pub(crate) fn rebase_output(output: &mut pine_lite::Output, warmup: usize, visible_len: usize) {
+    if warmup == 0 {
+        return;
+    }
+    let shift = warmup as f64;
+    let rebase_bar = |bar: f64| -> f64 {
+        let shifted = bar - shift;
+        if shifted < 0.0 {
+            // Born before the window: anchor at the plot's left edge so the
+            // zone extends into view from there, not from the right side
+            // (which is what Pine's negative "from the end" indices mean).
+            0.0
+        } else if shifted > visible_len as f64 {
+            // `bar_index + 10000` "extend to now": the plot clips it at the
+            // right edge.
+            visible_len as f64
+        } else {
+            shifted
+        }
+    };
+    let trim = |values: &mut Vec<f64>| {
+        if values.len() > warmup {
+            values.drain(..warmup);
+        }
+        values.truncate(visible_len);
+    };
+    for plot in &mut output.plots {
+        trim(&mut plot.values);
+        if let Some(candles) = &mut plot.candles {
+            trim(&mut candles.open);
+            trim(&mut candles.high);
+            trim(&mut candles.low);
+            trim(&mut candles.close);
+            if candles.body.len() > warmup {
+                candles.body.drain(..warmup);
+            }
+            candles.body.truncate(visible_len);
+            if candles.wick.len() > warmup {
+                candles.wick.drain(..warmup);
+            }
+            candles.wick.truncate(visible_len);
+        }
+    }
+    for shape in &mut output.shapes {
+        shape.bar = rebase_bar(shape.bar as f64).max(0.0) as usize;
+    }
+    for object in &mut output.objects {
+        match object {
+            pine_lite::interp::ScriptObject::Line { bar1, bar2, .. }
+            | pine_lite::interp::ScriptObject::Fib { bar1, bar2, .. } => {
+                *bar1 = rebase_bar(*bar1);
+                *bar2 = rebase_bar(*bar2);
+            }
+            pine_lite::interp::ScriptObject::Label { bar, .. } => *bar = rebase_bar(*bar),
+            pine_lite::interp::ScriptObject::Box { left, right, .. } => {
+                *left = rebase_bar(*left);
+                *right = rebase_bar(*right);
+            }
+            // Time anchors are absolute nanoseconds; the window has no say in
+            // where they land.
+            pine_lite::interp::ScriptObject::LineTime { .. }
+            | pine_lite::interp::ScriptObject::LabelTime { .. }
+            | pine_lite::interp::ScriptObject::BoxTime { .. } => {}
+        }
+    }
+    for polyline in &mut output.polylines {
+        for point in &mut polyline.points {
+            point.0 = rebase_bar(point.0);
+        }
+    }
+    for fill in &mut output.fills {
+        trim(&mut fill.a);
+        trim(&mut fill.b);
+        if fill.color.len() > warmup {
+            fill.color.drain(..warmup);
+        }
+        fill.color.truncate(visible_len);
+    }
+    for tint in &mut output.tints {
+        if tint.len() > warmup {
+            tint.drain(..warmup);
+        }
+        tint.truncate(visible_len);
+    }
+    for barcolor in &mut output.barcolors {
+        if barcolor.len() > warmup {
+            barcolor.drain(..warmup);
+        }
+        barcolor.truncate(visible_len);
+    }
+}
+
 /// Run one script and lay its pane out.
 ///
 /// Total on failure: an error is returned as text and the caller puts it in

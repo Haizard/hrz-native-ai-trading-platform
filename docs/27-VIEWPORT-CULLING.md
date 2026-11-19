@@ -35,9 +35,10 @@ answer an inspector now).
 
 - **Not detection culling.** `refresh_from_concepts` still sees every candle;
   a zone born outside the window and extending into it is detected and kept.
-- **Not script-object culling.** Scripts already run on the visible slice
-  (`docs/23`), and their objects are bounded by the 256-object cap; there is
-  nothing off-window to cull.
+- **Not script-object culling.** Scripts run on a bounded warm-up slice ending
+  at the visible window so setups born before the window survive zoom/pan;
+  their output is rebased into visible bar coordinates and clipped by the
+  plot. Objects are still bounded by the 256-object cap.
 - **Not a render scheduler.** The CriticalImmediate/Deferred/Background
   priority tiers from the original proposal remain future work; at current
   budgets (500 primitives, culled to the window) the paint loop is not the

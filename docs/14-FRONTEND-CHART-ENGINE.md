@@ -348,7 +348,10 @@ CPU calc   GPU-friendly buffers
   at, and still looks like a VWAP. `the_profile_and_the_levels_follow_the_window` therefore
   compares the numbers rather than the shape.
 
-  Pine-Lite scripts run against that same visible slice. Their shell-supplied
+  Pine-Lite scripts run on a bounded warm-up slice ending at the visible
+  window (`MAX_SCRIPT_WARMUP`), so a zone whose setup formed earlier is still
+  detected after zooming in; bar-based output is rebased onto the visible
+  slice before the 256-object cap and the plot clip apply. Their shell-supplied
   `security`, pooled timeframe, and `request.data` series are sliced from the
   matching `window.from` as well; otherwise zooming makes the script compare a
   visible candle with another bar's auxiliary values. The regression
