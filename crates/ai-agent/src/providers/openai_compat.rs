@@ -258,6 +258,10 @@ fn compact_groq_indicator_request(mut request: LlmRequest) -> LlmRequest {
     // build, preserve the user's request (including image blocks) and the
     // task-relevant tool(s), replacing the broad prompt with focused guidance.
     if script_build {
+        // The generator exposes the whole tool catalog; the compact request
+        // needs only the one tool the model is supposed to call. This is what
+        // keeps Groq's input under its free-tier tokens-per-minute limit.
+        request.tools.retain(|tool| tool.name == "submit_script");
         if let Some(tool) = request
             .tools
             .iter_mut()
@@ -904,12 +908,26 @@ mod tests {
         req.messages = vec![Message::user(
             "Build a Light Pine indicator that plots session VWAP bands",
         )];
-        req.tools = vec![ToolSpec {
-            name: "submit_script".into(),
-            description: "Submit the complete script for validation".into(),
-            input_schema: json!({"type":"object","required":["script","report"]}),
-            exposed_tool: None,
-        }];
+        req.tools = vec![
+            ToolSpec {
+                name: "create_indicator".into(),
+                description: "Another tool the generator exposes".into(),
+                input_schema: json!({"type":"object"}),
+                exposed_tool: None,
+            },
+            ToolSpec {
+                name: "submit_script".into(),
+                description: "Submit the complete script for validation".into(),
+                input_schema: json!({"type":"object","required":["script","report"]}),
+                exposed_tool: None,
+            },
+            ToolSpec {
+                name: "scan_market".into(),
+                description: "Yet another tool".into(),
+                input_schema: json!({"type":"object"}),
+                exposed_tool: None,
+            },
+        ];
         req.system = Some("very large Light Pine language reference ".repeat(2000));
 
         let compact = compact_groq_indicator_request(req);
