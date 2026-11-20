@@ -637,6 +637,12 @@ impl ToolRegistry {
                     exposed_tool: None, // pure evidence: always available
                 },
                 ToolSpec {
+                    name: "fuse_intelligence".into(),
+                    description: FUSE_INTELLIGENCE.into(),
+                    input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: None, // pure fusion: always available
+                },
+                ToolSpec {
                     name: "analyze_multi_timeframe".into(),
                     description: ANALYZE_MULTI_TIMEFRAME.into(),
                     input_schema: multi_timeframe_schema(),
@@ -1113,6 +1119,7 @@ impl ToolRegistry {
         let result = match call.name.as_str() {
             "analyze_timeframe" => analyze_timeframe(ctx, &call.input).await,
             "analyze_markov" => analyze_markov(ctx, &call.input).await,
+            "fuse_intelligence" => fuse_intelligence(ctx, &call.input).await,
             "analyze_multi_timeframe" => analyze_multi_timeframe(ctx, &call.input).await,
             "get_candles" => get_candles(ctx, &call.input).await,
             "get_volume_profile" => get_volume_profile(ctx, &call.input).await,
@@ -1800,6 +1807,8 @@ const GET_MACD: &str = "MACD (fast 12 / slow 26 / signal 9 by default): the last
 const GET_BOLLINGER_BANDS: &str = "Bollinger Bands (period 20, 2 standard deviations by \
     default): middle/upper/lower, bandwidth and %b for the last `limit` bars. Falling \
     bandwidth is the squeeze; %b above 1 or below 0 is a close outside the bands.";
+
+const FUSE_INTELLIGENCE: &str = "Fuse typed evidence from Markov regime, market structure, VWAP and CVD into one auditable BUY/SELL/WAIT/NO_TRADE proposal. Use when the user asks for an overall market read or when several engines disagree. Read-only: the proposal never authorizes a trade.";
 
 const ANALYZE_MARKOV: &str = "Markov-family market evidence: inferred regime, time-varying transition probabilities, continuous-time event probabilities, regime duration, volatility state and a wait/act policy proposal. Use when the user asks for market regime, transition risk, volatility regime, or how long a market condition may persist. Read-only; it never trades.";
 
@@ -2843,6 +2852,140 @@ async fn get_bollinger_bands(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
         "latest": readings.last().cloned(),
         "readings": readings,
     }))
+}
+
+/// Interpret one of our own tool results as a direction. No arithmetic: the
+/// tool layer only maps labels the Rust engines already produced.
+fn direction_from_label(text: &str) -> ensemble_intelligence::Direction {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("bull") || lower.contains("up") || lower.contains("long") {
+        ensemble_intelligence::Direction::Bullish
+    } else if lower.contains("bear") || lower.contains("down") || lower.contains("short") {
+        ensemble_intelligence::Direction::Bearish
+    } else {
+        ensemble_intelligence::Direction::Neutral
+    }
+}
+
+/// Fuse several independent engine results into one typed proposal.
+async fn fuse_intelligence(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "fuse_intelligence";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let now_ns = ctx
+        .data
+        .latest_candle_time(&symbol, timeframe)
+        .await?
+        .unwrap_or_default();
+
+    let markov = analyze_markov(ctx, args).await?;
+    let structure = detect_market_structure_tool(ctx, args).await?;
+    let vwap = get_vwap(ctx, args).await?;
+    let cvd = get_cvd(ctx, args).await?;
+
+    let label = |value: &Value, key: &str| -> ensemble_intelligence::Direction {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .map_or(ensemble_intelligence::Direction::Neutral, direction_from_label)
+    };
+    let strength = |direction: ensemble_intelligence::Direction| {
+        if direction == ensemble_intelligence::Direction::Neutral {
+            0.2
+        } else {
+            0.8
+        }
+    };
+    let make = |source: &str,
+                category: ensemble_intelligence::EvidenceCategory,
+                direction: ensemble_intelligence::Direction,
+                reliability: f64,
+                note: String| {
+        ensemble_intelligence::Evidence {
+            source: source.to_string(),
+            category,
+            direction,
+            strength: strength(direction),
+            reliability: reliability.clamp(0.0, 1.0),
+            valid: true,
+            observed_at: now_ns,
+            note,
+        }
+    };
+
+    let markov_risk = markov
+        .get("transition_risk")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.5);
+    let vwap_direction = if vwap
+        .get("above_vwap")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        ensemble_intelligence::Direction::Bullish
+    } else {
+        ensemble_intelligence::Direction::Bearish
+    };
+    let evidence = vec![
+        make(
+            "markov",
+            ensemble_intelligence::EvidenceCategory::Regime,
+            label(&markov, "current_regime"),
+            1.0 - markov_risk,
+            format!("regime {:?}", markov.get("current_regime").and_then(Value::as_str)),
+        ),
+        make(
+            "structure",
+            ensemble_intelligence::EvidenceCategory::MarketStructure,
+            label(&structure, "trend"),
+            0.8,
+            format!("trend {:?}", structure.get("trend").and_then(Value::as_str)),
+        ),
+        make(
+            "vwap",
+            ensemble_intelligence::EvidenceCategory::Microstructure,
+            vwap_direction,
+            0.7,
+            "close versus VWAP".into(),
+        ),
+        make(
+            "cvd",
+            ensemble_intelligence::EvidenceCategory::OrderFlow,
+            label(&cvd, "divergence"),
+            0.7,
+            format!("divergence {:?}", cvd.get("divergence").and_then(Value::as_str)),
+        ),
+    ];
+
+    // Risk and data gates are checked by the gateway; this tool only proposes.
+    let proposal = ensemble_intelligence::fuse(
+        &evidence,
+        ensemble_intelligence::RiskGate {
+            data_ok: true,
+            risk_ok: true,
+            kill_switch: false,
+        },
+        0.3,
+    );
+    let value = serde_json::to_value(proposal).map_err(|error| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: error.to_string(),
+    })?;
+
+    if let (Some(writer), Some(user_id)) = (ctx.evidence_writer, ctx.user_id) {
+        let record = crate::evidence::NewEvidence {
+            symbol: symbol.to_uppercase(),
+            timeframe: timeframe.to_string(),
+            evidence: value.clone(),
+            model_version: "ensemble-v1".into(),
+            horizon_bars: Some(4.0),
+            observed_at: now_ns,
+        };
+        if let Err(error) = writer.record(user_id, &record).await {
+            tracing::warn!(target: "ai_agent", tool = TOOL, %error, "could not record ensemble proposal");
+        }
+    }
+    Ok(value)
 }
 
 /// Read-only Markov evidence computed entirely from the Rust candle window.
@@ -4663,6 +4806,13 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn direction_labels_map_to_bias() {
+        assert_eq!(direction_from_label("bullish"), ensemble_intelligence::Direction::Bullish);
+        assert_eq!(direction_from_label("BearTrend"), ensemble_intelligence::Direction::Bearish);
+        assert_eq!(direction_from_label("sideways"), ensemble_intelligence::Direction::Neutral);
+    }
+
     use crate::llm_client::{ContentBlock, Message, Role};
 
     /// A screen that is attached but never answers. `review_marked_charts` only

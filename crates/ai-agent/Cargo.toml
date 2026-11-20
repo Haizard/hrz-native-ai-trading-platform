@@ -29,6 +29,7 @@ tokio = { workspace = true }
 analytics-core = { workspace = true }
 capabilities = { workspace = true }
 markov-intelligence = { workspace = true }
+ensemble-intelligence = { workspace = true }
 # YAML is needed here (skills and generated strategies are authored in YAML).
 # This is safe: `sandbox-guest` does not depend on `ai-agent`, so nothing
 # links a YAML parser into the sandbox. See the workspace-level note.

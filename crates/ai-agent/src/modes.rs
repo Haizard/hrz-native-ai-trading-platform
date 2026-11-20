@@ -53,6 +53,7 @@ impl AgentMode {
                 "analyze_timeframe",
                 "analyze_multi_timeframe",
                 "analyze_markov",
+                "fuse_intelligence",
                 "get_candles",
                 "get_vwap",
                 "get_atr",
@@ -73,6 +74,7 @@ impl AgentMode {
                 "detect_absorption",
                 "detect_imbalance",
                 "analyze_markov",
+                "fuse_intelligence",
             ]),
             Self::Smc => Some(&[
                 "detect_liquidity",
@@ -82,6 +84,7 @@ impl AgentMode {
                 "get_candles",
                 "analyze_timeframe",
                 "analyze_markov",
+                "fuse_intelligence",
             ]),
             Self::Strategy => Some(&[
                 "create_strategy",
@@ -95,6 +98,7 @@ impl AgentMode {
                 "get_vwap",
                 "get_bollinger_bands",
                 "analyze_markov",
+                "fuse_intelligence",
                 "get_candles",
             ]),
             Self::Orchestrator => None,

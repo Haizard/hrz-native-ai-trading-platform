@@ -97,6 +97,7 @@ dependencies = [
  "async-trait",
  "capabilities",
  "chrono",
+ "ensemble-intelligence",
  "hex",
  "hmac",
  "markov-intelligence",
@@ -983,6 +984,13 @@ dependencies = [
  "rustversion",
  "scopeguard",
  "simdutf8",
+]
+
+[[package]]
+name = "ensemble-intelligence"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
