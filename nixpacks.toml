@@ -1,0 +1,4 @@
+# Hosts that ignore the Dockerfile and use Nixpacks still need one long-running
+# web process. Keep this in sync with docker-entrypoint.sh and the Dockerfile CMD.
+[phases.start]
+cmd = "api-gateway"

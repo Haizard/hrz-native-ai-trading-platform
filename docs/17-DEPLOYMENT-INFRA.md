@@ -55,6 +55,9 @@ What is checked, and would otherwise be found by a build:
 - `docker-entrypoint.sh` is LF, starts with a shebang, is the file `ENTRYPOINT`
   names, and defaults to `api-gateway` when a host supplies no command. An empty
   command otherwise makes `exec "$@"` exit 0 — "crashed on start, exit 0".
+- Hosts that ignore the Dockerfile and start with a buildpack need the same
+  command from `Procfile` (`web: api-gateway`) or `nixpacks.toml`. Both are
+  committed so a start-command override cannot silently exit after a job.
 
 What remains unverified, and can only be settled by an actual build: that the release
 profile compiles on **Linux** (the local `--locked` build is Windows), that `rustls` needs
