@@ -64,16 +64,19 @@ COPY --from=builder /app/strategies /app/strategies
 
 # 0.0.0.0 matters: the local default is 127.0.0.1, which would make the
 # container unreachable from outside.
-ENV BIND_ADDR=0.0.0.0:8080 \
-    RUST_LOG=info \
+# BIND_ADDR is resolved by the entrypoint from the host's PORT variable, so a
+# managed host that assigns a dynamic port still reaches the server. The
+# fallback is 8080; the gateway always binds 0.0.0.0 in the container.
+ENV RUST_LOG=info \
     RUN_MIGRATIONS=true
 
 EXPOSE 8080
 
 # /healthz is liveness only (it does not touch the database), so a slow or
-# unreachable DB won't flap the container.
+# unreachable DB won't flap the container. Use the same PORT the entrypoint
+# passes to the gateway.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT:-8080}/healthz" || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["api-gateway"]

@@ -49,9 +49,12 @@ What is checked, and would otherwise be found by a build:
   whatever is committed; a stale engine would deploy with no error at all.
 - Every binary the build line produces is copied into the runtime stage, and every binary
   the entrypoint invokes is one of them.
-- `EXPOSE`, `BIND_ADDR` and the healthcheck all name the same port. A healthcheck on the
-  wrong port marks a perfectly healthy container unhealthy, forever.
-- `docker-entrypoint.sh` is LF, starts with a shebang, and is the file `ENTRYPOINT` names.
+- `EXPOSE`, the entrypoint's resolved `BIND_ADDR` (from the host's `PORT`, default 8080)
+  and the healthcheck all name the same port. A healthcheck on the wrong port
+  marks a perfectly healthy container unhealthy, forever.
+- `docker-entrypoint.sh` is LF, starts with a shebang, is the file `ENTRYPOINT`
+  names, and defaults to `api-gateway` when a host supplies no command. An empty
+  command otherwise makes `exec "$@"` exit 0 — "crashed on start, exit 0".
 
 What remains unverified, and can only be settled by an actual build: that the release
 profile compiles on **Linux** (the local `--locked` build is Windows), that `rustls` needs
@@ -145,7 +148,7 @@ still refused" — and each has its fix on a different page.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `BIND_ADDR` | `127.0.0.1:8080`; the image sets `0.0.0.0:8080` | the local default is loopback, which would make a container unreachable |
+| `BIND_ADDR` | `127.0.0.1:8080` locally; in the image, `0.0.0.0:$PORT` (default `0.0.0.0:8080`) | the entrypoint derives it from the host's `PORT`; an explicit override still wins |
 | `RUST_LOG` | `info` | tracing-subscriber `EnvFilter` syntax |
 | `LOG_FORMAT` | human-readable lines | `json` for machine-readable logs in deployment |
 | `RUN_MIGRATIONS` | `true` | the entrypoint applies migrations, then execs the command; sqlx takes an advisory lock so replicas serialize |
