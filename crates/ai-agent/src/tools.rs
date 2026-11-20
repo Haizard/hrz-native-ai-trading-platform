@@ -354,6 +354,9 @@ pub struct ToolContext<'a> {
     /// rather than capture into the void -- a snapshot the model believes
     /// exists and nothing can retrieve is worse than the refusal.
     pub snapshots: Option<&'a dyn SnapshotStore>,
+    /// Host-provided Markov evidence journal, when the deployment wants
+    /// measured reliability instead of one-shot answers.
+    pub evidence_writer: Option<&'a dyn crate::evidence::MarkovEvidenceWriter>,
     /// The rendezvous for on-demand chart captures, when the run has a screen.
     ///
     /// `None` -- a server-side run, the user away, tests -- makes
@@ -402,6 +405,7 @@ impl<'a> ToolContext<'a> {
             memory_user_id: None,
             capabilities: None,
             snapshots: None,
+            evidence_writer: None,
             captures: None,
             review_ladder: None,
             web_search: None,
@@ -478,6 +482,18 @@ impl<'a> ToolContext<'a> {
     #[must_use]
     pub fn with_snapshots(mut self, store: &'a dyn SnapshotStore, user_id: &'a str) -> Self {
         self.snapshots = Some(store);
+        self.user_id = Some(user_id);
+        self
+    }
+
+    /// Attach the host's evidence journal and whose evidence it holds.
+    #[must_use]
+    pub fn with_evidence(
+        mut self,
+        writer: &'a dyn crate::evidence::MarkovEvidenceWriter,
+        user_id: &'a str,
+    ) -> Self {
+        self.evidence_writer = Some(writer);
         self.user_id = Some(user_id);
         self
     }
@@ -2924,7 +2940,7 @@ async fn analyze_markov(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
         .collect();
 
     let request = markov_intelligence::MarkovRequest {
-        instrument: symbol,
+        instrument: symbol.clone(),
         timeframe: timeframe.to_string(),
         features,
         returns,
@@ -2937,10 +2953,24 @@ async fn analyze_markov(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
         tool: TOOL.into(),
         reason,
     })?;
-    serde_json::to_value(result).map_err(|error| AgentError::ToolFailed {
+    let value = serde_json::to_value(result).map_err(|error| AgentError::ToolFailed {
         tool: TOOL.into(),
         reason: error.to_string(),
-    })
+    })?;
+    if let (Some(writer), Some(user_id)) = (ctx.evidence_writer, ctx.user_id) {
+        let evidence = crate::evidence::NewEvidence {
+            symbol: symbol.to_uppercase(),
+            timeframe: timeframe.to_string(),
+            evidence: value.clone(),
+            model_version: "markov-engine-v1".into(),
+            horizon_bars: Some(4.0),
+            observed_at: ctx.data.latest_candle_time(&symbol, timeframe).await?.unwrap_or_default(),
+        };
+        if let Err(error) = writer.record(user_id, &evidence).await {
+            tracing::warn!(target: "ai_agent", tool = TOOL, %error, "could not record Markov evidence; the answer still stands");
+        }
+    }
+    Ok(value)
 }
 
 async fn get_atr_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {

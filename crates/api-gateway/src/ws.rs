@@ -906,6 +906,14 @@ where
             )),
             user.user_id.to_string(),
         ));
+        // Same evidence grant as `POST /agent/ask`: the socket path must not
+        // be the quiet one where evidence is never recorded.
+        ask = ask.with_evidence(ai_agent::EvidenceContext::new(
+            std::sync::Arc::new(crate::market_data::DbMarkovEvidence::new(
+                std::sync::Arc::clone(database),
+            )),
+            user.user_id.to_string(),
+        ));
     }
 
     // Backtests, exactly as `POST /agent/ask` attaches them: the runner is a

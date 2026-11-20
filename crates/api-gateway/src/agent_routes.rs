@@ -325,6 +325,15 @@ pub async fn ask(
             ))),
             user.user_id.to_string(),
         ));
+        // Evidence is written under the asking user's id, like snapshots and
+        // memory. Without this grant the tool still answers, but reliability
+        // can never be measured for this path.
+        request = request.with_evidence(ai_agent::EvidenceContext::new(
+            Arc::new(crate::market_data::DbMarkovEvidence::new(Arc::clone(
+                database,
+            ))),
+            user.user_id.to_string(),
+        ));
     }
 
     // Backtests ride the deployment, not the database: the runner reads the

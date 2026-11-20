@@ -31,6 +31,7 @@ pub mod drawings;
 pub mod error;
 pub mod indicator_workspaces;
 pub mod live;
+pub mod markov_evidence;
 pub mod loading;
 pub mod market;
 pub mod market_source;
@@ -47,6 +48,12 @@ pub mod subscriptions;
 pub mod users;
 pub mod watch;
 pub mod workspace_state;
+
+pub use markov_evidence::{
+    insert_evidence, list_evidence, list_unsettled, get_evidence, settle, settle_with_market,
+    MarkovEvidenceRow,
+    NewMarkovEvidence, Settlement,
+};
 
 pub use agent_memory::{
     forget as forget_memory, recall as recall_memories, remember, MemoryRow, NewMemory,

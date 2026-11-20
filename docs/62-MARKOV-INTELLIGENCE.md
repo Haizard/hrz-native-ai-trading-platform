@@ -1,9 +1,10 @@
 # 62 — Markov Intelligence
 
-- **Status:** first three adoption steps landed — seven independent,
+- **Status:** first four adoption steps landed — seven independent,
   deterministic engines in `crates/markov-intelligence`, a read-only
-  `analyze_markov` agent tool, and a tool-doctrine skill with trigger phrases
-  and a registry meta-test.
+  `analyze_markov` agent tool, a tool-doctrine skill with trigger phrases and a
+  registry meta-test, and an immutable evidence journal with one-shot
+  market-based settlement.
 - **Scope:** regime, transition, volatility, duration, event-timing and
   strategy-selection evidence for the agent layer. It does not trade, does not
   call an LLM, and has no I/O.
@@ -55,8 +56,9 @@ without pulling in the MDP or CTMC.
 
 1. ~~Expose `analyze()` as a narrow read-only agent tool with a typed JSON schema.~~ Done: `analyze_markov`.
 2. ~~Add a skill/capability descriptor with trigger phrases and a meta-test.~~ Done: `markov-regime.yaml`.
-3. Persist `MarkovResult` into the decision journal with later outcome
-   settlement, so reliability can be measured out of sample.
+3. ~~Persist `MarkovResult` into the decision journal with later outcome
+   settlement.~~ Done: `markov_evidence` table, host writer trait, read-only
+   `analyze_markov` recording, and `POST /markov/evidence/{id}/settle`.
 
 ## Verification
 

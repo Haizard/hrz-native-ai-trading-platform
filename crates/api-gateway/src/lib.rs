@@ -72,6 +72,7 @@ pub mod indicator_preview;
 pub mod indicator_workspace_routes;
 pub mod market_data;
 pub mod market_routes;
+pub mod markov_routes;
 pub mod metrics;
 pub mod orderflow_routes;
 pub mod parameter_sweep;
@@ -377,6 +378,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/candles", get(market_routes::candles))
         .route("/script-candles", get(market_routes::script_pool_candles))
+        .route(
+            "/markov/evidence/{id}/settle",
+            post(markov_routes::settle_evidence),
+        )
         .route("/symbols", get(market_routes::symbols))
         // Both literal paths must be registered before any `/symbols/{symbol}`
         // wildcard, or they would be read as a symbol named "search".

@@ -650,6 +650,50 @@ fn snapshot_from_row(row: &db::chart_snapshots::ChartSnapshotRow) -> ai_agent::C
     }
 }
 
+/// Database-backed Markov evidence journal (`docs/62`).
+#[derive(Debug, Clone)]
+pub struct DbMarkovEvidence {
+    db: std::sync::Arc<db::Database>,
+}
+
+impl DbMarkovEvidence {
+    pub fn new(db: std::sync::Arc<db::Database>) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl ai_agent::MarkovEvidenceWriter for DbMarkovEvidence {
+    async fn record(
+        &self,
+        user_id: &str,
+        evidence: &ai_agent::NewEvidence,
+    ) -> Result<ai_agent::EvidenceReceipt, AgentError> {
+        let user = parse_user(user_id)?;
+        let row = db::markov_evidence::insert_evidence(
+            self.db.pool(),
+            user,
+            &db::markov_evidence::NewMarkovEvidence {
+                symbol: evidence.symbol.clone(),
+                timeframe: evidence.timeframe.clone(),
+                evidence: evidence.evidence.clone(),
+                model_version: evidence.model_version.clone(),
+                horizon_bars: evidence.horizon_bars,
+                observed_at: evidence.observed_at,
+            },
+        )
+        .await
+        .map_err(|error| AgentError::ToolFailed {
+            tool: "analyze_markov".into(),
+            reason: format!("could not record Markov evidence: {error}"),
+        })?;
+        Ok(ai_agent::EvidenceReceipt {
+            id: row.id.to_string(),
+            created_at: row.observed_at,
+        })
+    }
+}
+
 /// Parse the opaque user id the agent carries. Storage keys on `Uuid`; the
 /// agent's id is a string because identity is not this crate's business --
 /// so the boundary parses once, here, where every door shares it.

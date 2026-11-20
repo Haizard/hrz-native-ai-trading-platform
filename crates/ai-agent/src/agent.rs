@@ -195,6 +195,44 @@ impl std::fmt::Debug for MemoryContext {
 /// the user id is resolved from the authenticated identity one layer up and
 /// never crosses the wire, and a host that attaches nothing gets snapshot
 /// tools that report the absence rather than captures that silently vanish.
+/// Host-provided Markov evidence journal bound to one authenticated user.
+#[derive(Clone)]
+pub struct EvidenceContext {
+    writer: Arc<dyn crate::evidence::MarkovEvidenceWriter>,
+    user_id: String,
+}
+
+impl EvidenceContext {
+    /// Bind an evidence writer to one user.
+    #[must_use]
+    pub fn new(
+        writer: Arc<dyn crate::evidence::MarkovEvidenceWriter>,
+        user_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            writer,
+            user_id: user_id.into(),
+        }
+    }
+
+    /// The user whose evidence this is, opaque to the agent.
+    #[must_use]
+    pub fn user_id(&self) -> &str {
+        &self.user_id
+    }
+
+    pub(crate) fn writer(&self) -> &Arc<dyn crate::evidence::MarkovEvidenceWriter> {
+        &self.writer
+    }
+}
+
+impl std::fmt::Debug for EvidenceContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EvidenceContext").finish_non_exhaustive()
+    }
+}
+
+/// The asking user's snapshot store, when the host attached one (`docs/45`).
 pub struct SnapshotsContext {
     store: Arc<dyn crate::snapshots::SnapshotStore>,
     user_id: String,
@@ -296,6 +334,9 @@ pub struct AskRequest {
     /// `None` makes `take_snapshot` report "no snapshot store is attached"
     /// rather than capture into the void.
     pub snapshots: Option<SnapshotsContext>,
+    /// The host's Markov evidence journal, when the deployment measures
+    /// reliability out of sample.
+    pub evidence: Option<EvidenceContext>,
     /// The capture rendezvous, when the ask has a live screen behind it.
     /// `None` -- server-side runs, tests -- makes `look_at_chart` report the
     /// absence rather than wait on nothing.
@@ -363,6 +404,7 @@ impl AskRequest {
             drawings: None,
             memory: None,
             snapshots: None,
+            evidence: None,
             captures: None,
             backtests: None,
             concept_catalog: None,
@@ -455,6 +497,14 @@ impl AskRequest {
     #[must_use]
     pub fn with_snapshots(mut self, snapshots: SnapshotsContext) -> Self {
         self.snapshots = Some(snapshots);
+        self
+    }
+
+    /// Attach the host's evidence journal. Host-only, like snapshots and
+    /// drawings: the caller cannot choose whose evidence is written.
+    #[must_use]
+    pub fn with_evidence(mut self, evidence: EvidenceContext) -> Self {
+        self.evidence = Some(evidence);
         self
     }
 
@@ -1220,6 +1270,9 @@ impl Agent {
         }
         if let Some(snapshots) = &request.snapshots {
             ctx = ctx.with_snapshots(snapshots.store().as_ref(), snapshots.user_id());
+        }
+        if let Some(evidence) = &request.evidence {
+            ctx = ctx.with_evidence(evidence.writer().as_ref(), evidence.user_id());
         }
         if let Some(captures) = &request.captures {
             ctx = ctx.with_captures(captures.source().as_ref());
