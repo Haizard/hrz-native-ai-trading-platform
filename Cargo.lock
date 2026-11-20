@@ -99,6 +99,7 @@ dependencies = [
  "chrono",
  "hex",
  "hmac",
+ "markov-intelligence",
  "reqwest",
  "serde",
  "serde_json",
@@ -1762,6 +1763,13 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+]
+
+[[package]]
+name = "markov-intelligence"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

@@ -1010,4 +1010,28 @@ capability_requirements:
             "a tool is covered by two families: {covered:?}"
         );
     }
+    #[test]
+    fn the_markov_skill_pins_trigger_phrases_and_a_single_tool_family() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../skills");
+        let library = SkillLibrary::load_dir(dir).unwrap();
+        let skill = library
+            .latest_versions()
+            .into_iter()
+            .find(|skill| skill.name == "Markov Regime Evidence")
+            .expect("the Markov tool doctrine ships");
+        assert!(
+            skill.knowledge.contains("Use when"),
+            "the skill must trigger on the user's own words: {}",
+            skill.name
+        );
+        assert_eq!(skill.applies_to.tools, vec!["analyze_markov".to_string()]);
+        assert!(
+            skill
+                .rules
+                .iter()
+                .any(|rule| rule.contains("analyze_markov")),
+            "the rules must name the tool they teach"
+        );
+    }
+
 }

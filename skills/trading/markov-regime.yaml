@@ -1,0 +1,45 @@
+# Tool doctrine for the Markov-family evidence engine.
+# The agent reads deterministic regime/transition/volatility evidence before
+# it talks about market state, persistence or transition risk.
+name: "Markov Regime Evidence"
+version: "1.0"
+kind: tool
+artifact_kind: thesis
+category: "regime"
+knowledge: >
+  Use when the user asks what regime the market is in, how long a trend usually
+  lasts, how likely a transition is, whether volatility is expanding, or what
+  the market state implies for strategy selection. The Markov engines return
+  typed evidence: current regime, TVTP transition weights, continuous-time
+  event probabilities, expected duration, MS-GARCH volatility state, and an MDP
+  wait/act proposal. These are evidence scores, not calibrated win
+  probabilities, and the proposal never authorizes a trade.
+rules:
+  - "Call analyze_markov on the symbol and timeframe the user named; do not compute regime probabilities yourself."
+  - "State the current regime and its probability from the tool result before offering an interpretation."
+  - "Treat transition_risk as the chance the current regime changes; low risk means persistence, not a guaranteed continuation."
+  - "Use expected_duration only as an empirical average, never as a countdown to reversal."
+  - "Quote the volatility_regime field for risk language; do not infer volatility from candle appearance."
+  - "The mdp_policy is a proposal. The risk gate and LiveAuthorization remain the only execution authority; say NO_TRADE when risk or data conditions prohibit trading."
+  - "If the tool reports no data or an error, say so plainly and do not invent a regime."
+conditions:
+  timeframes: ["1h", "4h", "1d"]
+  risk:
+    max_risk_pct: 1.0
+capability_requirements:
+  required:
+    - {capability: market_structure}
+  preferred:
+    - {capability: delta}
+    - {capability: vwap}
+applies_to:
+  tools:
+    - analyze_markov
+examples:
+  - description: "User asks whether the BTCUSDT 4h bull trend is likely to persist. Call analyze_markov, report regime_probabilities.bull_trend, transition_risk and expected_duration, then say whether evidence supports waiting for confirmation."
+  - description: "User asks for a strategy choice in a sideways, high-volatility regime. Report the MDP proposal as evidence, then defer to the risk gate before any trade language."
+invalidation:
+  - "A material change in the features the tool used (ATR, volume, delta) invalidates the last regime evidence."
+  - "A completed candle that closes beyond the evidence window requires a fresh analyze_markov call."
+preferred_markets: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+preferred_timeframes: ["4h", "1d"]

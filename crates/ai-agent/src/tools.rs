@@ -615,6 +615,12 @@ impl ToolRegistry {
                     exposed_tool: None, // base tool: always exposed
                 },
                 ToolSpec {
+                    name: "analyze_markov".into(),
+                    description: ANALYZE_MARKOV.into(),
+                    input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: None, // pure evidence: always available
+                },
+                ToolSpec {
                     name: "analyze_multi_timeframe".into(),
                     description: ANALYZE_MULTI_TIMEFRAME.into(),
                     input_schema: multi_timeframe_schema(),
@@ -1090,6 +1096,7 @@ impl ToolRegistry {
         let started = std::time::Instant::now();
         let result = match call.name.as_str() {
             "analyze_timeframe" => analyze_timeframe(ctx, &call.input).await,
+            "analyze_markov" => analyze_markov(ctx, &call.input).await,
             "analyze_multi_timeframe" => analyze_multi_timeframe(ctx, &call.input).await,
             "get_candles" => get_candles(ctx, &call.input).await,
             "get_volume_profile" => get_volume_profile(ctx, &call.input).await,
@@ -1777,6 +1784,8 @@ const GET_MACD: &str = "MACD (fast 12 / slow 26 / signal 9 by default): the last
 const GET_BOLLINGER_BANDS: &str = "Bollinger Bands (period 20, 2 standard deviations by \
     default): middle/upper/lower, bandwidth and %b for the last `limit` bars. Falling \
     bandwidth is the squeeze; %b above 1 or below 0 is a close outside the bands.";
+
+const ANALYZE_MARKOV: &str = "Markov-family market evidence: inferred regime, time-varying transition probabilities, continuous-time event probabilities, regime duration, volatility state and a wait/act policy proposal. Use when the user asks for market regime, transition risk, volatility regime, or how long a market condition may persist. Read-only; it never trades.";
 
 const GET_ATR: &str = "Average True Range: the latest ATR and ATR as a percent of price. \
     Use it to size stops and targets -- a stop inside one ATR of entry is noise, not \
@@ -2818,6 +2827,120 @@ async fn get_bollinger_bands(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
         "latest": readings.last().cloned(),
         "readings": readings,
     }))
+}
+
+/// Read-only Markov evidence computed entirely from the Rust candle window.
+///
+/// The model never computes these numbers: this tool derives typed features
+/// from candles, hands them to the deterministic Markov engines, and returns
+/// the structured result.
+async fn analyze_markov(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "analyze_markov";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
+    let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
+    if candles.len() < 3 {
+        return Err(AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason: "Markov evidence needs at least three candles".into(),
+        });
+    }
+
+    let close = |candle: &Candle| candle.close;
+    let mut returns = Vec::with_capacity(candles.len() - 1);
+    for pair in candles.windows(2) {
+        let previous = close(&pair[0]);
+        if previous > 0.0 && previous.is_finite() {
+            returns.push(close(&pair[1]) / previous - 1.0);
+        }
+    }
+    let atr = analytics_core::indicators::atr(&candles, 14);
+    let mut atr_values: Vec<f64> = atr.into_iter().flatten().filter(|v| v.is_finite() && *v > 0.0).collect();
+    if atr_values.is_empty() {
+        atr_values.push((candles[0].high - candles[0].low).abs().max(1e-9));
+    }
+    atr_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let atr_reference = atr_values[atr_values.len() / 2];
+    let last = candles.last().expect("the window is non-empty");
+    let last_close = close(last);
+    let atr_pct = if last_close > 0.0 {
+        atr_reference / last_close * 100.0
+    } else {
+        0.0
+    };
+
+    let volume_window = candles.iter().rev().take(20).filter(|c| c.volume.is_finite()).collect::<Vec<_>>();
+    let mean_volume = volume_window.iter().map(|c| c.volume).sum::<f64>() / volume_window.len().max(1) as f64;
+    let volume_ratio = if mean_volume > 0.0 { last.volume / mean_volume } else { 1.0 };
+    let older = candles[candles.len().saturating_sub(11)].close;
+    let momentum = if older > 0.0 { (last_close - older) / older } else { 0.0 };
+    let delta_sum: f64 = candles
+        .iter()
+        .rev()
+        .take(20)
+        .map(|c| c.buy_volume - c.sell_volume)
+        .sum();
+    let volume_sum: f64 = candles.iter().rev().take(20).map(|c| c.volume).sum();
+    let delta = if volume_sum > 0.0 { delta_sum / volume_sum } else { 0.0 };
+    let mean_close: f64 = candles.iter().rev().take(20).map(|c| c.close).sum::<f64>()
+        / candles.iter().rev().take(20).count().max(1) as f64;
+    let distance_from_vwap = if atr_reference > 0.0 {
+        (last_close - mean_close) / atr_reference
+    } else {
+        0.0
+    };
+    let spread = if last_close > 0.0 {
+        (last.high - last.low) / last_close
+    } else {
+        0.0
+    };
+
+    let features = markov_intelligence::state::MarketFeatures {
+        return_1: returns.last().copied().unwrap_or(0.0),
+        atr_pct,
+        volume_ratio,
+        momentum,
+        delta,
+        distance_from_vwap,
+        spread,
+    };
+    let regime_history: Vec<markov_intelligence::state::Regime> = candles
+        .iter()
+        .enumerate()
+        .map(|(index, candle)| {
+            let local_atr = (candle.high - candle.low).abs().max(1e-9);
+            let local = markov_intelligence::state::MarketFeatures {
+                return_1: returns.get(index.saturating_sub(1)).copied().unwrap_or(0.0),
+                atr_pct: if candle.close > 0.0 { local_atr / candle.close * 100.0 } else { 0.0 },
+                volume_ratio: if mean_volume > 0.0 { candle.volume / mean_volume } else { 1.0 },
+                momentum: if older > 0.0 { (candle.close - older) / older } else { 0.0 },
+                delta,
+                distance_from_vwap,
+                spread,
+            };
+            local.classify(atr_reference)
+        })
+        .collect();
+
+    let request = markov_intelligence::MarkovRequest {
+        instrument: symbol,
+        timeframe: timeframe.to_string(),
+        features,
+        returns,
+        regime_history,
+        atr_reference,
+        horizon: 4.0,
+        gamma: 0.9,
+    };
+    let result = markov_intelligence::analyze(&request).map_err(|reason| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason,
+    })?;
+    serde_json::to_value(result).map_err(|error| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: error.to_string(),
+    })
 }
 
 async fn get_atr_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
