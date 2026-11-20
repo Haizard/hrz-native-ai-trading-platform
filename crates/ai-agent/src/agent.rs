@@ -310,6 +310,9 @@ pub struct AskRequest {
     /// carried it. When both are empty the skill is retrieved by relevance,
     /// and relevance still answers with one.
     pub skill_ids: Vec<String>,
+    /// Specialist mode for this turn. Defaults to the orchestrator so existing
+    /// callers keep one UI-facing coordinator.
+    pub mode: crate::modes::AgentMode,
     /// Candles per timeframe; `None` uses the context default.
     pub lookback: Option<usize>,
     /// The chart the user is looking at, when the shell told us.
@@ -399,6 +402,7 @@ impl AskRequest {
             timeframes: None,
             skill_id: None,
             skill_ids: Vec::new(),
+            mode: crate::modes::AgentMode::default(),
             lookback: None,
             chart: None,
             drawings: None,
@@ -505,6 +509,13 @@ impl AskRequest {
     #[must_use]
     pub fn with_evidence(mut self, evidence: EvidenceContext) -> Self {
         self.evidence = Some(evidence);
+        self
+    }
+
+    /// Choose a specialist mode for this turn.
+    #[must_use]
+    pub fn with_mode(mut self, mode: crate::modes::AgentMode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -635,6 +646,25 @@ pub struct AgentAnswer {
     pub turns: usize,
     /// Token usage across the whole turn.
     pub usage: Usage,
+}
+
+impl AgentAnswer {
+    /// A typed, mode-labelled view of this answer.
+    ///
+    /// The prose thesis stays the source of truth; this wrapper gives callers
+    /// one stable shape to display and to persist without parsing prose.
+    #[must_use]
+    pub fn mode_report(&self, mode: crate::modes::AgentMode) -> crate::modes::ModeReport {
+        crate::modes::ModeReport {
+            mode: mode.as_str().to_string(),
+            symbol: self.thesis.symbol.clone(),
+            timeframe: self.thesis.timeframe.clone(),
+            direction: format!("{:?}", self.thesis.direction),
+            confidence_pct: self.thesis.confidence_pct,
+            narrative: self.thesis.narrative.clone(),
+            tool_calls: self.trace.iter().map(|call| call.tool.clone()).collect(),
+        }
+    }
 }
 
 /// A request to review a generated document against a chart screenshot.
@@ -1088,7 +1118,9 @@ impl Agent {
         // Tools must be available before the prompt so the capability summary
         // can be built. The prompt will receive the full list but filter it to
         // exposed tools.
-        let mut tools = self.registry.exposed_tools(request.capabilities.as_ref());
+        let mut tools = request
+            .mode
+            .filter_tools(self.registry.exposed_tools(request.capabilities.as_ref()));
         tools.push(submit_thesis_spec());
 
         // Drawing duty: a chart-analysis skill whose rules say DRAW and a host
@@ -1135,6 +1167,7 @@ impl Agent {
             can_look,
             request.teaching,
         );
+        let system = format!("{system}\n\n{}", request.mode.instruction());
         // Screenshots ride on the first user message, primary view first. It is
         // attached here rather than as a separate message because Bedrock
         // requires a `user` turn to alternate with `assistant`, and an extra

@@ -1,10 +1,11 @@
 # 62 — Markov Intelligence
 
-- **Status:** first four adoption steps landed — seven independent,
+- **Status:** first five adoption steps landed — seven independent,
   deterministic engines in `crates/markov-intelligence`, a read-only
   `analyze_markov` agent tool, a tool-doctrine skill with trigger phrases and a
-  registry meta-test, and an immutable evidence journal with one-shot
-  market-based settlement.
+  registry meta-test, an immutable evidence journal with one-shot
+  market-based settlement, and six narrow agent modes coordinated by one
+  orchestrator.
 - **Scope:** regime, transition, volatility, duration, event-timing and
   strategy-selection evidence for the agent layer. It does not trade, does not
   call an LLM, and has no I/O.
@@ -51,6 +52,17 @@ without pulling in the MDP or CTMC.
 - All probabilities are evidence scores, not calibrated win probabilities.
 - Kronos and other heavy models are deliberately not included; this crate runs
   cheaply beside the Rust core.
+
+## Agent modes
+
+One `Agent` process now has six modes (`ai-agent/src/modes.rs`):
+`market_analyst`, `whale_flow`, `smc`, `strategy`, `risk` and `orchestrator`.
+A mode narrows the tool list and appends a role instruction to the system
+prompt. `submit_thesis` is always kept so every mode returns an auditable
+answer. `AgentAnswer::mode_report(mode)` gives callers one typed
+`ModeReport` shape instead of parsing prose. HTTP and WebSocket callers can
+choose a mode; both default to the orchestrator, which is the only mode the UI
+needs to talk to.
 
 ## Next adoption steps
 

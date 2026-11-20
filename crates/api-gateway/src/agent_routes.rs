@@ -32,6 +32,9 @@ pub struct AskBody {
     /// Pin several skills at once (docs/47): the trader's stack.
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    /// Specialist mode for this turn. Defaults to the orchestrator.
+    #[serde(default)]
+    pub mode: ai_agent::AgentMode,
     /// Ladder override, coarse to fine, e.g. `["4h", "1h", "5m"]`.
     pub timeframes: Option<Vec<String>>,
     /// The chart the user is looking at when they ask.
@@ -256,6 +259,7 @@ pub async fn ask(
 
     let mut request = AskRequest::new(&body.symbol, &body.question);
     request = request.with_teaching(body.teaching);
+    request = request.with_mode(body.mode);
     request = request.with_concept_states(body.concept_states.clone());
     if let Some(id) = &body.skill_id {
         request = request.with_skill(id);

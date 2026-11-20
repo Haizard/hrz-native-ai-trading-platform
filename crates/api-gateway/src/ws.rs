@@ -656,6 +656,9 @@ struct AgentWsRequest {
     /// `"author"` runs the skill-authoring interview (docs/47) instead of a
     /// thesis: the same socket, a different conversation.
     mode: Option<String>,
+    /// Specialist mode for a thesis turn, distinct from the author interview.
+    #[serde(default)]
+    agent_mode: Option<ai_agent::AgentMode>,
     /// The interview transcript so far, oldest first. The client keeps it;
     /// the agent keeps nothing between calls.
     #[serde(default)]
@@ -762,6 +765,9 @@ where
 
     let mut ask = ai_agent::AskRequest::new(&request.symbol, &request.question);
     ask = ask.with_teaching(request.teaching);
+    if let Some(mode) = request.agent_mode {
+        ask = ask.with_mode(mode);
+    }
     if let Err(reason) =
         crate::agent_routes::validate_registry_concept_states(&request.concept_states)
     {

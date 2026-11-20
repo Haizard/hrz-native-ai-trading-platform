@@ -43,6 +43,7 @@ pub mod chart_context;
 pub mod error;
 pub mod llm_client;
 pub mod multi_timeframe;
+pub mod modes;
 pub mod progress;
 pub mod providers;
 pub mod sigv4;
@@ -60,6 +61,8 @@ pub use agent::{
     IndicatorContext, IndicatorReading, MemoryContext, ReviewRequest, SnapshotsContext,
     StrategyRequest, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
 };
+pub use modes::{AgentMode, ModeReport};
+
 pub use evidence::{EvidenceReceipt, MarkovEvidenceWriter, NewEvidence};
 
 pub use agent_memory::{
