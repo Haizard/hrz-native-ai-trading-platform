@@ -39,6 +39,7 @@ analytics-core   = { path = "crates/analytics-core" }
 capabilities     = { path = "crates/capabilities" }
 market-data      = { path = "crates/market-data" }
 markov-intelligence = { path = "crates/markov-intelligence" }
+ensemble-intelligence = { path = "crates/ensemble-intelligence" }
 # docs/23: the Pine-like scripting language. A leaf like analytics-core --
 # its only internal dependency is the math crate, and it must keep building
 # for wasm32 because the browser chart engine and preview guest link it.

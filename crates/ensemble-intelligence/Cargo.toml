@@ -1,0 +1,10 @@
+[package]
+name = "ensemble-intelligence"
+description = "Deterministic evidence fusion, reliability and disagreement handling for independent intelligence engines."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
