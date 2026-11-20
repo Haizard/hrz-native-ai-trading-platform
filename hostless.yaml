@@ -1,0 +1,22 @@
+# Hostless deployment contract.
+#
+# The platform defaults to `build.system: auto` (Railpack). This repository is
+# a Rust workspace with a WASM build script and two binaries, so auto mode was
+# ignoring the Dockerfile, its entrypoint and its runtime assets. That is why a
+# build succeeded but the start phase exited 0: nothing ever launched the
+# gateway. Pin the Docker build system and one long-running web command here.
+
+build:
+  system: docker
+
+dockerfile_path: "./Dockerfile"
+
+# Runs as the CMD after the Dockerfile ENTRYPOINT (docker-entrypoint.sh), which
+# applies migrations and then execs this command. Keep it in sync with the
+# Dockerfile CMD and the Procfile/nixpacks.toml start commands.
+start_command: "api-gateway"
+
+health_check:
+  type: http
+  http_path: "/healthz"
+  interval_in_seconds: 30
