@@ -1,0 +1,10 @@
+[package]
+name = "markov-intelligence"
+description = "Deterministic Markov-family regime, transition, volatility, duration, event and decision intelligence."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
