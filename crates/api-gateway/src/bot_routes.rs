@@ -991,6 +991,12 @@ async fn live_adapter(
         );
         return Ok(Box::new(adapter) as Box<dyn trading_engine::ExchangeAdapter>);
     }
+    if stored.venue == "binance_testnet" {
+        return Ok(Box::new(
+            BinanceRest::new(trading_engine::binance::TESTNET, symbol, credentials)
+                .with_venue("binance_testnet"),
+        ) as Box<dyn trading_engine::ExchangeAdapter>);
+    }
     Ok(Box::new(BinanceRest::new(
         &state.binance_base_url,
         symbol,

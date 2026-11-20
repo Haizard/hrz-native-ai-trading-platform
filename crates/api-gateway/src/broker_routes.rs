@@ -93,7 +93,7 @@ struct BrokerDescription {
     guidance: &'static str,
 }
 
-const SUPPORTED: [BrokerDescription; 2] = [
+const SUPPORTED: [BrokerDescription; 3] = [
     BrokerDescription {
         venue: "binance",
         name: "Binance",
@@ -102,6 +102,13 @@ const SUPPORTED: [BrokerDescription; 2] = [
             "Create an API key with **Enable Reading** and **Enable Spot & Margin Trading** only. \
                Leave **Enable Withdrawals** off -- this platform places orders and never moves \
                funds, and a key that can withdraw is refused here.",
+    },
+    BrokerDescription {
+        venue: "binance_testnet",
+        name: "Binance Testnet (Demo)",
+        keys_url: "https://testnet.binance.vision/",
+        guidance:
+            "Create an API key on Binance Spot Testnet with **Enable Reading** and                **Enable Spot & Margin Trading** only, and leave withdrawals off. Testnet                funds are not real; this venue has its own gate opt-in and cannot spend                mainnet balances.",
     },
     BrokerDescription {
         venue: "deriv",
@@ -435,6 +442,17 @@ async fn check_and_record(
             BinanceRest::for_account(&state.binance_base_url, credentials)
                 .verify_credentials()
                 .await
+        }
+        // Testnet has its own base URL and its own gate venue: never send a
+        // demo key to a deployment mirror or authorize it as mainnet Binance.
+        "binance_testnet" => {
+            BinanceRest::for_account_on(
+                trading_engine::binance::TESTNET,
+                "binance_testnet",
+                credentials,
+            )
+            .verify_credentials()
+            .await
         }
         // Deriv has one token, not a key/secret pair: it rides `api_key`.
         // The `authorize` call validates it and names the account it opens.

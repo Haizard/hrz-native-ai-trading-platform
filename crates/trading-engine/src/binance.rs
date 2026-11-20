@@ -257,6 +257,10 @@ pub struct BinanceRest {
     symbol: String,
     credentials: ExchangeCredentials,
     client: reqwest::Client,
+    /// Venue this client reports to the live gate. A testnet client must not
+    /// report `binance`, or an authorization for the demo venue is rejected at
+    /// construction and the order never reaches the testnet.
+    venue: &'static str,
 }
 
 impl BinanceRest {
@@ -286,6 +290,7 @@ impl BinanceRest {
                 .timeout(timeout)
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
+            venue: "binance",
         }
     }
 
@@ -293,6 +298,13 @@ impl BinanceRest {
     #[must_use]
     pub fn testnet(symbol: &str, credentials: ExchangeCredentials) -> Self {
         Self::new(TESTNET, symbol, credentials)
+    }
+
+    /// Give this client a different venue name for the live gate.
+    #[must_use]
+    pub const fn with_venue(mut self, venue: &'static str) -> Self {
+        self.venue = venue;
+        self
     }
 
     /// The symbol this client trades.
@@ -318,6 +330,20 @@ impl BinanceRest {
     #[must_use]
     pub fn for_account(base_url: &str, credentials: ExchangeCredentials) -> Self {
         Self::new(base_url, "", credentials)
+    }
+
+    /// Build an account-level client that reports `venue` to the gate.
+    ///
+    /// Used by the gateway for the `binance_testnet` demo venue, whose keys
+    /// must be checked against the testnet and whose authorization names the
+    /// demo venue, not mainnet Binance.
+    #[must_use]
+    pub fn for_account_on(
+        base_url: &str,
+        venue: &'static str,
+        credentials: ExchangeCredentials,
+    ) -> Self {
+        Self::for_account(base_url, credentials).with_venue(venue)
     }
 
     /// Build from `BINANCE_API_KEY` and `BINANCE_API_SECRET`.
@@ -451,7 +477,7 @@ fn as_string(value: Option<&serde_json::Value>) -> String {
 #[async_trait]
 impl ExchangeAdapter for BinanceRest {
     fn venue(&self) -> &str {
-        "binance"
+        self.venue
     }
 
     async fn place_order(&self, order: OrderRequest) -> Result<OrderAck, ExecutionError> {
@@ -832,6 +858,21 @@ mod tests {
         assert_eq!(client.symbol(), "BTCUSDT");
         let mainnet = BinanceRest::new(MAINNET, "BTCUSDT", credentials());
         assert_eq!(mainnet.base_url(), MAINNET);
+    }
+
+    #[test]
+    fn a_testnet_account_client_reports_the_demo_venue_to_the_gate() {
+        let client = BinanceRest::for_account_on(TESTNET, "binance_testnet", credentials());
+        assert_eq!(client.base_url(), TESTNET);
+        assert_eq!(
+            <BinanceRest as crate::execution::ExchangeAdapter>::venue(&client),
+            "binance_testnet"
+        );
+        let mainnet = BinanceRest::for_account(MAINNET, credentials());
+        assert_eq!(
+            <BinanceRest as crate::execution::ExchangeAdapter>::venue(&mainnet),
+            "binance"
+        );
     }
 
     #[tokio::test]

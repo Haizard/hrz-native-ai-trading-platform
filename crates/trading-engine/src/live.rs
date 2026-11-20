@@ -1374,4 +1374,60 @@ risk:
             other => panic!("expected the venue mismatch, got {other:?}"),
         }
     }
+    #[test]
+    fn a_testnet_authorization_only_accepts_a_testnet_adapter() {
+        fn engine() -> StrategyEngine {
+            let validated = strategy_dsl::parse_and_validate(DOCUMENT).unwrap();
+            StrategyEngine::new(&validated, strategy_runtime::RuntimeConfig::default()).unwrap()
+        }
+        fn authorization_for(venue: &str) -> crate::gate::LiveAuthorization {
+            let mut gate = crate::gate::LiveGate::new(crate::gate::GateRequirements::default());
+            gate.opt_in(venue);
+            gate.authorize(
+                venue,
+                crate::gate::TrackRecord {
+                    closed_trades: 30,
+                    hours: 72.0,
+                    cumulative_r: 1.0,
+                },
+                &RiskLimits::default(),
+            )
+            .expect("the record clears the gate")
+        }
+        fn adapter(venue: &'static str, base: &str) -> crate::binance::BinanceRest {
+            crate::binance::BinanceRest::for_account_on(
+                base,
+                venue,
+                crate::credentials::ExchangeCredentials::from_parts(venue, "key", "secret"),
+            )
+        }
+
+        let testnet = LiveBot::new(
+            engine(),
+            authorization_for("binance_testnet"),
+            adapter("binance_testnet", crate::binance::TESTNET),
+            LiveConfig::default(),
+        )
+        .expect("the demo venue and its adapter agree");
+        assert_eq!(
+            testnet.adapter_for_test().venue(),
+            "binance_testnet",
+            "the adapter reports its venue to the gate"
+        );
+        drop(testnet);
+
+        let error = match LiveBot::new(
+            engine(),
+            authorization_for("binance_testnet"),
+            adapter("binance", crate::binance::MAINNET),
+            LiveConfig::default(),
+        ) {
+            Ok(_) => panic!("a mainnet adapter must not accept a testnet authorization"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            ExecutionError::AuthorizationVenueMismatch { .. }
+        ));
+    }
 }

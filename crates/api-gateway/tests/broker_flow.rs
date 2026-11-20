@@ -61,7 +61,11 @@ async fn the_picker_lists_brokers_the_platform_can_connect() {
     let body = h.ok("/brokers/available", Some(&user.token)).await;
     let venues = body.as_array().expect("an array");
 
-    assert_eq!(venues.len(), 2, "two brokers are wired up today: {body}");
+    assert_eq!(
+        venues.len(),
+        3,
+        "Binance, Binance Testnet and Deriv: {body}"
+    );
     assert_eq!(venues[0]["venue"], "binance");
     assert_eq!(venues[0]["name"], "Binance");
     assert!(
@@ -75,6 +79,18 @@ async fn the_picker_lists_brokers_the_platform_can_connect() {
             .as_str()
             .is_some_and(|text| text.contains("Withdrawals")),
         "the guidance has to name the permission users must not grant: {body}"
+    );
+
+    let demo = venues
+        .iter()
+        .find(|entry| entry["venue"] == "binance_testnet")
+        .expect("the demo venue is in the picker");
+    assert_eq!(demo["name"], "Binance Testnet (Demo)");
+    assert!(
+        demo["guidance"]
+            .as_str()
+            .is_some_and(|text| text.contains("not real")),
+        "a demo entry must say the funds are not real: {demo}"
     );
 
     user.cleanup(&h.database).await;

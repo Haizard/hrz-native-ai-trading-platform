@@ -20,6 +20,10 @@ same `strategy-runtime`/sandbox path used by the backtester (principle #5).
 - Live trading for a given venue is only enabled after: (a) the strategy has a paper
   track record over a minimum configured window, (b) the user explicitly opts in per
   venue and per strategy, (c) the Risk Engine's limits are configured and active.
+- Binance Spot Testnet is exposed as the separate venue `binance_testnet`. It has its
+  own broker-connection entry, its own opt-in and its own `LiveAuthorization` venue;
+  the adapter reports that venue to the gate, so a mainnet authorization cannot start
+  a testnet bot and vice versa. Testnet funds are not real, but the gate is unchanged.
 
 ```rust
 #[async_trait]

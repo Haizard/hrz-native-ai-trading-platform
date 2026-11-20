@@ -51,7 +51,7 @@ use crate::AppState;
 /// what an adapter reports and a typo would produce a venue that is opted in
 /// and can never be traded. Adding one is a code change with an adapter behind
 /// it, which is the honest coupling.
-pub const KNOWN_VENUES: [&str; 2] = ["binance", "deriv"];
+pub const KNOWN_VENUES: [&str; 3] = ["binance", "binance_testnet", "deriv"];
 
 /// The (provider, symbol class) the deployment's market data comes from
 /// (`docs/39`).
