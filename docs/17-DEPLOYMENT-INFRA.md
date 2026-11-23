@@ -13,6 +13,16 @@ environments, with CI/CD from Phase 0 onward.
 - **Production**: real market data, real users; live trading only enabled per the
   gating in `docs/15-RISK-COMPLIANCE.md`.
 
+## Hostless resource type
+
+The API gateway is an **App** (a web service), not a Worker or Cron job. A Worker
+or Cron is expected to run its command to completion and exit — exit code 0 is
+success for those resource types, and the dashboard then reports "crashed on
+start". Create/select the resource as **App**, keep `hostless.yaml` in the repo
+(it pins `build.system: docker`, the Dockerfile and `start_command: api-gateway`),
+and let the platform inject `PORT`; the entrypoint binds `0.0.0.0:$PORT`.
+`DATABASE_URL` is required because migrations run in the entrypoint by default.
+
 ## CI/CD (set up in Phase 0, per `02-ROADMAP.md`)
 - On every PR: `fmt`, `clippy`, `test`, the wasm test target, the sandbox guest's
   dependency graph, and the **chart engine** — `xtask build-frontend` builds the wasm
