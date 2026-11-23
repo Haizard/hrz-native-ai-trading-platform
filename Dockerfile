@@ -45,7 +45,8 @@ COPY --from=builder /app/target/release/api-gateway /usr/local/bin/api-gateway
 COPY --from=builder /app/target/release/pine-preview-worker /usr/local/bin/pine-preview-worker
 COPY --from=builder /app/target/release/xtask        /usr/local/bin/xtask
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY start.sh /app/start.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /app/start.sh
 
 # Runtime assets. Both are resolved relative to the working directory:
 #   `/`            serves `frontend/mvp/index.html`

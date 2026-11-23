@@ -19,9 +19,11 @@ The API gateway is an **App** (a web service), not a Worker or Cron job. A Worke
 or Cron is expected to run its command to completion and exit — exit code 0 is
 success for those resource types, and the dashboard then reports "crashed on
 start". Create/select the resource as **App**, keep `hostless.yaml` in the repo
-(it pins `build.system: docker`, the Dockerfile and `start_command: api-gateway`),
-and let the platform inject `PORT`; the entrypoint binds `0.0.0.0:$PORT`.
-`DATABASE_URL` is required because migrations run in the entrypoint by default.
+(it pins `build.system: docker`, the Dockerfile and `start_command: ./start.sh`),
+and let the platform inject `PORT`; the entrypoint/start script binds
+`0.0.0.0:$PORT`. `DATABASE_URL` is required because migrations run in the
+entrypoint by default. `start.sh` also finds the binary in a Railpack/auto Rust
+build (`target/release/api-gateway`) if the image build is bypassed.
 
 ## CI/CD (set up in Phase 0, per `02-ROADMAP.md`)
 - On every PR: `fmt`, `clippy`, `test`, the wasm test target, the sandbox guest's

@@ -14,7 +14,7 @@ dockerfile_path: "./Dockerfile"
 # Runs as the CMD after the Dockerfile ENTRYPOINT (docker-entrypoint.sh), which
 # applies migrations and then execs this command. Keep it in sync with the
 # Dockerfile CMD and the Procfile/nixpacks.toml start commands.
-start_command: "api-gateway"
+start_command: "./start.sh"
 
 health_check:
   type: http
