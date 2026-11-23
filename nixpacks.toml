@@ -1,4 +1,5 @@
-# Hosts that ignore the Dockerfile and use Nixpacks still need one long-running
-# web process. Keep this in sync with docker-entrypoint.sh and the Dockerfile CMD.
+# Hosts that ignore the Dockerfile and use Nixpacks/Railpack read this file.
+# It must use the same start script as hostless.yaml and the Dockerfile CMD;
+# a bare `api-gateway` is not on the shell's PATH in those build environments.
 [phases.start]
-cmd = "api-gateway"
+cmd = "./start.sh"

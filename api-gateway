@@ -1,0 +1,6 @@
+#!/bin/sh
+# Compatibility shim for hosts whose start command is literally `api-gateway`
+# but do not put the Rust build output on PATH. Delegates to start.sh, which
+# resolves the real binary from PATH, target/release, /app or /usr/local/bin.
+# The committed Docker image uses the real binary at /usr/local/bin instead.
+exec "$(dirname "$0")/start.sh" "$@"

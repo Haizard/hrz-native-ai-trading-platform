@@ -1,1 +1,1 @@
-web: api-gateway
+web: ./start.sh
