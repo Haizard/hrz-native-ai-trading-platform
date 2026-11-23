@@ -25,6 +25,11 @@ and let the platform inject `PORT`; the entrypoint/start script binds
 entrypoint by default. `start.sh` also finds the binary in a Railpack/auto Rust
 build (`target/release/api-gateway`) if the image build is bypassed.
 
+**If runtime logs still say `api-gateway: command not found`:** the dashboard's
+**General settings → Start command** is overriding `hostless.yaml`. Set it there
+to `./start.sh` (or clear it so the file value applies), then redeploy. The
+deploy page must show a commit that contains `start.sh` (`948284f` or newer).
+
 ## CI/CD (set up in Phase 0, per `02-ROADMAP.md`)
 - On every PR: `fmt`, `clippy`, `test`, the wasm test target, the sandbox guest's
   dependency graph, and the **chart engine** — `xtask build-frontend` builds the wasm
