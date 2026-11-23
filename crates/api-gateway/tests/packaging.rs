@@ -426,12 +426,20 @@ fn the_port_is_the_same_in_every_place_that_names_it() {
     // perfectly, and the deploy flaps for no visible reason.
     let dockerfile = dockerfile();
     let exposed = first_number_after(&dockerfile, "EXPOSE ").expect("EXPOSE must name a port");
-    let bound =
-        first_number_after(&dockerfile, "BIND_ADDR=0.0.0.0:").expect("BIND_ADDR must name a port");
-    let probed =
-        first_number_after(&dockerfile, "127.0.0.1:").expect("the healthcheck must name a port");
+    // The image no longer hard-codes BIND_ADDR: the entrypoint derives it from
+    // the host's PORT. Read the same `${PORT:-8080}` default the entrypoint uses
+    // so a change to either side of that contract is still caught here.
+    let entrypoint = std::fs::read_to_string(repo_root().join("docker-entrypoint.sh"))
+        .expect("docker-entrypoint.sh must exist");
+    let bound = first_number_after(&entrypoint, "${PORT:-")
+        .expect("the entrypoint must give BIND_ADDR a default port");
+    let probed = first_number_after(&dockerfile, "${PORT:-")
+        .expect("the healthcheck must use the same PORT default");
 
-    assert_eq!(exposed, bound, "EXPOSE and BIND_ADDR disagree");
+    assert_eq!(
+        exposed, bound,
+        "EXPOSE and the entrypoint's BIND_ADDR disagree"
+    );
     assert_eq!(exposed, probed, "EXPOSE and the healthcheck disagree");
 }
 

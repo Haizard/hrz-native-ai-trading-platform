@@ -190,7 +190,7 @@ still refused" — and each has its fix on a different page.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `BIND_ADDR` | `127.0.0.1:8080` locally; in the image, `0.0.0.0:$PORT` (default `0.0.0.0:8080`) | the entrypoint derives it from the host's `PORT`; an explicit override still wins |
+| `BIND_ADDR` | debug builds: `127.0.0.1:8080`; release builds: `PORT` if set, else `0.0.0.0:8080` | the gateway itself binds all interfaces in release, so a host that fails to forward env vars still answers its external TCP probe; the entrypoint and `start.sh` derive it from `PORT` as well |
 | `RUST_LOG` | `info` | tracing-subscriber `EnvFilter` syntax |
 | `LOG_FORMAT` | human-readable lines | `json` for machine-readable logs in deployment |
 | `RUN_MIGRATIONS` | `true` | the entrypoint applies migrations, then execs the command; sqlx takes an advisory lock so replicas serialize |
