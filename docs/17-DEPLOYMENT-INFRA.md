@@ -30,6 +30,28 @@ build (`target/release/api-gateway`) if the image build is bypassed.
 to `./start.sh` (or clear it so the file value applies), then redeploy. The
 deploy page must show a commit that contains `start.sh` (`948284f` or newer).
 
+### Hostless free-plan constraints (observed 2026-11-23)
+
+The app is on the FREE tier: 0.5 vCPU and 1024 MB shared across all resources.
+Two failure modes were measured through the Hostless API/MCP:
+
+- **`BUILD_TIMED_OUT`**: a Docker `cargo build --release` of the whole workspace
+  exceeded the 30-minute build limit. The `auto` (Railpack) build completes in
+  minutes, so prefer `buildSystem: auto` on the free plan; use Docker only when
+  a paid build plan is available.
+- **`FAILED_TO_START` / exit 127**: Railpack runs the start command through
+  `/bin/bash` with a bare `api-gateway` that is not on PATH. Setting
+  `NIXPACKS_START_CMD`, `RAILPACK_START_COMMAND` and `START_COMMAND` to
+  `./start.sh` resolves it; `start.sh` finds the binary in `target/release` or
+  `/usr/local/bin`.
+- The app's build system, port and scaling are not taken from `hostless.yaml`
+  until the file is applied; verify them with `GET /v1/apps/{appName}` (or
+  `apps_get`) rather than assuming the file won. A PATCH with
+  `buildSystem`, `containerPort` and `webProcess` is accepted by the API.
+- Exit 137 during concurrent builds is the free memory pool being contested by
+  the build and a restarting web process; cancel stale `DEPLOYMENT_STARTED`
+  deployments before starting a new one.
+
 ## CI/CD (set up in Phase 0, per `02-ROADMAP.md`)
 - On every PR: `fmt`, `clippy`, `test`, the wasm test target, the sandbox guest's
   dependency graph, and the **chart engine** — `xtask build-frontend` builds the wasm
