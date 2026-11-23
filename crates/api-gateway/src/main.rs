@@ -32,6 +32,24 @@ async fn main() -> anyhow::Result<()> {
     // the human-readable line format so local runs stay readable.
     observability::init_logging("api-gateway");
 
+    // Bind the port before any other initialization. A managed host's TCP probe
+    // must see an open socket within seconds; a slow dependency (database,
+    // sandbox compilation, worker self-test) that runs first makes the process
+    // look dead and gets it killed even though it would eventually serve. The
+    // kernel queues connections in the listener backlog until `axum::serve`
+    // starts accepting them.
+    let default_addr = if cfg!(debug_assertions) {
+        "127.0.0.1:8080"
+    } else {
+        "0.0.0.0:8080"
+    };
+    let addr: SocketAddr = std::env::var("BIND_ADDR")
+        .or_else(|_| std::env::var("PORT").map(|port| format!("0.0.0.0:{port}")))
+        .unwrap_or_else(|_| default_addr.to_string())
+        .parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!(%addr, "api-gateway port open");
+
     // A missing or slow database must not hold the listener hostage: a managed
     // host's startup probe will kill a process that has not bound its port
     // within ten seconds. The route layer already degrades honestly without a
@@ -282,23 +300,6 @@ async fn main() -> anyhow::Result<()> {
     let econ_store = state.econ.clone();
     let app = router(state);
 
-    // A managed host's TCP probe arrives from outside the container's loopback
-    // interface. If the platform fails to forward BIND_ADDR, falling back to
-    // 127.0.0.1 makes the process look alive while every probe gets
-    // "connection refused" - exactly the failure mode seen on Hostless. Honour
-    // PORT as a second signal, and default release builds to all interfaces.
-    // Debug builds keep the loopback default so local development is unchanged.
-    let default_addr = if cfg!(debug_assertions) {
-        "127.0.0.1:8080"
-    } else {
-        "0.0.0.0:8080"
-    };
-    let addr: SocketAddr = std::env::var("BIND_ADDR")
-        .or_else(|_| std::env::var("PORT").map(|port| format!("0.0.0.0:{port}")))
-        .unwrap_or_else(|_| default_addr.to_string())
-        .parse()?;
-
-    info!(%addr, "api-gateway listening");
     // The economic engine's first fetch: NFP and CPI on boot, then every
     // six hours. A failed fetch logs and retries on the next tick -- the
     // routes answer honestly empty rather than inventing a release.
@@ -335,7 +336,7 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!(%addr, "api-gateway listening");
     axum::serve(listener, app).await?;
     Ok(())
 }
