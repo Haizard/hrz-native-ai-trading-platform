@@ -32,15 +32,22 @@ async fn main() -> anyhow::Result<()> {
     // the human-readable line format so local runs stay readable.
     observability::init_logging("api-gateway");
 
-    let db = match Database::from_env().await {
-        Ok(db) => {
+    // A missing or slow database must not hold the listener hostage: a managed
+    // host's startup probe will kill a process that has not bound its port
+    // within ten seconds. The route layer already degrades honestly without a
+    // DB (healthz still answers, data routes answer 503), so bound the connect
+    // attempt and start serving either way.
+    let db = match tokio::time::timeout(Duration::from_secs(5), Database::from_env()).await {
+        Ok(Ok(db)) => {
             info!("database connection verified");
             Some(Arc::new(db))
         }
-        Err(e) => {
-            // Deliberately non-fatal: the gateway still serves /healthz so the
-            // deployment can report "up but not ready" rather than crash-loop.
+        Ok(Err(e)) => {
             error!("database unavailable: {e}");
+            None
+        }
+        Err(_) => {
+            error!("database connection timed out after 5s; serving without a database");
             None
         }
     };
