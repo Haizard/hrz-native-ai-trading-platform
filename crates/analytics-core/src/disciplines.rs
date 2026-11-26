@@ -10,11 +10,14 @@
 //! structure, Bayesian drift, GARCH, the two-state HMM, Shannon entropy, CUSUM
 //! and the z-score — rather than maintaining parallel versions.
 
-use crate::hierarchy::{Direction, MarketStateKind, TimeframeAnalysis, VolatilityState};
+use crate::hierarchy::{
+    Direction, DisciplineId, HierarchicalAnalyzer, MarketStateKind, MultiscaleAnalysisResult,
+    TimeframeAnalysis, VolatilityState,
+};
 use crate::indicators::quant::{cusum_stat, shannon_entropy, zscore};
 use crate::indicators::quant2::{bayesian_drift, garch, hmm_regime};
 use crate::market_structure::{detect_market_structure, Trend};
-use crate::multiscale::TimeframeObservation;
+use crate::multiscale::{MultiTimeframeObservation, TimeframeObservation};
 
 /// Minimum completed candles most adapters need before concluding anything.
 pub const MIN_BARS: usize = 30;
@@ -288,6 +291,26 @@ pub fn all_disciplines() -> &'static [(
     ]
 }
 
+/// Run one named discipline across a whole hierarchy.
+///
+/// Returns `None` for an unknown discipline name. The result carries the
+/// discipline's own per-frame conclusions, descriptive cross-frame
+/// relationships and any lower-timeframe candidates; it never places a trade
+/// or supplies a calibrated probability on its own.
+pub fn analyze_hierarchy(
+    observation: &MultiTimeframeObservation,
+    discipline: &str,
+    model_version: &str,
+) -> Option<MultiscaleAnalysisResult> {
+    let (_, adapter) = all_disciplines()
+        .iter()
+        .find(|(name, _)| *name == discipline)?;
+    Some(
+        HierarchicalAnalyzer::new(DisciplineId::new(discipline), model_version)
+            .analyze(observation, |frame| adapter(frame)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,6 +427,51 @@ mod tests {
         let analysis = analyze_volatility(&frame_with(&rising())).unwrap();
         assert_eq!(analysis.direction, Direction::Neutral);
         assert!(analysis.volatility_state.is_some());
+    }
+
+    #[test]
+    fn a_named_discipline_can_analyse_the_whole_hierarchy() {
+        let decision = 2000 * MIN;
+        let frames: Vec<TimeframeObservation> = [Timeframe::H1, Timeframe::M15, Timeframe::M1]
+            .into_iter()
+            .map(|timeframe| {
+                let count = (decision / timeframe.nanos()).clamp(1, 80) as usize;
+                let candles: Vec<Candle> = (0..count)
+                    .map(|i| {
+                        let close = 100.0 + i as f64 * 0.35 + (i % 5) as f64 * 0.05;
+                        Candle {
+                            symbol: "BTCUSDT".to_string(),
+                            timeframe,
+                            open_time: i as i64 * timeframe.nanos(),
+                            open: close,
+                            high: close + 0.5,
+                            low: close - 0.5,
+                            close,
+                            volume: 10.0,
+                            buy_volume: 6.0,
+                            sell_volume: 4.0,
+                        }
+                    })
+                    .collect();
+                TimeframeObservation::from_candles(
+                    timeframe, "BTCUSDT", &candles, decision, "test", 1,
+                )
+                .unwrap()
+            })
+            .collect();
+        let observation = MultiTimeframeObservation::new("BTCUSDT", decision, frames).unwrap();
+
+        let result = analyze_hierarchy(&observation, "bayesian", "test-v1").unwrap();
+        assert_eq!(result.discipline_id.as_str(), "bayesian");
+        assert_eq!(result.model_version, "test-v1");
+        assert_eq!(result.timeframe_results.len(), 3);
+        assert_eq!(result.evidence.len(), 3);
+        assert!(result
+            .uncertainty
+            .limitations
+            .iter()
+            .any(|l| l.contains("probability")));
+        assert!(analyze_hierarchy(&observation, "unknown", "v1").is_none());
     }
 
     #[test]
