@@ -52,6 +52,7 @@ impl AgentMode {
             Self::MarketAnalyst => Some(&[
                 "analyze_timeframe",
                 "analyze_multi_timeframe",
+                "analyze_multiscale",
                 "analyze_markov",
                 "fuse_intelligence",
                 "get_candles",
@@ -74,6 +75,7 @@ impl AgentMode {
                 "detect_absorption",
                 "detect_imbalance",
                 "analyze_markov",
+                "analyze_multiscale",
                 "fuse_intelligence",
             ]),
             Self::Smc => Some(&[
@@ -84,6 +86,7 @@ impl AgentMode {
                 "get_candles",
                 "analyze_timeframe",
                 "analyze_markov",
+                "analyze_multiscale",
                 "fuse_intelligence",
             ]),
             Self::Strategy => Some(&[
@@ -98,6 +101,7 @@ impl AgentMode {
                 "get_vwap",
                 "get_bollinger_bands",
                 "analyze_markov",
+                "analyze_multiscale",
                 "fuse_intelligence",
                 "get_candles",
             ]),

@@ -30,11 +30,11 @@ use tracing::debug;
 use analytics_core::types::{Candle, Timeframe, Trade};
 use analytics_core::volume_profile::VolumeNode;
 use analytics_core::{
-    bar_delta_stats_window, build_market_state, calculate_cvd_by_size,
-    calculate_volume_profile_from_candles, calculate_vpin_series, delta_by_size_per_candle,
-    detect_absorption, detect_imbalances_with, detect_liquidity_levels_with,
-    detect_market_structure, MarketState, MarketStateConfig, SizeClass, SizeClassConfig,
-    VpinConfig,
+    all_disciplines, analyze_hierarchy, bar_delta_stats_window, build_market_state,
+    calculate_cvd_by_size, calculate_volume_profile_from_candles, calculate_vpin_series,
+    delta_by_size_per_candle, detect_absorption, detect_imbalances_with,
+    detect_liquidity_levels_with, detect_market_structure, MarketState, MarketStateConfig,
+    MultiTimeframeObservation, SizeClass, SizeClassConfig, VpinConfig,
 };
 
 use crate::error::AgentError;
@@ -649,6 +649,12 @@ impl ToolRegistry {
                     exposed_tool: None,
                 },
                 ToolSpec {
+                    name: "analyze_multiscale".into(),
+                    description: ANALYZE_MULTISCALE.into(),
+                    input_schema: multiscale_schema(),
+                    exposed_tool: None, // pure deterministic evidence: always available
+                },
+                ToolSpec {
                     name: "get_candles".into(),
                     description: GET_CANDLES.into(),
                     input_schema: symbol_timeframe_schema(Some("limit")),
@@ -1121,6 +1127,7 @@ impl ToolRegistry {
             "analyze_markov" => analyze_markov(ctx, &call.input).await,
             "fuse_intelligence" => fuse_intelligence(ctx, &call.input).await,
             "analyze_multi_timeframe" => analyze_multi_timeframe(ctx, &call.input).await,
+            "analyze_multiscale" => analyze_multiscale(ctx, &call.input).await,
             "get_candles" => get_candles(ctx, &call.input).await,
             "get_volume_profile" => get_volume_profile(ctx, &call.input).await,
             "get_footprint" => get_footprint(ctx, &call.input).await,
@@ -1286,6 +1293,18 @@ fn multi_timeframe_schema() -> Value {
         },
         "required": ["symbol", "timeframes"],
     })
+}
+
+fn multiscale_schema() -> Value {
+    let mut schema = multi_timeframe_schema();
+    let disciplines: Vec<&str> = all_disciplines().iter().map(|(name, _)| *name).collect();
+    schema["properties"]["discipline"] = json!({
+        "type": "string",
+        "enum": disciplines,
+        "description": "The deterministic Core Analytics discipline to run across every frame",
+    });
+    schema["required"] = json!(["symbol", "timeframes", "discipline"]);
+    schema
 }
 
 /// Indicator tool schema: symbol + timeframe + lookback, with per-tool knobs
@@ -1735,6 +1754,13 @@ const ANALYZE_MULTI_TIMEFRAME: &str = "Run analyze_timeframe across several time
     once, ordered coarse to fine. Use it to check higher-timeframe context before \
     an entry trigger. Returns one state per timeframe.";
 
+const ANALYZE_MULTISCALE: &str = "Pure-deterministic top-down Core Analytics read. Runs one \
+    named mathematical discipline (structure, hidden_state, bayesian, volatility, \
+    information, change_point or statistical) across the requested timeframes, \
+    worst to finest, and reports per-frame conclusions, descriptive cross-frame \
+    relationships, lower-timeframe candidates and limitations. Evidence strength \
+    is not a probability; no trade is placed.";
+
 const GET_CANDLES: &str = "Recent OHLCV candles with buy/sell split, oldest first. Each candle \
     carries `i` (its index in this window, 0 = oldest) and `time_ms`, so a skill's drawing \
     recipe can name a candle by position -- \"the third candle from the right\" is \
@@ -2095,6 +2121,66 @@ async fn analyze_multi_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<
         }
     }
     Ok(json!({ "symbol": symbol, "frames": frames }))
+}
+
+/// Top-down Core Analytics over several timeframes, through one discipline.
+///
+/// The tool only loads data and hands it to `analytics-core`: every number in
+/// the result comes from the deterministic core, and the LLM never calculates.
+async fn analyze_multiscale(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "analyze_multiscale";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframes = timeframes_arg(args, TOOL)?;
+    let discipline = string_arg(args, "discipline", TOOL)?;
+    if !all_disciplines()
+        .iter()
+        .any(|(name, _)| *name == discipline)
+    {
+        return Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: format!("unknown discipline `{discipline}`"),
+        });
+    }
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+
+    let mut series = Vec::with_capacity(timeframes.len());
+    let mut decision_timestamp = 0_i64;
+    for timeframe in &timeframes {
+        let (candles, _) = load_window(ctx, &symbol, *timeframe, lookback)
+            .await
+            .map_err(|e| AgentError::ToolFailed {
+                tool: TOOL.into(),
+                reason: format!("{}: {e}", timeframe),
+            })?;
+        if let Some(last) = candles.last() {
+            decision_timestamp =
+                decision_timestamp.max(last.open_time.saturating_add(timeframe.nanos()));
+        }
+        series.push((*timeframe, candles));
+    }
+
+    let observation = MultiTimeframeObservation::from_series(
+        symbol.clone(),
+        decision_timestamp,
+        series,
+        "agent-market-data",
+        2,
+    )
+    .map_err(|e| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: e.to_string(),
+    })?;
+
+    let result = analyze_hierarchy(&observation, &discipline, "1.0").ok_or_else(|| {
+        AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason: format!("discipline `{discipline}` could not be resolved"),
+        }
+    })?;
+    serde_json::to_value(result).map_err(|e| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: e.to_string(),
+    })
 }
 
 async fn get_candles(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
@@ -2884,10 +2970,10 @@ async fn fuse_intelligence(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
     let cvd = get_cvd(ctx, args).await?;
 
     let label = |value: &Value, key: &str| -> ensemble_intelligence::Direction {
-        value
-            .get(key)
-            .and_then(Value::as_str)
-            .map_or(ensemble_intelligence::Direction::Neutral, direction_from_label)
+        value.get(key).and_then(Value::as_str).map_or(
+            ensemble_intelligence::Direction::Neutral,
+            direction_from_label,
+        )
     };
     let strength = |direction: ensemble_intelligence::Direction| {
         if direction == ensemble_intelligence::Direction::Neutral {
@@ -2932,7 +3018,10 @@ async fn fuse_intelligence(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
             ensemble_intelligence::EvidenceCategory::Regime,
             label(&markov, "current_regime"),
             1.0 - markov_risk,
-            format!("regime {:?}", markov.get("current_regime").and_then(Value::as_str)),
+            format!(
+                "regime {:?}",
+                markov.get("current_regime").and_then(Value::as_str)
+            ),
         ),
         make(
             "structure",
@@ -2953,7 +3042,10 @@ async fn fuse_intelligence(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
             ensemble_intelligence::EvidenceCategory::OrderFlow,
             label(&cvd, "divergence"),
             0.7,
-            format!("divergence {:?}", cvd.get("divergence").and_then(Value::as_str)),
+            format!(
+                "divergence {:?}",
+                cvd.get("divergence").and_then(Value::as_str)
+            ),
         ),
     ];
 
@@ -3015,7 +3107,11 @@ async fn analyze_markov(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
         }
     }
     let atr = analytics_core::indicators::atr(&candles, 14);
-    let mut atr_values: Vec<f64> = atr.into_iter().flatten().filter(|v| v.is_finite() && *v > 0.0).collect();
+    let mut atr_values: Vec<f64> = atr
+        .into_iter()
+        .flatten()
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .collect();
     if atr_values.is_empty() {
         atr_values.push((candles[0].high - candles[0].low).abs().max(1e-9));
     }
@@ -3029,11 +3125,25 @@ async fn analyze_markov(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
         0.0
     };
 
-    let volume_window = candles.iter().rev().take(20).filter(|c| c.volume.is_finite()).collect::<Vec<_>>();
-    let mean_volume = volume_window.iter().map(|c| c.volume).sum::<f64>() / volume_window.len().max(1) as f64;
-    let volume_ratio = if mean_volume > 0.0 { last.volume / mean_volume } else { 1.0 };
+    let volume_window = candles
+        .iter()
+        .rev()
+        .take(20)
+        .filter(|c| c.volume.is_finite())
+        .collect::<Vec<_>>();
+    let mean_volume =
+        volume_window.iter().map(|c| c.volume).sum::<f64>() / volume_window.len().max(1) as f64;
+    let volume_ratio = if mean_volume > 0.0 {
+        last.volume / mean_volume
+    } else {
+        1.0
+    };
     let older = candles[candles.len().saturating_sub(11)].close;
-    let momentum = if older > 0.0 { (last_close - older) / older } else { 0.0 };
+    let momentum = if older > 0.0 {
+        (last_close - older) / older
+    } else {
+        0.0
+    };
     let delta_sum: f64 = candles
         .iter()
         .rev()
@@ -3041,7 +3151,11 @@ async fn analyze_markov(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
         .map(|c| c.buy_volume - c.sell_volume)
         .sum();
     let volume_sum: f64 = candles.iter().rev().take(20).map(|c| c.volume).sum();
-    let delta = if volume_sum > 0.0 { delta_sum / volume_sum } else { 0.0 };
+    let delta = if volume_sum > 0.0 {
+        delta_sum / volume_sum
+    } else {
+        0.0
+    };
     let mean_close: f64 = candles.iter().rev().take(20).map(|c| c.close).sum::<f64>()
         / candles.iter().rev().take(20).count().max(1) as f64;
     let distance_from_vwap = if atr_reference > 0.0 {
@@ -3071,9 +3185,21 @@ async fn analyze_markov(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
             let local_atr = (candle.high - candle.low).abs().max(1e-9);
             let local = markov_intelligence::state::MarketFeatures {
                 return_1: returns.get(index.saturating_sub(1)).copied().unwrap_or(0.0),
-                atr_pct: if candle.close > 0.0 { local_atr / candle.close * 100.0 } else { 0.0 },
-                volume_ratio: if mean_volume > 0.0 { candle.volume / mean_volume } else { 1.0 },
-                momentum: if older > 0.0 { (candle.close - older) / older } else { 0.0 },
+                atr_pct: if candle.close > 0.0 {
+                    local_atr / candle.close * 100.0
+                } else {
+                    0.0
+                },
+                volume_ratio: if mean_volume > 0.0 {
+                    candle.volume / mean_volume
+                } else {
+                    1.0
+                },
+                momentum: if older > 0.0 {
+                    (candle.close - older) / older
+                } else {
+                    0.0
+                },
                 delta,
                 distance_from_vwap,
                 spread,
@@ -3092,10 +3218,11 @@ async fn analyze_markov(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
         horizon: 4.0,
         gamma: 0.9,
     };
-    let result = markov_intelligence::analyze(&request).map_err(|reason| AgentError::ToolFailed {
-        tool: TOOL.into(),
-        reason,
-    })?;
+    let result =
+        markov_intelligence::analyze(&request).map_err(|reason| AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason,
+        })?;
     let value = serde_json::to_value(result).map_err(|error| AgentError::ToolFailed {
         tool: TOOL.into(),
         reason: error.to_string(),
@@ -3107,7 +3234,11 @@ async fn analyze_markov(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
             evidence: value.clone(),
             model_version: "markov-engine-v1".into(),
             horizon_bars: Some(4.0),
-            observed_at: ctx.data.latest_candle_time(&symbol, timeframe).await?.unwrap_or_default(),
+            observed_at: ctx
+                .data
+                .latest_candle_time(&symbol, timeframe)
+                .await?
+                .unwrap_or_default(),
         };
         if let Err(error) = writer.record(user_id, &evidence).await {
             tracing::warn!(target: "ai_agent", tool = TOOL, %error, "could not record Markov evidence; the answer still stands");
@@ -4808,9 +4939,18 @@ mod tests {
     use super::*;
     #[test]
     fn direction_labels_map_to_bias() {
-        assert_eq!(direction_from_label("bullish"), ensemble_intelligence::Direction::Bullish);
-        assert_eq!(direction_from_label("BearTrend"), ensemble_intelligence::Direction::Bearish);
-        assert_eq!(direction_from_label("sideways"), ensemble_intelligence::Direction::Neutral);
+        assert_eq!(
+            direction_from_label("bullish"),
+            ensemble_intelligence::Direction::Bullish
+        );
+        assert_eq!(
+            direction_from_label("BearTrend"),
+            ensemble_intelligence::Direction::Bearish
+        );
+        assert_eq!(
+            direction_from_label("sideways"),
+            ensemble_intelligence::Direction::Neutral
+        );
     }
 
     use crate::llm_client::{ContentBlock, Message, Role};
@@ -4931,6 +5071,56 @@ mod tests {
         }
     }
 
+    /// A source that builds candles at whatever timeframe was requested, so a
+    /// multiscale observation can be strict about each frame's resolution.
+    struct LadderFixture {
+        count: usize,
+    }
+
+    #[async_trait]
+    impl MarketDataSource for LadderFixture {
+        async fn candles(
+            &self,
+            symbol: &str,
+            timeframe: Timeframe,
+            from_ns: i64,
+            to_ns: i64,
+        ) -> Result<Vec<Candle>, AgentError> {
+            Ok((0..self.count)
+                .map(|i| Candle {
+                    symbol: symbol.to_string(),
+                    timeframe,
+                    open_time: i as i64 * timeframe.nanos(),
+                    open: 100.0 + i as f64 * 0.3 + (i % 5) as f64 * 0.05,
+                    high: 101.0 + i as f64 * 0.3,
+                    low: 99.0 + i as f64 * 0.3,
+                    close: 100.5 + i as f64 * 0.3 + (i % 5) as f64 * 0.05,
+                    volume: 10.0,
+                    buy_volume: 6.0,
+                    sell_volume: 4.0,
+                })
+                .filter(|c| c.open_time >= from_ns && c.open_time < to_ns)
+                .collect())
+        }
+
+        async fn trades(
+            &self,
+            _symbol: &str,
+            _from_ns: i64,
+            _to_ns: i64,
+        ) -> Result<Vec<Trade>, AgentError> {
+            Ok(Vec::new())
+        }
+
+        async fn latest_candle_time(
+            &self,
+            _symbol: &str,
+            timeframe: Timeframe,
+        ) -> Result<Option<i64>, AgentError> {
+            Ok(Some((self.count as i64 - 1) * timeframe.nanos()))
+        }
+    }
+
     /// A source with nothing stored at all.
     struct Empty;
 
@@ -5001,6 +5191,8 @@ mod tests {
             "cross_timeframe_confluence",
             "analyze_timeframe",
             "analyze_multi_timeframe",
+            "analyze_multiscale",
+            "analyze_markov",
             "backtest_strategy",
             "backtest_similar_setups",
             "get_user_drawings",
@@ -5645,6 +5837,62 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out["frames"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_multiscale_tool_returns_hierarchical_core_results() {
+        let fixture = LadderFixture { count: 60 };
+        let ctx = ToolContext::new(&fixture);
+        let out = ToolRegistry::market_analysis()
+            .execute(
+                &call(
+                    "analyze_multiscale",
+                    json!({
+                        "symbol": "BTCUSDT",
+                        "timeframes": ["1h", "5m"],
+                        "discipline": "bayesian",
+                        "lookback": 40,
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["discipline_id"], "bayesian");
+        assert_eq!(out["model_version"], "1.0");
+        assert_eq!(out["timeframe_results"].as_array().unwrap().len(), 2);
+        assert_eq!(out["evidence"].as_array().unwrap().len(), 2);
+        assert_eq!(out["uncertainty"]["probability_calibrated"], false);
+        assert!(out["uncertainty"]["limitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line.as_str().unwrap().contains("probability")));
+    }
+
+    #[tokio::test]
+    async fn the_multiscale_tool_rejects_an_unknown_discipline() {
+        let fixture = LadderFixture { count: 60 };
+        let ctx = ToolContext::new(&fixture);
+        let err = ToolRegistry::market_analysis()
+            .execute(
+                &call(
+                    "analyze_multiscale",
+                    json!({
+                        "symbol": "BTCUSDT",
+                        "timeframes": ["1h", "5m"],
+                        "discipline": "made_up",
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AgentError::InvalidToolArgs { .. }),
+            "got {err}"
+        );
     }
 
     #[tokio::test]
