@@ -121,6 +121,16 @@ ladders with different coverage report only genuinely paired observations.
 When no pair exists, the information engine reports zero strength with an
 explicit explanation instead of omitting the engine.
 
+### Opportunity scanner (`crates/analytics-core/src/opportunity_scanner.rs`)
+
+`scan_instrument` implements the five-stage funnel: data quality → fast signal →
+deep hierarchical analysis → independent confirmation → chart-ready setup. An
+`InstrumentProfile` supplies the timeframes a symbol actually supports, so no
+ladder is hardcoded. `SetupProposal` carries entry zone, stop, two reward
+targets, an invalidation rule and the evidence that produced it. The ranking
+score is explicitly not a probability, and a setup is still subject to strategy
+rules and the existing risk gate.
+
 ## What is explicitly not claimed
 
 - no trained neural network, foundation model or learned weights;
@@ -137,6 +147,7 @@ explicit explanation instead of omitting the engine.
 1. Run the validation harness across multiple instruments and regimes, inspect
    ablations, and keep only disciplines that show a reproducible benefit.
 2. Opportunity validation, chart evidence display and scanner integration.
-3. Opportunity validation, chart evidence display and scanner integration.
+3. Wire scanner setups into the chart evidence surface and the existing
+   watch/scan API, with outcome recording and drift detection.
 4. Only after validation: learned representations with an explicit training
    boundary outside the deterministic Rust runtime.

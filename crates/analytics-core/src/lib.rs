@@ -71,6 +71,7 @@ pub mod liquidity;
 pub mod market_structure;
 pub mod multiplier;
 pub mod multiscale;
+pub mod opportunity_scanner;
 pub mod patterns;
 pub mod profile_memory;
 pub mod regime;
@@ -133,6 +134,10 @@ pub use market_structure::{
 };
 pub use multiscale::{
     DataQuality, FrameAvailability, MultiTimeframeObservation, TimeframeObservation,
+};
+pub use opportunity_scanner::{
+    scan_instrument, InstrumentProfile, ScanRecommendation, ScanVerdict, ScreeningLevel,
+    SetupProposal,
 };
 pub use patterns::{detect_patterns, PatternConfig, PatternDirection, PatternKind, PatternMatch};
 pub use profile_memory::{build_profile_memory, LevelDeltaVisit, LevelMemory, ProfileMemory};
