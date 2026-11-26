@@ -131,6 +131,15 @@ targets, an invalidation rule and the evidence that produced it. The ranking
 score is explicitly not a probability, and a setup is still subject to strategy
 rules and the existing risk gate.
 
+### Continuous learning (`crates/analytics-core/src/continuous_learning.rs`)
+
+`OutcomeLog` records predictions at decision time and settles them later with
+labels computed from future candles; duplicate records and mismatched labels are
+rejected. `detect_drift` compares the most recent settled outcomes against the
+earlier baseline with a two-proportion z-statistic, and `evaluate_promotion`
+requires both operator authorisation and actual improvement. It never promotes
+a model on its own and never treats evidence strength as a probability.
+
 ## What is explicitly not claimed
 
 - no trained neural network, foundation model or learned weights;
@@ -148,6 +157,6 @@ rules and the existing risk gate.
    ablations, and keep only disciplines that show a reproducible benefit.
 2. Opportunity validation, chart evidence display and scanner integration.
 3. Wire scanner setups into the chart evidence surface and the existing
-   watch/scan API, with outcome recording and drift detection.
+   watch/scan API.
 4. Only after validation: learned representations with an explicit training
    boundary outside the deterministic Rust runtime.

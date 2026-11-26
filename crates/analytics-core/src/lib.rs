@@ -49,6 +49,7 @@ pub mod absorption;
 pub mod bar_delta;
 pub mod candlesticks;
 pub mod concepts;
+pub mod continuous_learning;
 pub mod cross_scale;
 pub mod cvd;
 pub mod delta;
@@ -99,6 +100,10 @@ pub use bar_delta::{bar_delta_stats, bar_delta_stats_window, BarDeltaStats};
 pub use concepts::{
     detect as detect_concept, validate as validate_concept, Compare, Concept, Requirement,
     Selector, SelectorKind, MAX_WINDOW, MIN_WINDOW,
+};
+pub use continuous_learning::{
+    detect_drift, evaluate_promotion, DriftConfig, DriftReport, OutcomeLog, PredictionRecord,
+    PromotionDecision, SettledOutcome,
 };
 pub use cross_scale::{
     measure_dependency, reconstruct as reconstruct_multiscale, BarState, CrossScaleDependency,
