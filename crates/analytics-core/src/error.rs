@@ -66,4 +66,37 @@ pub enum AnalyticsError {
         /// The ratio as supplied.
         ratio: String,
     },
+
+    /// A candle would expose information from after the decision instant.
+    #[error("{timeframe} candle opening at {open_time} is after the decision at {decision_time}")]
+    LookAhead {
+        /// Resolution of the offending candle.
+        timeframe: crate::types::Timeframe,
+        /// Open time of the offending candle, in unix nanoseconds.
+        open_time: i64,
+        /// Decision instant, in unix nanoseconds.
+        decision_time: i64,
+    },
+
+    /// A frame claims a resolution its candles do not have.
+    #[error("frame expects {expected} candles but found a {found} candle")]
+    MismatchedFrameTimeframe {
+        /// Resolution declared by the frame.
+        expected: crate::types::Timeframe,
+        /// Resolution carried by the candle.
+        found: crate::types::Timeframe,
+    },
+
+    /// A candle belongs to a different instrument than its observation.
+    #[error("frame for `{expected}` contains a candle for `{found}`")]
+    MismatchedFrameInstrument {
+        /// Instrument declared by the observation.
+        expected: String,
+        /// Instrument carried by the candle.
+        found: String,
+    },
+
+    /// The same resolution appeared twice in one multiscale observation.
+    #[error("timeframe {0} appears more than once in the observation")]
+    DuplicateTimeframe(crate::types::Timeframe),
 }

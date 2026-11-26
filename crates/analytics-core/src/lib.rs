@@ -67,6 +67,7 @@ pub mod indicators;
 pub mod liquidity;
 pub mod market_structure;
 pub mod multiplier;
+pub mod multiscale;
 pub mod patterns;
 pub mod profile_memory;
 pub mod regime;
@@ -109,6 +110,9 @@ pub use liquidity::{
 pub use market_structure::{
     detect_market_structure, BreakKind, MarketStructure, StructureBreak, StructureConfig,
     SwingKind, SwingPoint, Trend,
+};
+pub use multiscale::{
+    DataQuality, FrameAvailability, MultiTimeframeObservation, TimeframeObservation,
 };
 pub use patterns::{detect_patterns, PatternConfig, PatternDirection, PatternKind, PatternMatch};
 pub use profile_memory::{build_profile_memory, LevelDeltaVisit, LevelMemory, ProfileMemory};
