@@ -57,6 +57,7 @@ pub mod fibonacci;
 pub mod footprint;
 pub mod forecast;
 pub mod harmonics;
+pub mod hierarchy;
 pub mod iceberg;
 pub mod ict_models;
 pub mod imbalance;
@@ -100,6 +101,12 @@ pub use error::AnalyticsError;
 pub use footprint::{
     build_footprint, build_footprint_for_candle, build_footprint_from_candle, build_footprints,
     FootprintCandle,
+};
+pub use hierarchy::{
+    AnalyticalEvidence, CalibrationStatus, CrossTimeframeRelationship, Direction,
+    DirectionDistribution, DisciplineId, HierarchicalAnalyzer, MarketStateKind,
+    MultiscaleAnalysisResult, OpportunityCandidate, RelationshipKind, TimeframeAnalysis,
+    UncertaintyReport, VolatilityState,
 };
 pub use iceberg::{detect_icebergs, IcebergConfig, IcebergEvent};
 pub use imbalance::{detect_imbalances, detect_imbalances_with, ImbalanceConfig, ImbalanceEvent};
