@@ -67,6 +67,24 @@ a thin data-loading wrapper. It is available to `market_analyst`, `whale_flow`,
 `smc`, `risk`, and the orchestrator; its schema advertises exactly the discipline
 names the core supports.
 
+### Validation harness (`crates/analytics-core/src/validation.rs`)
+
+`compare_hierarchies` evaluates single-frame, two-frame, three-frame, full and
+ablation variants on an untouched chronological test segment:
+
+- predictions use only candles that closed before each decision;
+- labels are computed offline from future candles, after the decision;
+- train and test are separated by an embargo of finest-frame bars so forward
+  returns cannot overlap the boundary;
+- reports include hit rate, false-signal rate and an **uncalibrated** strength
+  error, plus explicit limitations;
+- results are deterministic and a report with zero test samples is returned
+  honestly rather than fabricated.
+
+This satisfies the temporal-integrity requirements. It does **not** by itself
+show that a hierarchy helps on real data: that requires running the harness on
+multiple instruments and regimes and inspecting the ablations.
+
 ## What is explicitly not claimed
 
 - no trained neural network, foundation model or learned weights;
@@ -80,9 +98,8 @@ names the core supports.
 
 ## Next phases from the roadmap
 
-1. Research validation: chronological walk-forward comparison of single-frame,
-   two-frame, three-frame and full-hierarchy variants, ablation by removing one
-   timeframe, cross-instrument and regime tests.
+1. Run the validation harness across multiple instruments and regimes, inspect
+   ablations, and keep only disciplines that show a reproducible benefit.
 2. Multiscale reconstruction and explicit cross-timeframe dependency measures.
 3. Opportunity validation, chart evidence display and scanner integration.
 4. Only after validation: learned representations with an explicit training

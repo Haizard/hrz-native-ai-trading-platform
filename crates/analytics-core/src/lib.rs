@@ -85,6 +85,7 @@ pub mod sr_zones;
 pub mod state;
 pub mod tpo;
 pub mod types;
+pub mod validation;
 pub mod volume_profile;
 pub mod volume_score;
 pub mod vpin;
@@ -147,6 +148,10 @@ pub use state::{
     build_market_state, MarketState, MarketStateConfig, ProfileBasis, StateProvenance,
 };
 pub use types::{Candle, FootprintCell, OrderBookLevel, OrderBookSnapshot, Side, Timeframe, Trade};
+pub use validation::{
+    compare_hierarchies, split_for, ForwardOutcome, SplitCounts, SplitKind, ValidationConfig,
+    ValidationReport, VariantReport,
+};
 pub use volume_profile::{
     calculate_volume_profile, calculate_volume_profile_from_candles, round_bucket, VolumeNode,
     VolumeProfile,
