@@ -95,6 +95,25 @@ because it requires out-of-sample research. This is the explicit cross-timeframe
 dependency layer the roadmap requires — running one model per frame is not
 hierarchical by itself.
 
+### Market Reverse Engineering Lab (`crates/analytics-core/src/research_lab.rs`)
+
+`run_lab` composes the six engines from the research programme:
+
+1. **Structural discovery** — reuses `analyze_structure`.
+2. **Participant behaviour** — reports the buy/sell aggressor split visible in
+   candles. It explicitly does not claim to identify a participant class.
+3. **Market state** — reuses the hidden-state/HMM adapter.
+4. **Information discovery** — uses the strongest measured cross-scale
+   categorical dependence, with sample count and no invented significance.
+5. **Scenario simulation** — reuses the seeded stationary-bootstrap cone. It
+   is reported as a scenario with zero evidence strength, never as evidence.
+6. **Prediction validation** — reports that it requires historical outcomes and
+   points to `validation::compare_hierarchies`; it never scores an unlabelled
+   observation.
+
+The lab is a hypothesis generator. Its findings are not calibrated
+probabilities and cannot bypass strategy rules or the risk gate.
+
 ## What is explicitly not claimed
 
 - no trained neural network, foundation model or learned weights;
@@ -111,5 +130,6 @@ hierarchical by itself.
 1. Run the validation harness across multiple instruments and regimes, inspect
    ablations, and keep only disciplines that show a reproducible benefit.
 2. Opportunity validation, chart evidence display and scanner integration.
-3. Only after validation: learned representations with an explicit training
+3. Expose the lab through an agent tool and chart evidence surface.
+4. Only after validation: learned representations with an explicit training
    boundary outside the deterministic Rust runtime.
