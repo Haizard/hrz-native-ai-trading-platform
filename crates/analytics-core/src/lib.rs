@@ -49,6 +49,7 @@ pub mod absorption;
 pub mod bar_delta;
 pub mod candlesticks;
 pub mod concepts;
+pub mod cross_scale;
 pub mod cvd;
 pub mod delta;
 pub mod disciplines;
@@ -96,6 +97,10 @@ pub use bar_delta::{bar_delta_stats, bar_delta_stats_window, BarDeltaStats};
 pub use concepts::{
     detect as detect_concept, validate as validate_concept, Compare, Concept, Requirement,
     Selector, SelectorKind, MAX_WINDOW, MIN_WINDOW,
+};
+pub use cross_scale::{
+    measure_dependency, reconstruct as reconstruct_multiscale, BarState, CrossScaleDependency,
+    MultiscaleReconstruction, ReconstructedFrame,
 };
 pub use cvd::{calculate_cvd, detect_cvd_divergence, Cvd, CvdDivergence};
 pub use delta::{calculate_delta, calculate_delta_from_trades, calculate_deltas, DeltaReading};

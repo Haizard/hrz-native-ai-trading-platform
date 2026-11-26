@@ -85,6 +85,16 @@ This satisfies the temporal-integrity requirements. It does **not** by itself
 show that a hierarchy helps on real data: that requires running the harness on
 multiple instruments and regimes and inspecting the ablations.
 
+### Cross-scale dependence (`crates/analytics-core/src/cross_scale.rs`)
+
+`reconstruct_multiscale` reconstructs each frame's bar-direction condition and
+measures pairwise categorical mutual information between a higher frame's bar
+state and a lower frame's bar state, aligning lower bars to higher buckets by
+timestamp. Every estimate reports its sample count; significance is `None`
+because it requires out-of-sample research. This is the explicit cross-timeframe
+dependency layer the roadmap requires — running one model per frame is not
+hierarchical by itself.
+
 ## What is explicitly not claimed
 
 - no trained neural network, foundation model or learned weights;
@@ -100,7 +110,6 @@ multiple instruments and regimes and inspecting the ablations.
 
 1. Run the validation harness across multiple instruments and regimes, inspect
    ablations, and keep only disciplines that show a reproducible benefit.
-2. Multiscale reconstruction and explicit cross-timeframe dependency measures.
-3. Opportunity validation, chart evidence display and scanner integration.
-4. Only after validation: learned representations with an explicit training
+2. Opportunity validation, chart evidence display and scanner integration.
+3. Only after validation: learned representations with an explicit training
    boundary outside the deterministic Rust runtime.
