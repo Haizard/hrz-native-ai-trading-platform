@@ -186,10 +186,20 @@ fn market_state_finding(
 
 fn information_finding(observation: &MultiTimeframeObservation) -> Option<LabFinding> {
     let reconstruction = reconstruct(observation);
-    let strongest = reconstruction
+    let Some(strongest) = reconstruction
         .dependencies
         .iter()
-        .max_by(|a, b| a.normalized_dependence.total_cmp(&b.normalized_dependence))?;
+        .max_by(|a, b| a.normalized_dependence.total_cmp(&b.normalized_dependence))
+    else {
+        return Some(LabFinding {
+            engine: "information_discovery".to_string(),
+            timeframe: observation.lowest().map(|frame| frame.timeframe),
+            direction: Direction::Neutral,
+            evidence_strength: 0.0,
+            observation: "no aligned cross-scale samples: the frames cover different time spans"
+                .to_string(),
+        });
+    };
     Some(LabFinding {
         engine: "information_discovery".to_string(),
         timeframe: Some(strongest.lower_timeframe),

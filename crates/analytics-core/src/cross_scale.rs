@@ -152,7 +152,14 @@ pub fn measure_dependency(
     let mut samples = 0usize;
     for candle in lower.completed() {
         let bucket = higher_timeframe.bucket_of(candle.open_time);
-        let high_state = *higher_buckets.get(&bucket)?;
+        // Ladders rarely cover identical spans: a lower bar whose higher
+        // bucket was not supplied is simply not a paired observation. Skipping
+        // it is honest; aborting the whole measurement would discard every
+        // aligned bar because of one missing bucket.
+        let Some(high_state) = higher_buckets.get(&bucket) else {
+            continue;
+        };
+        let high_state = *high_state;
         let low_state = BarState::of(candle);
         *joint.entry((high_state, low_state)).or_default() += 1;
         *higher_counts.entry(high_state).or_default() += 1;

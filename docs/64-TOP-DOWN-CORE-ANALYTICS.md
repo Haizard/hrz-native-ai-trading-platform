@@ -111,8 +111,15 @@ hierarchical by itself.
    points to `validation::compare_hierarchies`; it never scores an unlabelled
    observation.
 
-The lab is a hypothesis generator. Its findings are not calibrated
-probabilities and cannot bypass strategy rules or the risk gate.
+The lab is exposed as the agent tool `reverse_engineer_market(symbol,
+timeframes[])`, which only loads market data and returns the core's report.
+Its findings are hypotheses, not calibrated probabilities, and cannot bypass
+strategy rules or the risk gate.
+
+`measure_dependency` skips lower bars whose higher bucket was not supplied, so
+ladders with different coverage report only genuinely paired observations.
+When no pair exists, the information engine reports zero strength with an
+explicit explanation instead of omitting the engine.
 
 ## What is explicitly not claimed
 
@@ -130,6 +137,6 @@ probabilities and cannot bypass strategy rules or the risk gate.
 1. Run the validation harness across multiple instruments and regimes, inspect
    ablations, and keep only disciplines that show a reproducible benefit.
 2. Opportunity validation, chart evidence display and scanner integration.
-3. Expose the lab through an agent tool and chart evidence surface.
+3. Opportunity validation, chart evidence display and scanner integration.
 4. Only after validation: learned representations with an explicit training
    boundary outside the deterministic Rust runtime.

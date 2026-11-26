@@ -33,8 +33,8 @@ use analytics_core::{
     all_disciplines, analyze_hierarchy, bar_delta_stats_window, build_market_state,
     calculate_cvd_by_size, calculate_volume_profile_from_candles, calculate_vpin_series,
     delta_by_size_per_candle, detect_absorption, detect_imbalances_with,
-    detect_liquidity_levels_with, detect_market_structure, MarketState, MarketStateConfig,
-    MultiTimeframeObservation, SizeClass, SizeClassConfig, VpinConfig,
+    detect_liquidity_levels_with, detect_market_structure, run_lab, LabConfig, MarketState,
+    MarketStateConfig, MultiTimeframeObservation, SizeClass, SizeClassConfig, VpinConfig,
 };
 
 use crate::error::AgentError;
@@ -655,6 +655,12 @@ impl ToolRegistry {
                     exposed_tool: None, // pure deterministic evidence: always available
                 },
                 ToolSpec {
+                    name: "reverse_engineer_market".into(),
+                    description: REVERSE_ENGINEER_MARKET.into(),
+                    input_schema: multi_timeframe_schema(),
+                    exposed_tool: None, // research hypotheses, always available
+                },
+                ToolSpec {
                     name: "get_candles".into(),
                     description: GET_CANDLES.into(),
                     input_schema: symbol_timeframe_schema(Some("limit")),
@@ -1128,6 +1134,7 @@ impl ToolRegistry {
             "fuse_intelligence" => fuse_intelligence(ctx, &call.input).await,
             "analyze_multi_timeframe" => analyze_multi_timeframe(ctx, &call.input).await,
             "analyze_multiscale" => analyze_multiscale(ctx, &call.input).await,
+            "reverse_engineer_market" => reverse_engineer_market(ctx, &call.input).await,
             "get_candles" => get_candles(ctx, &call.input).await,
             "get_volume_profile" => get_volume_profile(ctx, &call.input).await,
             "get_footprint" => get_footprint(ctx, &call.input).await,
@@ -1761,6 +1768,12 @@ const ANALYZE_MULTISCALE: &str = "Pure-deterministic top-down Core Analytics rea
     relationships, lower-timeframe candidates and limitations. Evidence strength \
     is not a probability; no trade is placed.";
 
+const REVERSE_ENGINEER_MARKET: &str = "Run the six-engine market reverse-engineering lab: \
+    structural discovery, participant aggressor heuristics, hidden state, cross-scale \
+    information discovery, a seeded bootstrap scenario cone and an explicit validation \
+    requirement. Returns research hypotheses with limitations, never calibrated \
+    probabilities or trading instructions.";
+
 const GET_CANDLES: &str = "Recent OHLCV candles with buy/sell split, oldest first. Each candle \
     carries `i` (its index in this window, 0 = oldest) and `time_ms`, so a skill's drawing \
     recipe can name a candle by position -- \"the third candle from the right\" is \
@@ -2123,6 +2136,45 @@ async fn analyze_multi_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<
     Ok(json!({ "symbol": symbol, "frames": frames }))
 }
 
+/// Load several rungs into one strict multiscale observation.
+///
+/// Both multiscale tools use this helper so there is a single definition of
+/// "the decision instant" and a single place where timeframes are validated.
+async fn load_multiscale_observation(
+    ctx: &ToolContext<'_>,
+    tool: &str,
+    symbol: &str,
+    timeframes: &[Timeframe],
+    lookback: usize,
+) -> Result<MultiTimeframeObservation, AgentError> {
+    let mut series = Vec::with_capacity(timeframes.len());
+    let mut decision_timestamp = 0_i64;
+    for timeframe in timeframes {
+        let (candles, _) = load_window(ctx, symbol, *timeframe, lookback)
+            .await
+            .map_err(|e| AgentError::ToolFailed {
+                tool: tool.into(),
+                reason: format!("{timeframe}: {e}"),
+            })?;
+        if let Some(last) = candles.last() {
+            decision_timestamp =
+                decision_timestamp.max(last.open_time.saturating_add(timeframe.nanos()));
+        }
+        series.push((*timeframe, candles));
+    }
+    MultiTimeframeObservation::from_series(
+        symbol.to_string(),
+        decision_timestamp,
+        series,
+        "agent-market-data",
+        2,
+    )
+    .map_err(|e| AgentError::ToolFailed {
+        tool: tool.into(),
+        reason: e.to_string(),
+    })
+}
+
 /// Top-down Core Analytics over several timeframes, through one discipline.
 ///
 /// The tool only loads data and hands it to `analytics-core`: every number in
@@ -2143,33 +2195,8 @@ async fn analyze_multiscale(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
     }
     let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
 
-    let mut series = Vec::with_capacity(timeframes.len());
-    let mut decision_timestamp = 0_i64;
-    for timeframe in &timeframes {
-        let (candles, _) = load_window(ctx, &symbol, *timeframe, lookback)
-            .await
-            .map_err(|e| AgentError::ToolFailed {
-                tool: TOOL.into(),
-                reason: format!("{}: {e}", timeframe),
-            })?;
-        if let Some(last) = candles.last() {
-            decision_timestamp =
-                decision_timestamp.max(last.open_time.saturating_add(timeframe.nanos()));
-        }
-        series.push((*timeframe, candles));
-    }
-
-    let observation = MultiTimeframeObservation::from_series(
-        symbol.clone(),
-        decision_timestamp,
-        series,
-        "agent-market-data",
-        2,
-    )
-    .map_err(|e| AgentError::ToolFailed {
-        tool: TOOL.into(),
-        reason: e.to_string(),
-    })?;
+    let observation =
+        load_multiscale_observation(ctx, TOOL, &symbol, &timeframes, lookback).await?;
 
     let result = analyze_hierarchy(&observation, &discipline, "1.0").ok_or_else(|| {
         AgentError::ToolFailed {
@@ -2178,6 +2205,21 @@ async fn analyze_multiscale(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
         }
     })?;
     serde_json::to_value(result).map_err(|e| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: e.to_string(),
+    })
+}
+
+/// The research lab, as a pure-evidence tool: data in, hypotheses out.
+async fn reverse_engineer_market(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "reverse_engineer_market";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframes = timeframes_arg(args, TOOL)?;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let observation =
+        load_multiscale_observation(ctx, TOOL, &symbol, &timeframes, lookback).await?;
+    let report = run_lab(&observation, &LabConfig::default());
+    serde_json::to_value(report).map_err(|e| AgentError::ToolFailed {
         tool: TOOL.into(),
         reason: e.to_string(),
     })
@@ -5192,6 +5234,7 @@ mod tests {
             "analyze_timeframe",
             "analyze_multi_timeframe",
             "analyze_multiscale",
+            "reverse_engineer_market",
             "analyze_markov",
             "backtest_strategy",
             "backtest_similar_setups",
@@ -5869,6 +5912,44 @@ mod tests {
             .unwrap()
             .iter()
             .any(|line| line.as_str().unwrap().contains("probability")));
+    }
+
+    #[tokio::test]
+    async fn the_reverse_engineering_tool_returns_six_engine_hypotheses() {
+        let fixture = LadderFixture { count: 60 };
+        let ctx = ToolContext::new(&fixture);
+        let out = ToolRegistry::market_analysis()
+            .execute(
+                &call(
+                    "reverse_engineer_market",
+                    json!({
+                        "symbol": "BTCUSDT",
+                        "timeframes": ["1h", "5m"],
+                        "lookback": 40,
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let findings = out["findings"].as_array().unwrap();
+        let names: Vec<String> = findings
+            .iter()
+            .map(|f| f["engine"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(findings.len(), 6, "engines: {names:?}");
+        assert!(findings
+            .iter()
+            .any(|f| f["engine"] == "structural_discovery"));
+        assert!(findings
+            .iter()
+            .any(|f| f["engine"] == "prediction_validation"));
+        assert!(out["limitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l.as_str().unwrap().contains("probabilit")));
     }
 
     #[tokio::test]

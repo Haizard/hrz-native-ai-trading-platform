@@ -29,6 +29,7 @@ detect_market_structure(symbol, timeframe)
 analyze_timeframe(symbol, timeframe)          -> MarketState
 analyze_multi_timeframe(symbol, timeframes[]) -> per-timeframe MarketState + synthesis
 analyze_multiscale(symbol, timeframes[], discipline) -> top-down Core Analytics result
+reverse_engineer_market(symbol, timeframes[])     -> six-engine research hypotheses
 backtest_strategy(strategy_doc, symbol, range) -> BacktestReport
 backtest_similar_setups(skill_ref, conditions) -> historical base-rate stats
 create_strategy_document(spec)                 -> validated StrategyDocument (or errors)
