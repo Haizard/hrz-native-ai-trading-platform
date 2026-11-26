@@ -51,6 +51,7 @@ pub mod candlesticks;
 pub mod concepts;
 pub mod cvd;
 pub mod delta;
+pub mod disciplines;
 pub mod error;
 pub mod events;
 pub mod fibonacci;
@@ -97,6 +98,10 @@ pub use concepts::{
 };
 pub use cvd::{calculate_cvd, detect_cvd_divergence, Cvd, CvdDivergence};
 pub use delta::{calculate_delta, calculate_delta_from_trades, calculate_deltas, DeltaReading};
+pub use disciplines::{
+    all_disciplines, analyze_bayesian, analyze_change_point, analyze_hidden_state,
+    analyze_information, analyze_statistical, analyze_structure, analyze_volatility, MIN_BARS,
+};
 pub use error::AnalyticsError;
 pub use footprint::{
     build_footprint, build_footprint_for_candle, build_footprint_from_candle, build_footprints,
