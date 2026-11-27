@@ -11,6 +11,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use analytics_core::validation::{compare_hierarchies, ValidationConfig};
 use analytics_core::Timeframe;
 use clap::{Parser, Subcommand, ValueEnum};
 use db::repositories;
@@ -87,6 +88,24 @@ enum Command {
         /// Fetch and report, but write nothing.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+    },
+    /// Run the multiscale validation harness on candles stored in Postgres.
+    ValidateHierarchy {
+        /// Symbol with stored history, e.g. BTCUSDT or XAUUSD.
+        #[arg(long, default_value = "BTCUSDT")]
+        symbol: String,
+        /// Comma-separated ladder, coarsest first, e.g. `1h,15m,5m`.
+        #[arg(long, default_value = "1h,15m,5m")]
+        timeframes: String,
+        /// Discipline name from `analytics_core::all_disciplines`.
+        #[arg(long, default_value = "structure")]
+        discipline: String,
+        /// Window start, YYYY-MM-DD.
+        #[arg(long)]
+        from: String,
+        /// Window end, YYYY-MM-DD.
+        #[arg(long)]
+        to: String,
     },
     /// Build the WASM chart engine and place it beside the shell.
     BuildFrontend,
@@ -197,11 +216,71 @@ async fn main() -> anyhow::Result<()> {
         } => {
             backfill_trades(&symbol, &from, &to, dry_run).await?;
         }
+        Command::ValidateHierarchy {
+            symbol,
+            timeframes,
+            discipline,
+            from,
+            to,
+        } => {
+            validate_hierarchy(&symbol, &timeframes, &discipline, &from, &to).await?;
+        }
         Command::BuildFrontend => {
             build_frontend()?;
         }
     }
 
+    Ok(())
+}
+
+async fn validate_hierarchy(
+    symbol: &str,
+    ladder: &str,
+    discipline: &str,
+    from: &str,
+    to: &str,
+) -> anyhow::Result<()> {
+    let from_ns = market_data::backfill::parse_date_ns(from)?;
+    let to_ns = market_data::backfill::parse_date_ns(to)?;
+    if to_ns <= from_ns {
+        anyhow::bail!("`--to` ({to}) must be after `--from` ({from})");
+    }
+    let frames: Vec<Timeframe> = ladder
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(Timeframe::from_str)
+        .collect::<Result<_, _>>()?;
+    if frames.is_empty() {
+        anyhow::bail!("provide at least one timeframe in --timeframes");
+    }
+
+    let db = Database::from_env().await?;
+    let mut series = Vec::with_capacity(frames.len());
+    for timeframe in &frames {
+        let candles =
+            repositories::load_candles(db.pool(), symbol, *timeframe, from_ns, to_ns).await?;
+        let first_close = candles.first().map(|c| c.close);
+        let last_close = candles.last().map(|c| c.close);
+        println!(
+            "{symbol} {timeframe}: {} stored candles, close {first_close:?} .. {last_close:?}",
+            candles.len()
+        );
+        series.push((*timeframe, candles));
+    }
+    let config = ValidationConfig {
+        horizon_bars: 6,
+        neutral_threshold: 0.002,
+        min_completed: 30,
+        train_fraction: 0.6,
+        embargo_bars: 6,
+    };
+    let report = compare_hierarchies(&series, &frames, discipline, &config)
+        .map_err(|reason| anyhow::anyhow!(reason))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!(report))?
+    );
     Ok(())
 }
 

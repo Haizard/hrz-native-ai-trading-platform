@@ -264,6 +264,10 @@ fn evaluate_variant(
         let Some(outcome) = &outcomes[index] else {
             continue;
         };
+        let instrument_id = series
+            .iter()
+            .find_map(|(_, candles)| candles.first().map(|c| c.symbol.clone()))
+            .unwrap_or_else(|| "validation".to_string());
         let mut frames = Vec::with_capacity(timeframes.len());
         for timeframe in &timeframes {
             let Some((_, candles)) = series.iter().find(|(tf, _)| tf == timeframe) else {
@@ -276,7 +280,7 @@ fn evaluate_variant(
             frames.push(
                 crate::multiscale::TimeframeObservation::from_candles(
                     *timeframe,
-                    "validation",
+                    &instrument_id,
                     &subset,
                     *decision,
                     "validation",
@@ -290,14 +294,14 @@ fn evaluate_variant(
         if frames.is_empty() {
             continue;
         }
-        let observation = MultiTimeframeObservation::new("validation", *decision, frames);
+        let observation = MultiTimeframeObservation::new(instrument_id, *decision, frames);
         let Ok(observation) = observation else {
             continue;
         };
         let Some(result) = analyze_hierarchy(&observation, discipline, "validation") else {
             continue;
         };
-        let Some(prediction) = result.timeframe_results.last() else {
+        let Some(prediction) = result.conditioned_lower.as_ref() else {
             continue;
         };
         samples += 1;

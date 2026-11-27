@@ -4278,6 +4278,7 @@ dependencies = [
  "dotenvy",
  "market-data",
  "reqwest",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -318,6 +318,13 @@ pub struct MultiscaleAnalysisResult {
     pub model_version: String,
     /// Per-frame conclusions, ordered coarsest first.
     pub timeframe_results: Vec<TimeframeAnalysis>,
+    /// The finest frame's conclusion after higher-frame conditioning.
+    ///
+    /// This is the field a downstream consumer should use when it wants a
+    /// top-down decision: each discipline still reads its own frame, but the
+    /// higher frames can reinforce or veto its conclusion. `None` when no
+    /// frame produced an analysis.
+    pub conditioned_lower: Option<TimeframeAnalysis>,
     /// Descriptive relationships between frames.
     pub cross_timeframe_relationships: Vec<CrossTimeframeRelationship>,
     /// Lower-timeframe candidates, if any.
@@ -506,6 +513,7 @@ impl HierarchicalAnalyzer {
             analysis_timestamp: observation.decision_timestamp,
             discipline_id: self.discipline_id.clone(),
             model_version: self.model_version.clone(),
+            conditioned_lower: condition_lower(&results, self.min_agreement),
             timeframe_results: results,
             cross_timeframe_relationships: relationships,
             lower_timeframe_candidates: candidates,
@@ -520,6 +528,47 @@ impl HierarchicalAnalyzer {
             evidence,
         }
     }
+}
+
+/// Apply higher-frame evidence to the finest frame's conclusion.
+///
+/// This is the pure-Rust form of the roadmap's hybrid learning: each discipline
+/// keeps its own per-frame result, and the hierarchy learns only the
+/// relationship between them. Agreement reinforces, opposition vetoes. It never
+/// invents a direction the finest frame did not have, and it never turns a
+/// score into a probability.
+fn condition_lower(results: &[TimeframeAnalysis], min_agreement: f64) -> Option<TimeframeAnalysis> {
+    let lower = results.last()?;
+    if results.len() == 1 {
+        return Some(lower.clone());
+    }
+    let higher = &results[..results.len() - 1];
+    let agreeing = higher
+        .iter()
+        .filter(|frame| frame.direction.agrees_with(lower.direction))
+        .count();
+    let opposing = higher
+        .iter()
+        .filter(|frame| frame.direction == lower.direction.opposite())
+        .count();
+    let agreement = agreeing as f64 / higher.len() as f64;
+    let opposition = opposing as f64 / higher.len() as f64;
+
+    let mut conditioned = lower.clone();
+    if lower.direction != Direction::Neutral
+        && opposition >= min_agreement
+        && opposition > agreement
+    {
+        conditioned.direction = Direction::Neutral;
+        conditioned.evidence_strength *= (1.0 - opposition).clamp(0.0, 1.0);
+    } else if agreement > 0.0 {
+        let boost = 1.0 + 0.5 * (agreement - 0.5).max(0.0);
+        conditioned.evidence_strength = (conditioned.evidence_strength * boost).clamp(0.0, 1.0);
+    }
+    conditioned.structural_observations.push(format!(
+        "top-down conditioning: {agreeing} agreeing, {opposing} opposing higher frames"
+    ));
+    Some(conditioned)
 }
 
 impl TimeframeAnalysis {
@@ -692,6 +741,52 @@ mod tests {
         let distribution =
             DirectionDistribution::new(0.2, 0.5, 0.3, CalibrationStatus::Unverified).unwrap();
         assert_eq!(distribution.argmax(), Direction::Bearish);
+    }
+
+    #[test]
+    fn higher_frames_reinforce_or_veto_the_lower_frame() {
+        let aligned = HierarchicalAnalyzer::new("test", "v1").analyze(&observation(), |frame| {
+            Some(analysis(frame.timeframe, Direction::Bullish, 0.5))
+        });
+        let conditioned = aligned.conditioned_lower.unwrap();
+        assert_eq!(conditioned.direction, Direction::Bullish);
+        assert!(
+            conditioned.evidence_strength > 0.5,
+            "agreement must reinforce"
+        );
+        assert!(conditioned
+            .structural_observations
+            .iter()
+            .any(|line| line.contains("top-down conditioning")));
+
+        let conflicting =
+            HierarchicalAnalyzer::new("test", "v1").analyze(&observation(), |frame| {
+                let direction = if frame.timeframe == Timeframe::M5 {
+                    Direction::Bullish
+                } else {
+                    Direction::Bearish
+                };
+                Some(analysis(frame.timeframe, direction, 0.8))
+            });
+        let vetoed = conflicting.conditioned_lower.unwrap();
+        assert_eq!(vetoed.direction, Direction::Neutral, "opposition must veto");
+        assert!(vetoed.evidence_strength < 0.8);
+    }
+
+    #[test]
+    fn a_single_frame_has_no_hierarchy_to_condition_on() {
+        let single = MultiTimeframeObservation::new(
+            "BTCUSDT",
+            MIN * 100,
+            observation().frames[..1].to_vec(),
+        )
+        .unwrap();
+        let result = HierarchicalAnalyzer::new("test", "v1").analyze(&single, |frame| {
+            Some(analysis(frame.timeframe, Direction::Bullish, 0.7))
+        });
+        let conditioned = result.conditioned_lower.unwrap();
+        assert_eq!(conditioned.evidence_strength, 0.7);
+        assert!(conditioned.structural_observations.is_empty());
     }
 
     #[test]

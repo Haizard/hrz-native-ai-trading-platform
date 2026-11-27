@@ -184,3 +184,7 @@ requires explicit operator authorisation and remains a recommendation only.
 2. Opportunity validation, chart evidence display and scanner integration.
 3. Only after validation: learned representations with an explicit training
    boundary outside the deterministic Rust runtime.
+
+The first real-data validation pass is recorded in `docs/65`. Its conclusion is
+that no multiscale discipline should be promoted yet: the ablation test fails
+across independent instruments.
