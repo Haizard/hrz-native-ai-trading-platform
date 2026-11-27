@@ -54,6 +54,7 @@ impl AgentMode {
                 "analyze_multi_timeframe",
                 "analyze_multiscale",
                 "reverse_engineer_market",
+                "analyze_markov_hierarchy",
                 "analyze_markov",
                 "fuse_intelligence",
                 "get_candles",
@@ -78,6 +79,7 @@ impl AgentMode {
                 "analyze_markov",
                 "analyze_multiscale",
                 "reverse_engineer_market",
+                "analyze_markov_hierarchy",
                 "fuse_intelligence",
             ]),
             Self::Smc => Some(&[
@@ -90,6 +92,7 @@ impl AgentMode {
                 "analyze_markov",
                 "analyze_multiscale",
                 "reverse_engineer_market",
+                "analyze_markov_hierarchy",
                 "fuse_intelligence",
             ]),
             Self::Strategy => Some(&[
@@ -106,6 +109,7 @@ impl AgentMode {
                 "analyze_markov",
                 "analyze_multiscale",
                 "reverse_engineer_market",
+                "analyze_markov_hierarchy",
                 "fuse_intelligence",
                 "get_candles",
             ]),

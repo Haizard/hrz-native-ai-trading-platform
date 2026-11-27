@@ -38,6 +38,7 @@ license = "MIT OR Apache-2.0"
 analytics-core   = { path = "crates/analytics-core" }
 capabilities     = { path = "crates/capabilities" }
 market-data      = { path = "crates/market-data" }
+hierarchical-intelligence = { path = "crates/hierarchical-intelligence" }
 markov-intelligence = { path = "crates/markov-intelligence" }
 ensemble-intelligence = { path = "crates/ensemble-intelligence" }
 # docs/23: the Pine-like scripting language. A leaf like analytics-core --

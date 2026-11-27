@@ -28,6 +28,7 @@ license.workspace = true
 tokio = { workspace = true }
 analytics-core = { workspace = true }
 capabilities = { workspace = true }
+hierarchical-intelligence = { workspace = true }
 markov-intelligence = { workspace = true }
 ensemble-intelligence = { workspace = true }
 # YAML is needed here (skills and generated strategies are authored in YAML).

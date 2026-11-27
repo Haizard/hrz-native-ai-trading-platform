@@ -37,6 +37,10 @@ use analytics_core::{
     MarketStateConfig, MultiTimeframeObservation, SizeClass, SizeClassConfig, VpinConfig,
 };
 
+use hierarchical_intelligence::{
+    analyze_hierarchy as analyze_markov_hierarchy, HierarchicalMarkovConfig,
+};
+
 use crate::error::AgentError;
 use crate::llm_client::ToolCall;
 use crate::user_drawings::{AgentPoint, DrawingWriter, NewAgentDrawing, UserDrawingsSource};
@@ -661,6 +665,12 @@ impl ToolRegistry {
                     exposed_tool: None, // research hypotheses, always available
                 },
                 ToolSpec {
+                    name: "analyze_markov_hierarchy".into(),
+                    description: ANALYZE_MARKOV_HIERARCHY.into(),
+                    input_schema: multi_timeframe_schema(),
+                    exposed_tool: None, // Markov evidence, always available
+                },
+                ToolSpec {
                     name: "get_candles".into(),
                     description: GET_CANDLES.into(),
                     input_schema: symbol_timeframe_schema(Some("limit")),
@@ -1135,6 +1145,7 @@ impl ToolRegistry {
             "analyze_multi_timeframe" => analyze_multi_timeframe(ctx, &call.input).await,
             "analyze_multiscale" => analyze_multiscale(ctx, &call.input).await,
             "reverse_engineer_market" => reverse_engineer_market(ctx, &call.input).await,
+            "analyze_markov_hierarchy" => analyze_markov_hierarchy_tool(ctx, &call.input).await,
             "get_candles" => get_candles(ctx, &call.input).await,
             "get_volume_profile" => get_volume_profile(ctx, &call.input).await,
             "get_footprint" => get_footprint(ctx, &call.input).await,
@@ -1768,6 +1779,8 @@ const ANALYZE_MULTISCALE: &str = "Pure-deterministic top-down Core Analytics rea
     relationships, lower-timeframe candidates and limitations. Evidence strength \
     is not a probability; no trade is placed.";
 
+const ANALYZE_MARKOV_HIERARCHY: &str = "Run all seven Markov-family engines on each requested timeframe and couple their regime probabilities top-down. Returns per-frame evidence and a conditioned directional bias, never a trade instruction.";
+
 const REVERSE_ENGINEER_MARKET: &str = "Run the six-engine market reverse-engineering lab: \
     structural discovery, participant aggressor heuristics, hidden state, cross-scale \
     information discovery, a seeded bootstrap scenario cone and an explicit validation \
@@ -2219,6 +2232,29 @@ async fn reverse_engineer_market(ctx: &ToolContext<'_>, args: &Value) -> Result<
     let observation =
         load_multiscale_observation(ctx, TOOL, &symbol, &timeframes, lookback).await?;
     let report = run_lab(&observation, &LabConfig::default());
+    serde_json::to_value(report).map_err(|e| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: e.to_string(),
+    })
+}
+
+/// Seven Markov engines across a ladder, coupled top-down by the dedicated
+/// crate so `analytics-core` remains a leaf.
+async fn analyze_markov_hierarchy_tool(
+    ctx: &ToolContext<'_>,
+    args: &Value,
+) -> Result<Value, AgentError> {
+    const TOOL: &str = "analyze_markov_hierarchy";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframes = timeframes_arg(args, TOOL)?;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let observation =
+        load_multiscale_observation(ctx, TOOL, &symbol, &timeframes, lookback).await?;
+    let report = analyze_markov_hierarchy(&observation, &HierarchicalMarkovConfig::default())
+        .map_err(|reason| AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason,
+        })?;
     serde_json::to_value(report).map_err(|e| AgentError::ToolFailed {
         tool: TOOL.into(),
         reason: e.to_string(),
@@ -5235,6 +5271,7 @@ mod tests {
             "analyze_multi_timeframe",
             "analyze_multiscale",
             "reverse_engineer_market",
+            "analyze_markov_hierarchy",
             "analyze_markov",
             "backtest_strategy",
             "backtest_similar_setups",
@@ -5950,6 +5987,25 @@ mod tests {
             .unwrap()
             .iter()
             .any(|l| l.as_str().unwrap().contains("probabilit")));
+    }
+
+    #[tokio::test]
+    async fn the_markov_hierarchy_tool_returns_coupled_regime_evidence() {
+        let fixture = LadderFixture { count: 80 };
+        let ctx = ToolContext::new(&fixture);
+        let out = ToolRegistry::market_analysis()
+            .execute(
+                &call(
+                    "analyze_markov_hierarchy",
+                    json!({"symbol": "BTCUSDT", "timeframes": ["1h", "5m"], "lookback": 60}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["frames"].as_array().unwrap().len(), 2);
+        assert!(out["conditioned_probabilities"].as_object().unwrap().len() >= 5);
+        assert!(out["conditioned_bias"].as_f64().is_some());
     }
 
     #[tokio::test]

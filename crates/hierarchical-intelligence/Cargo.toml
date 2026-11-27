@@ -1,0 +1,12 @@
+[package]
+name = "hierarchical-intelligence"
+description = "Top-down coupling of Markov-family engines across timeframes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+analytics-core = { workspace = true }
+markov-intelligence = { workspace = true }
+serde = { workspace = true }

@@ -388,9 +388,7 @@ mod tests {
     fn hurst_sepersists_and_mean_reverts() {
         let trend: Vec<f64> = (0..256).map(|i| i as f64 * 0.1).collect();
         let alternating: Vec<f64> = (0..256)
-            .map(|i| {
-                (if i % 2 == 0 { 1.0 } else { -1.0 }) + (i % 5) as f64 * 0.01
-            })
+            .map(|i| (if i % 2 == 0 { 1.0 } else { -1.0 }) + (i % 5) as f64 * 0.01)
             .collect();
         let trend_h = hurst_exponent(&trend, 2, 16).unwrap();
         let alternating_h = hurst_exponent(&alternating, 2, 16).unwrap();
