@@ -35,6 +35,11 @@ pub struct ValidationConfig {
     pub train_fraction: f64,
     /// Number of finest-frame bars discarded across the train/test boundary.
     pub embargo_bars: usize,
+    /// Minimum directional calls before a hit rate is reported at all.
+    ///
+    /// A 0/1 result is not a 0% hit rate; it is no evidence. Without this gate
+    /// a veto-heavy discipline looks catastrophic on one surviving call.
+    pub min_directional_samples: usize,
 }
 
 impl Default for ValidationConfig {
@@ -45,6 +50,7 @@ impl Default for ValidationConfig {
             min_completed: 30,
             train_fraction: 0.6,
             embargo_bars: 6,
+            min_directional_samples: 30,
         }
     }
 }
@@ -324,7 +330,7 @@ fn evaluate_variant(
     }
 
     let _ = split_counts; // retained in the report for provenance
-    let hit_rate = if directional == 0 {
+    let hit_rate = if directional < config.min_directional_samples {
         None
     } else {
         Some(hits as f64 / directional as f64)
@@ -520,6 +526,7 @@ mod tests {
             min_completed: 20,
             train_fraction: 0.5,
             embargo_bars: 3,
+            min_directional_samples: 30,
         };
         let ladder = [Timeframe::M15, Timeframe::M1];
         let series = vec![
@@ -543,6 +550,33 @@ mod tests {
             .limitations
             .iter()
             .any(|limit| limit.contains("probability")));
+    }
+
+    #[test]
+    fn a_tiny_directional_sample_is_not_a_hit_rate() {
+        let config = ValidationConfig {
+            horizon_bars: 4,
+            neutral_threshold: 0.001,
+            min_completed: 20,
+            train_fraction: 0.5,
+            embargo_bars: 3,
+            min_directional_samples: 10_000,
+        };
+        let series = vec![
+            (Timeframe::M15, series(Timeframe::M15, 80)),
+            (Timeframe::M1, series(Timeframe::M1, 80)),
+        ];
+        let report = compare_hierarchies(
+            &series,
+            &[Timeframe::M15, Timeframe::M1],
+            "structure",
+            &config,
+        )
+        .unwrap();
+        assert!(report
+            .variants
+            .iter()
+            .all(|variant| variant.hit_rate.is_none()));
     }
 
     #[test]
@@ -570,6 +604,7 @@ mod tests {
             min_completed: 20,
             train_fraction: 0.5,
             embargo_bars: 3,
+            min_directional_samples: 30,
         };
         let series = vec![
             (Timeframe::M15, series(Timeframe::M15, 80)),

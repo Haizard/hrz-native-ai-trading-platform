@@ -274,6 +274,7 @@ async fn validate_hierarchy(
         min_completed: 30,
         train_fraction: 0.6,
         embargo_bars: 6,
+        min_directional_samples: 30,
     };
     let report = compare_hierarchies(&series, &frames, discipline, &config)
         .map_err(|reason| anyhow::anyhow!(reason))?;

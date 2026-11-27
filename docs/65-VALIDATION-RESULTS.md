@@ -53,12 +53,42 @@ cross-instrument conclusion. They are useful only as a determinism check.
    `volatility` and `information` produce no directional calls at all by design
    and are correctly reported as `None` rather than fabricated.
 
+## Second pass: five independent instruments (2026-11-27)
+
+Live Binance histories were captured for BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT and
+XRPUSDT: 1,501 completed 5M and 15M bars (~3.8 and ~15 days) plus 744 1H bars
+(~31 days) each. Every discipline was compared on the same chronological split.
+A hit rate is now reported only with at least 30 directional calls — a 0/1
+result is no evidence, not a 0% rate.
+
+Full-hierarchy minus single-frame hit rate on the test segment:
+
+| Discipline | BTC | ETH | SOL | BNB | XRP | Wins | Mean |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| structure | +0.009 | −0.019 | +0.016 | +0.012 | −0.001 | 3/5 | +0.003 |
+| statistical | +0.003 | +0.001 | +0.007 | −0.002 | −0.004 | 3/5 | +0.001 |
+| change_point | +0.013 | −0.031 | −0.030 | −0.009 | +0.017 | 2/5 | −0.008 |
+| bayesian | — | — | −0.083 | — | — | 0/1 | −0.083 |
+| hidden_state | +0.054 | +0.051 | −0.008 | −0.039 | −0.025 | 2/5 | +0.007 |
+
+`hidden_state` is the only discipline with two meaningful gains (BTC and ETH),
+but it loses on three other instruments. `bayesian` is suppressed by the veto
+rule to almost no directional calls, so most of its rates are now correctly
+unreported rather than shown as catastrophic.
+
 ## Decision
 
-**Do not promote any multiscale discipline yet.** The ablation test fails: on
-the available instruments, removing higher frames does not reduce performance
-consistently. The correct next step is more diverse, genuinely independent
-instrument histories and regime-separated tests — not a larger hierarchy.
+**Do not promote any multiscale discipline yet.** Across five independent
+instruments the ablation test still fails: removing higher frames does not
+reduce performance consistently for any discipline. The remaining next step is
+regime-separated windows on these same histories, not a larger hierarchy.
+
+Correctness fixes from this pass:
+- `ValidationConfig::min_directional_samples` prevents tiny-sample hit rates.
+- `MultiscaleAnalysisResult::conditioned_lower` makes higher frames participate
+  in the finest frame's call; without it, every hierarchy variant was identical.
+- Real-data runs exposed and fixed an instrument-identity mismatch that had
+  made every stored-history sample zero.
 
 The harness and tools are kept so this can be re-run as new data arrives:
 
