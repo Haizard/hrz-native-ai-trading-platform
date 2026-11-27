@@ -45,6 +45,7 @@ use observability::QueueSink;
 use crate::auth::AuthConfig;
 
 pub mod agent_routes;
+pub mod analytics_routes;
 pub mod auth;
 pub mod auth_routes;
 pub mod billing;
@@ -610,6 +611,15 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(watch_routes::patch_monitor).delete(watch_routes::delete_monitor),
         )
         .route("/watch-events", get(watch_routes::list_events))
+        .route(
+            "/analytics/predictions",
+            get(analytics_routes::list_predictions).post(analytics_routes::record_prediction),
+        )
+        .route(
+            "/analytics/predictions/settle",
+            post(analytics_routes::settle_predictions),
+        )
+        .route("/analytics/drift", get(analytics_routes::drift_report))
         .route(
             "/agent/generate-strategy",
             post(agent_routes::generate_strategy),

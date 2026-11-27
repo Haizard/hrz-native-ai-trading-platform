@@ -27,14 +27,15 @@ pub mod chart_snapshots;
 pub mod chats;
 pub mod community;
 pub mod config;
+pub mod core_analytics;
 pub mod drawings;
 pub mod error;
 pub mod indicator_workspaces;
 pub mod live;
-pub mod markov_evidence;
 pub mod loading;
 pub mod market;
 pub mod market_source;
+pub mod markov_evidence;
 pub mod models;
 pub mod paper;
 pub mod pattern_library;
@@ -50,9 +51,8 @@ pub mod watch;
 pub mod workspace_state;
 
 pub use markov_evidence::{
-    insert_evidence, list_evidence, list_unsettled, get_evidence, settle, settle_with_market,
-    MarkovEvidenceRow,
-    NewMarkovEvidence, Settlement,
+    get_evidence, insert_evidence, list_evidence, list_unsettled, settle, settle_with_market,
+    MarkovEvidenceRow, NewMarkovEvidence, Settlement,
 };
 
 pub use agent_memory::{
@@ -96,6 +96,10 @@ pub use community::{
     CommunityVersionRow, InstallOutcome, NewCommunityItem, NewCommunityVersion, UpdateOutcome,
 };
 pub use config::DatabaseConfig;
+pub use core_analytics::{
+    insert_prediction as insert_core_prediction, list_predictions as list_core_predictions,
+    settle_prediction as settle_core_prediction, CorePredictionRow, NewCorePrediction,
+};
 pub use drawings::{
     create_drawing, delete_drawing, list_drawings, no_options, points_from_json, update_drawing,
     DrawingRow, NewDrawing, StoredPoint, KINDS as DRAWING_KINDS,

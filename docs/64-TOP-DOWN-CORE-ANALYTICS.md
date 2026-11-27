@@ -156,6 +156,16 @@ symbol with a 4H/1H/15M/5M ladder and stores any proposed overlays, scoped to
 that symbol, for injection into the next chart scene request. The shell never
 calculates a price level: every overlay comes from the Rust scanner.
 
+### Durable predictions (`0023_core_analytics_predictions.sql`)
+
+The gateway persists decisions at `POST /analytics/predictions` and settles them
+once from realized market data at `POST /analytics/predictions/settle`. Decision
+fields are never rewritten: the same one-shot contract as `markov_evidence`
+prevents hindsight from entering a reliability report. `GET /analytics/predictions`
+lists a user's rows; `GET /analytics/drift` rebuilds the in-memory outcome ledger
+from those rows and reports the core's drift and promotion decision. Promotion
+requires explicit operator authorisation and remains a recommendation only.
+
 ## What is explicitly not claimed
 
 - no trained neural network, foundation model or learned weights;
@@ -172,7 +182,5 @@ calculates a price level: every overlay comes from the Rust scanner.
 1. Run the validation harness across multiple instruments and regimes, inspect
    ablations, and keep only disciplines that show a reproducible benefit.
 2. Opportunity validation, chart evidence display and scanner integration.
-3. Persist prediction outcomes through the gateway's database so drift
-   detection can run across restarts and instruments.
-4. Only after validation: learned representations with an explicit training
+3. Only after validation: learned representations with an explicit training
    boundary outside the deterministic Rust runtime.
