@@ -74,6 +74,7 @@ pub mod market_data;
 pub mod market_routes;
 pub mod markov_routes;
 pub mod metrics;
+pub mod multiscale_routes;
 pub mod orderflow_routes;
 pub mod parameter_sweep;
 pub mod pine_cheatsheet;
@@ -392,6 +393,7 @@ pub fn router(state: AppState) -> Router {
         // because a scan is one measurement over many instruments -- see the
         // module doc for why it is not a `/candles` parameter.
         .route("/scan", get(scan_routes::scan))
+        .route("/scan/multiscale", get(multiscale_routes::scan_multiscale))
         .route("/footprint", get(footprint_routes::footprint))
         .route("/footprint/coverage", get(footprint_routes::coverage))
         .route("/bar-delta-stats", get(orderflow_routes::bar_delta_stats))

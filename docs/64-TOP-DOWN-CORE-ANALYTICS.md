@@ -140,6 +140,17 @@ earlier baseline with a two-proportion z-statistic, and `evaluate_promotion`
 requires both operator authorisation and actual improvement. It never promotes
 a model on its own and never treats evidence strength as a probability.
 
+### HTTP surface (`GET /scan/multiscale`)
+
+`crates/api-gateway/src/multiscale_routes.rs` exposes the scanner as a public
+read. Callers supply explicit `symbols` and a `timeframes` ladder; the route
+loads completed candles through the same `WindowService` the charts and agent
+read, builds one strict observation per symbol, and returns the scan verdict.
+A proposed setup is converted into the chart engine's existing
+`Overlay` shape (entry band, stop, targets), so no new scene field or drawing
+type was needed. Three integration tests exercise the route through the real
+router with candles seated in RAM.
+
 ## What is explicitly not claimed
 
 - no trained neural network, foundation model or learned weights;
@@ -156,7 +167,7 @@ a model on its own and never treats evidence strength as a probability.
 1. Run the validation harness across multiple instruments and regimes, inspect
    ablations, and keep only disciplines that show a reproducible benefit.
 2. Opportunity validation, chart evidence display and scanner integration.
-3. Wire scanner setups into the chart evidence surface and the existing
-   watch/scan API.
+3. Add a shell control that injects the route's overlays into the chart scene
+   request, and record prediction outcomes against future candles.
 4. Only after validation: learned representations with an explicit training
    boundary outside the deterministic Rust runtime.
