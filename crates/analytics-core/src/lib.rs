@@ -166,8 +166,8 @@ pub use state::{
 };
 pub use types::{Candle, FootprintCell, OrderBookLevel, OrderBookSnapshot, Side, Timeframe, Trade};
 pub use validation::{
-    compare_hierarchies, split_for, ForwardOutcome, SplitCounts, SplitKind, ValidationConfig,
-    ValidationReport, VariantReport,
+    classify_regime, compare_hierarchies, split_for, ForwardOutcome, Regime, RegimeReport,
+    SplitCounts, SplitKind, ValidationConfig, ValidationReport, VariantReport,
 };
 pub use volume_profile::{
     calculate_volume_profile, calculate_volume_profile_from_candles, round_bucket, VolumeNode,

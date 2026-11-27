@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         train_fraction: 0.6,
         embargo_bars: 6,
         min_directional_samples: 30,
+        ..ValidationConfig::default()
     };
     let discipline = std::env::args()
         .nth(2)

@@ -83,8 +83,36 @@ instruments the ablation test still fails: removing higher frames does not
 reduce performance consistently for any discipline. The remaining next step is
 regime-separated windows on these same histories, not a larger hierarchy.
 
-Correctness fixes from this pass:
+## Third pass: regime-separated validation (2026-11-27)
+
+`classify_regime` labels each test decision from returns that closed before it:
+Kaufman efficiency ratio for trend, and recent realized volatility against a
+four-times-longer baseline for volatility. Regimes do not see the label they are
+used to explain. Each variant now carries a `regime_breakdown` with a hit rate
+withheld below 30 directional calls.
+
+Full-hierarchy minus single-frame hit rate inside each regime:
+
+| Discipline | Regime | BTC | ETH | SOL | BNB | XRP | Wins |
+|---|---|---:|---:|---:|---:|---:|---:|
+| hidden_state | Ranging | +0.100 | +0.124 | +0.076 | +0.007 | +0.068 | 5/5 |
+| hidden_state | Volatile | — | −0.061 | — | — | — | 0/1 |
+| structure | Ranging | +0.034 | +0.004 | +0.018 | +0.034 | +0.007 | 5/5 |
+| structure | Trending | +0.003 | +0.003 | +0.006 | +0.025 | +0.003 | 5/5 |
+| structure | Volatile | −0.198 | −0.153 | −0.013 | −0.158 | — | 0/4 |
+
+This is the first **consistent** cross-instrument result: multiscale hidden-state
+analysis helps in ranging markets on every instrument tested, and structure
+analysis consistently loses value in volatile markets. It is still only a
+hypothesis. The regimes were examined after seeing the aggregate results, so
+this is a post-hoc subgroup finding with five observations and no corrected
+multiple-testing procedure. It needs an untouched holdout period before any
+discipline can be promoted or any policy can key off the regime label.
+
+Correctness fixes from these passes:
 - `ValidationConfig::min_directional_samples` prevents tiny-sample hit rates.
+- `classify_regime` reads only completed returns, so regime labels cannot leak
+  the forward outcome they are used to interpret.
 - `MultiscaleAnalysisResult::conditioned_lower` makes higher frames participate
   in the finest frame's call; without it, every hierarchy variant was identical.
 - Real-data runs exposed and fixed an instrument-identity mismatch that had

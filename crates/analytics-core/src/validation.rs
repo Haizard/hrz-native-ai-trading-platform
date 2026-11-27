@@ -40,6 +40,13 @@ pub struct ValidationConfig {
     /// A 0/1 result is not a 0% hit rate; it is no evidence. Without this gate
     /// a veto-heavy discipline looks catastrophic on one surviving call.
     pub min_directional_samples: usize,
+    /// Recent return window used to classify a regime at each decision.
+    pub regime_lookback: usize,
+    /// Recent realized volatility above this multiple of the longer baseline
+    /// marks a volatile regime.
+    pub vol_ratio_threshold: f64,
+    /// Kaufman efficiency ratio above this marks a trending regime.
+    pub trend_efficiency_threshold: f64,
 }
 
 impl Default for ValidationConfig {
@@ -51,6 +58,9 @@ impl Default for ValidationConfig {
             train_fraction: 0.6,
             embargo_bars: 6,
             min_directional_samples: 30,
+            regime_lookback: 30,
+            vol_ratio_threshold: 1.5,
+            trend_efficiency_threshold: 0.3,
         }
     }
 }
@@ -138,6 +148,8 @@ pub struct VariantReport {
     /// The target is **not** a calibrated probability; this number only says
     /// whether strength tends to move with the size of the observed move.
     pub uncalibrated_strength_error: Option<f64>,
+    /// Performance split by the regime in force at each decision.
+    pub regime_breakdown: Vec<RegimeReport>,
 }
 
 /// Full comparison report.
@@ -162,6 +174,113 @@ pub struct SplitCounts {
     pub embargo: usize,
     /// Decisions in the scored test segment.
     pub test: usize,
+}
+
+/// Market regime inferred from completed candles at a decision instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Regime {
+    /// Realized volatility is materially above its own recent baseline.
+    Volatile,
+    /// Returns move persistently in one direction.
+    Trending,
+    /// Returns alternate without a persistent lean.
+    Ranging,
+}
+
+/// Performance of one hierarchy variant inside one regime.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegimeReport {
+    /// Regime described.
+    pub regime: Regime,
+    /// Scored decisions in this regime.
+    pub samples: usize,
+    /// Directional predictions among them.
+    pub directional_samples: usize,
+    /// Correct / directional, withheld for tiny samples.
+    pub hit_rate: Option<f64>,
+}
+
+fn stddev(values: &[f64]) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    (values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / values.len() as f64)
+        .sqrt()
+}
+
+/// Classify the regime at `decision_time` from returns that were already known.
+///
+/// A trend is measured by the Kaufman efficiency ratio (net move divided by the
+/// sum of absolute moves), and volatility by recent return dispersion against a
+/// longer baseline. The function never sees a candle closing after the
+/// decision, so a regime label cannot leak the outcome it is used to explain.
+#[must_use]
+pub fn classify_regime(
+    series: &[Candle],
+    decision_time: i64,
+    lookback: usize,
+    vol_ratio_threshold: f64,
+    efficiency_threshold: f64,
+) -> Regime {
+    let completed: Vec<&Candle> = series
+        .iter()
+        .filter(|candle| candle.open_time.saturating_add(candle.timeframe.nanos()) <= decision_time)
+        .collect();
+    let baseline_size = lookback.saturating_mul(4).max(lookback + 2);
+    if completed.len() < baseline_size.min(12) {
+        return Regime::Ranging;
+    }
+    let recent: Vec<f64> = completed
+        .iter()
+        .rev()
+        .take(lookback)
+        .filter_map(|candle| {
+            if candle.close.is_finite() && candle.open > 0.0 && candle.close > 0.0 {
+                Some((candle.close / candle.open).ln())
+            } else {
+                None
+            }
+        })
+        .rev()
+        .collect();
+    let baseline: Vec<f64> = completed
+        .iter()
+        .rev()
+        .take(baseline_size)
+        .filter_map(|candle| {
+            if candle.close.is_finite() && candle.open > 0.0 && candle.close > 0.0 {
+                Some((candle.close / candle.open).ln())
+            } else {
+                None
+            }
+        })
+        .rev()
+        .collect();
+    if recent.len() < 10 || baseline.len() <= recent.len() {
+        return Regime::Ranging;
+    }
+    let recent_vol = stddev(&recent);
+    let baseline_vol = stddev(&baseline);
+    if baseline_vol > 0.0 && recent_vol > baseline_vol * vol_ratio_threshold.max(1.0) {
+        return Regime::Volatile;
+    }
+    let net: f64 = recent.iter().sum();
+    let gross: f64 = recent.iter().map(|value| value.abs()).sum();
+    let efficiency = if gross > 0.0 {
+        (net / gross).abs()
+    } else {
+        0.0
+    };
+    if efficiency >= efficiency_threshold {
+        Regime::Trending
+    } else {
+        Regime::Ranging
+    }
 }
 
 /// Which split a decision index belongs to.
@@ -261,6 +380,12 @@ fn evaluate_variant(
     let mut hits = 0usize;
     let mut false_signals = 0usize;
     let mut errors = Vec::new();
+    let mut regimes: std::collections::BTreeMap<Regime, (usize, usize, usize)> =
+        std::collections::BTreeMap::new();
+    let regime_source = series
+        .iter()
+        .min_by_key(|(timeframe, _)| timeframe.nanos())
+        .map(|(_, candles)| candles.as_slice());
     let total = decisions.len();
 
     for (index, decision) in decisions.iter().enumerate() {
@@ -311,10 +436,23 @@ fn evaluate_variant(
             continue;
         };
         samples += 1;
+        let regime = regime_source.map_or(Regime::Ranging, |candles| {
+            classify_regime(
+                candles,
+                *decision,
+                config.regime_lookback,
+                config.vol_ratio_threshold,
+                config.trend_efficiency_threshold,
+            )
+        });
+        let regime_entry = regimes.entry(regime).or_insert((0usize, 0usize, 0usize));
+        regime_entry.0 += 1;
         if prediction.direction != Direction::Neutral {
             directional += 1;
+            regime_entry.1 += 1;
             if prediction.direction == outcome.direction {
                 hits += 1;
+                regime_entry.2 += 1;
             } else {
                 false_signals += 1;
             }
@@ -345,6 +483,21 @@ fn evaluate_variant(
     } else {
         Some(errors.iter().sum::<f64>() / errors.len() as f64)
     };
+    let regime_breakdown = regimes
+        .into_iter()
+        .map(
+            |(regime, (count, directional_count, hit_count))| RegimeReport {
+                regime,
+                samples: count,
+                directional_samples: directional_count,
+                hit_rate: if directional_count < config.min_directional_samples {
+                    None
+                } else {
+                    Some(hit_count as f64 / directional_count as f64)
+                },
+            },
+        )
+        .collect();
 
     VariantReport {
         name,
@@ -354,6 +507,7 @@ fn evaluate_variant(
         hit_rate,
         false_signal_rate,
         uncalibrated_strength_error,
+        regime_breakdown,
     }
 }
 
@@ -448,7 +602,7 @@ mod tests {
                     symbol: "BTCUSDT".to_string(),
                     timeframe,
                     open_time: i as i64 * timeframe.nanos(),
-                    open: close,
+                    open: close - 0.1,
                     high: close + 0.5,
                     low: close - 0.5,
                     close,
@@ -527,6 +681,7 @@ mod tests {
             train_fraction: 0.5,
             embargo_bars: 3,
             min_directional_samples: 30,
+            ..ValidationConfig::default()
         };
         let ladder = [Timeframe::M15, Timeframe::M1];
         let series = vec![
@@ -553,6 +708,67 @@ mod tests {
     }
 
     #[test]
+    fn regimes_are_classified_without_future_candles() {
+        let trending = series(Timeframe::M1, 120);
+        let decision = 100 * MIN;
+        assert_eq!(
+            classify_regime(&trending, decision, 30, 1.5, 0.3),
+            Regime::Trending
+        );
+
+        let mixed: Vec<Candle> = trending
+            .iter()
+            .enumerate()
+            .map(|(index, candle)| {
+                let mut value = candle.clone();
+                value.close = if index % 2 == 0 {
+                    value.open + 0.4
+                } else {
+                    value.open - 0.4
+                };
+                value
+            })
+            .collect();
+        assert_eq!(classify_regime(&mixed, decision, 30, 1.5, 0.3), Regime::Ranging);
+
+        let mut burst = trending.clone();
+        for candle in burst.iter_mut().rev().take(30) {
+            candle.close = candle.open * 1.05;
+        }
+        assert_eq!(classify_regime(&burst, decision, 30, 1.5, 0.3), Regime::Volatile);
+    }
+
+    #[test]
+    fn reports_include_a_regime_breakdown() {
+        let config = ValidationConfig {
+            horizon_bars: 4,
+            neutral_threshold: 0.001,
+            min_completed: 20,
+            train_fraction: 0.5,
+            embargo_bars: 3,
+            ..ValidationConfig::default()
+        };
+        let series = vec![
+            (Timeframe::M15, series(Timeframe::M15, 100)),
+            (Timeframe::M1, series(Timeframe::M1, 100)),
+        ];
+        let report = compare_hierarchies(&series, &[Timeframe::M15, Timeframe::M1], "structure", &config)
+            .unwrap();
+        assert!(report.variants.iter().all(|variant| {
+            variant.samples == 0 || !variant.regime_breakdown.is_empty()
+        }));
+        assert!(report.variants.iter().all(|variant| {
+            variant.regime_breakdown.iter().all(|entry| {
+                entry.directional_samples <= entry.samples
+                    && entry.hit_rate.is_none_or(|rate| (0.0..=1.0).contains(&rate))
+            })
+        }));
+        assert!(report.variants.iter().all(|variant| {
+            variant.regime_breakdown.iter().map(|entry| entry.samples).sum::<usize>() == variant.samples
+        }));
+    }
+
+    #[test]
     fn a_tiny_directional_sample_is_not_a_hit_rate() {
         let config = ValidationConfig {
             horizon_bars: 4,
@@ -561,6 +777,7 @@ mod tests {
             train_fraction: 0.5,
             embargo_bars: 3,
             min_directional_samples: 10_000,
+            ..ValidationConfig::default()
         };
         let series = vec![
             (Timeframe::M15, series(Timeframe::M15, 80)),
@@ -605,6 +822,7 @@ mod tests {
             train_fraction: 0.5,
             embargo_bars: 3,
             min_directional_samples: 30,
+            ..ValidationConfig::default()
         };
         let series = vec![
             (Timeframe::M15, series(Timeframe::M15, 80)),

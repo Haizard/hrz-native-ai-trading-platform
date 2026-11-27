@@ -185,6 +185,7 @@ requires explicit operator authorisation and remains a recommendation only.
 3. Only after validation: learned representations with an explicit training
    boundary outside the deterministic Rust runtime.
 
-The first real-data validation pass is recorded in `docs/65`. Its conclusion is
-that no multiscale discipline should be promoted yet: the ablation test fails
-across independent instruments.
+The real-data validation passes are recorded in `docs/65`. Aggregate results
+fail the ablation test, but a post-hoc regime split suggests a ranging-market
+benefit for hidden-state analysis. It is a hypothesis requiring an untouched
+holdout, not a promoted capability.
