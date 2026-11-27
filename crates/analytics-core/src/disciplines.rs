@@ -18,6 +18,7 @@ use crate::indicators::quant::{cusum_stat, shannon_entropy, zscore};
 use crate::indicators::quant2::{bayesian_drift, garch, hmm_regime};
 use crate::market_structure::{detect_market_structure, Trend};
 use crate::multiscale::{MultiTimeframeObservation, TimeframeObservation};
+use crate::neuro_market::{encode as encode_representation, RepresentationConfig};
 
 /// Minimum completed candles most adapters need before concluding anything.
 pub const MIN_BARS: usize = 30;
@@ -274,6 +275,34 @@ pub fn analyze_statistical(frame: &TimeframeObservation) -> Option<TimeframeAnal
     )
 }
 
+/// Deterministic OHLC representation adapter (NEURO-MARKET, no learned weights).
+pub fn analyze_representation(frame: &TimeframeObservation) -> Option<TimeframeAnalysis> {
+    let representation = encode_representation(frame, &RepresentationConfig::default())?;
+    let direction = match representation.direction_bucket {
+        0 => Direction::Bearish,
+        2 => Direction::Bullish,
+        _ => Direction::Neutral,
+    };
+    Some(
+        TimeframeAnalysis::new(
+            frame.timeframe,
+            direction,
+            representation.reconstruction_confidence,
+            frame.data_quality.score(),
+        )
+        .ok()?
+        .with_observation(format!(
+            "signature {:08b}: direction {}, volatility {}, volume {}, delta {}; masked error {:.3}",
+            representation.signature,
+            representation.direction_bucket,
+            representation.volatility_bucket,
+            representation.volume_bucket,
+            representation.delta_bucket,
+            representation.reconstruction_error
+        )),
+    )
+}
+
 /// All deterministic adapters, in the order they are presented to callers.
 #[must_use]
 pub fn all_disciplines() -> &'static [(
@@ -288,6 +317,7 @@ pub fn all_disciplines() -> &'static [(
         ("information", analyze_information),
         ("change_point", analyze_change_point),
         ("statistical", analyze_statistical),
+        ("representation", analyze_representation),
     ]
 }
 

@@ -47,6 +47,11 @@ pub struct ValidationConfig {
     pub vol_ratio_threshold: f64,
     /// Kaufman efficiency ratio above this marks a trending regime.
     pub trend_efficiency_threshold: f64,
+    /// Round-trip trading cost in basis points, charged per directional call.
+    ///
+    /// This is a cost model, not slippage: it cannot know the book at decision
+    /// time. Net values must still be treated as research estimates.
+    pub round_trip_cost_bps: f64,
 }
 
 impl Default for ValidationConfig {
@@ -61,6 +66,7 @@ impl Default for ValidationConfig {
             regime_lookback: 30,
             vol_ratio_threshold: 1.5,
             trend_efficiency_threshold: 0.3,
+            round_trip_cost_bps: 10.0,
         }
     }
 }
@@ -150,6 +156,11 @@ pub struct VariantReport {
     pub uncalibrated_strength_error: Option<f64>,
     /// Performance split by the regime in force at each decision.
     pub regime_breakdown: Vec<RegimeReport>,
+    /// Mean signed outcome after round-trip cost, per directional call.
+    ///
+    /// `None` with too few directional calls. Positive is not a trading edge;
+    /// it is an unvalidated research estimate with no slippage model.
+    pub net_expected_value: Option<f64>,
 }
 
 /// Full comparison report.
@@ -380,6 +391,7 @@ fn evaluate_variant(
     let mut hits = 0usize;
     let mut false_signals = 0usize;
     let mut errors = Vec::new();
+    let mut net_returns = Vec::new();
     let mut regimes: std::collections::BTreeMap<Regime, (usize, usize, usize)> =
         std::collections::BTreeMap::new();
     let regime_source = series
@@ -449,6 +461,12 @@ fn evaluate_variant(
         regime_entry.0 += 1;
         if prediction.direction != Direction::Neutral {
             directional += 1;
+            let signed = match prediction.direction {
+                Direction::Bullish => outcome.return_fraction,
+                Direction::Bearish => -outcome.return_fraction,
+                Direction::Neutral => 0.0,
+            };
+            net_returns.push(signed - config.round_trip_cost_bps / 10_000.0);
             regime_entry.1 += 1;
             if prediction.direction == outcome.direction {
                 hits += 1;
@@ -508,6 +526,13 @@ fn evaluate_variant(
         false_signal_rate,
         uncalibrated_strength_error,
         regime_breakdown,
+        net_expected_value: if directional < config.min_directional_samples
+            || net_returns.is_empty()
+        {
+            None
+        } else {
+            Some(net_returns.iter().sum::<f64>() / net_returns.len() as f64)
+        },
     }
 }
 
@@ -729,13 +754,19 @@ mod tests {
                 value
             })
             .collect();
-        assert_eq!(classify_regime(&mixed, decision, 30, 1.5, 0.3), Regime::Ranging);
+        assert_eq!(
+            classify_regime(&mixed, decision, 30, 1.5, 0.3),
+            Regime::Ranging
+        );
 
         let mut burst = trending.clone();
         for candle in burst.iter_mut().rev().take(30) {
             candle.close = candle.open * 1.05;
         }
-        assert_eq!(classify_regime(&burst, decision, 30, 1.5, 0.3), Regime::Volatile);
+        assert_eq!(
+            classify_regime(&burst, decision, 30, 1.5, 0.3),
+            Regime::Volatile
+        );
     }
 
     #[test]
@@ -752,20 +783,56 @@ mod tests {
             (Timeframe::M15, series(Timeframe::M15, 100)),
             (Timeframe::M1, series(Timeframe::M1, 100)),
         ];
-        let report = compare_hierarchies(&series, &[Timeframe::M15, Timeframe::M1], "structure", &config)
-            .unwrap();
-        assert!(report.variants.iter().all(|variant| {
-            variant.samples == 0 || !variant.regime_breakdown.is_empty()
-        }));
+        let report = compare_hierarchies(
+            &series,
+            &[Timeframe::M15, Timeframe::M1],
+            "structure",
+            &config,
+        )
+        .unwrap();
+        assert!(report
+            .variants
+            .iter()
+            .all(|variant| { variant.samples == 0 || !variant.regime_breakdown.is_empty() }));
         assert!(report.variants.iter().all(|variant| {
             variant.regime_breakdown.iter().all(|entry| {
                 entry.directional_samples <= entry.samples
-                    && entry.hit_rate.is_none_or(|rate| (0.0..=1.0).contains(&rate))
+                    && entry
+                        .hit_rate
+                        .is_none_or(|rate| (0.0..=1.0).contains(&rate))
             })
         }));
         assert!(report.variants.iter().all(|variant| {
-            variant.regime_breakdown.iter().map(|entry| entry.samples).sum::<usize>() == variant.samples
+            variant
+                .regime_breakdown
+                .iter()
+                .map(|entry| entry.samples)
+                .sum::<usize>()
+                == variant.samples
         }));
+    }
+
+    #[test]
+    fn net_value_is_charged_the_round_trip_cost() {
+        let config = ValidationConfig {
+            horizon_bars: 4,
+            neutral_threshold: 0.001,
+            min_completed: 20,
+            train_fraction: 0.5,
+            embargo_bars: 3,
+            round_trip_cost_bps: 10.0,
+            min_directional_samples: 1,
+            ..ValidationConfig::default()
+        };
+        let series = vec![(Timeframe::M1, series(Timeframe::M1, 80))];
+        let report =
+            compare_hierarchies(&series, &[Timeframe::M1], "statistical", &config).unwrap();
+        let net = report.variants[0].net_expected_value.unwrap();
+        assert!(net.is_finite());
+        assert!(
+            net < 0.01,
+            "a cost-charged estimate cannot be a large free lunch: {net}"
+        );
     }
 
     #[test]

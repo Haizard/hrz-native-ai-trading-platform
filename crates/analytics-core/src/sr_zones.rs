@@ -182,6 +182,10 @@ mod tests {
         let mut price = 100.0_f64;
         let mut index = 0_i64;
         for leg in 0..24_i64 {
+            // Open each leg with a small gap: without it, the last up bar and
+            // the first down bar share the same high, strict swing detection
+            // finds no pivots, and the fixture quietly tests an empty market.
+            price += if leg % 2 == 0 { -0.02 } else { 0.02 };
             let target = if leg % 2 == 0 {
                 103.0 + (leg % 3) as f64 * 0.1
             } else {

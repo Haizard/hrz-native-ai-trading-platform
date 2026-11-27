@@ -121,10 +121,42 @@ ADAUSDT and DOGEUSDT, captured the same way.
 
 The ranging hidden-state benefit survives on both holdout instruments (7/7
 positive ranging deltas including discovery). This is now a credible research
-hypothesis, but **still not a promoted capability**: there is no untouched
-*time* holdout, no trading-cost/slippage model, no corrected multiple-testing
-procedure, and no evidence of net expected value. Any future use of the regime
-label must be validated on a later period before it can guide decisions.
+hypothesis, but **still not a promoted capability**: there is no trading-cost
+model yet at this point, no corrected multiple-testing procedure, and no
+evidence of net expected value.
+
+### Untouched time holdout (Nov 4–9 window)
+
+An older, disjoint window was fetched for BTC, ETH, ADA and DOGE and scored with
+the same regime logic. The hidden-state ranging advantage **did not replicate**:
+single and full produced identical hit rates on every instrument (deltas 0.000).
+Structure showed only small, inconsistent gains. The post-hoc regime finding is
+therefore **not** confirmed out of time and must not be used as a signal.
+
+### Trading costs
+
+`ValidationConfig::round_trip_cost_bps` now charges a configurable round-trip
+cost per directional call and reports `net_expected_value`. With a modest 10 bps
+cost on the discovery instruments:
+
+| Instrument | hidden_state single / full | structure single / full |
+|---|---:|---:|
+| BTCUSDT | −0.00070 / −0.00156 | −0.00061 / −0.00053 |
+| ETHUSDT | −0.00066 / −0.00148 | −0.00061 / −0.00082 |
+| ADAUSDT | −0.00050 / −0.00186 | −0.00045 / −0.00053 |
+| DOGEUSDT | −0.00041 / −0.00173 | −0.00063 / −0.00043 |
+
+**Every** variant is net-negative. There is no evidence of an edge after costs,
+even where gross hit rates improved. Slippage is not modelled, so these are
+optimistic estimates.
+
+### Deterministic representation (NEURO-MARKET primitives)
+
+The pure-Rust `neuro_market` module adds masked-candle reconstruction, a packed
+bucket signature and signature similarity with no learned weights. It is
+exposed as the `representation` discipline. On the same instruments its
+hierarchy variants are flat or worse and net values are negative or negligible;
+it is a research primitive, not a signal.
 
 Correctness fixes from these passes:
 - `ValidationConfig::min_directional_samples` prevents tiny-sample hit rates.

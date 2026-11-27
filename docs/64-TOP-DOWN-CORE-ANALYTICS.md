@@ -186,7 +186,11 @@ requires explicit operator authorisation and remains a recommendation only.
    boundary outside the deterministic Rust runtime.
 
 The real-data validation passes are recorded in `docs/65`. Aggregate results
-fail the ablation test, but a post-hoc regime split found a ranging-market
-benefit for hidden-state analysis that survived an out-of-sample instrument
-holdout (ADA, DOGE). It remains a research hypothesis requiring a later time
-holdout and cost analysis, not a promoted capability.
+fail the ablation test. A post-hoc regime split found a ranging-market benefit
+for hidden-state analysis that survived an out-of-sample instrument holdout but
+**did not replicate on an untouched older time window**, and every variant is
+net-negative after a 10 bps round-trip cost. Nothing is promoted.
+
+`neuro_market` provides the deterministic NEURO-MARKET primitives (masked-candle
+reconstruction, packed signatures, similarity) without learned weights, exposed
+as the `representation` discipline. A trained model remains a future decision.

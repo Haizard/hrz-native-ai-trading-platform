@@ -72,6 +72,7 @@ pub mod liquidity;
 pub mod market_structure;
 pub mod multiplier;
 pub mod multiscale;
+pub mod neuro_market;
 pub mod opportunity_scanner;
 pub mod patterns;
 pub mod profile_memory;
@@ -113,8 +114,8 @@ pub use cvd::{calculate_cvd, detect_cvd_divergence, Cvd, CvdDivergence};
 pub use delta::{calculate_delta, calculate_delta_from_trades, calculate_deltas, DeltaReading};
 pub use disciplines::{
     all_disciplines, analyze_bayesian, analyze_change_point, analyze_hidden_state,
-    analyze_hierarchy, analyze_information, analyze_statistical, analyze_structure,
-    analyze_volatility, MIN_BARS,
+    analyze_hierarchy, analyze_information, analyze_representation, analyze_statistical,
+    analyze_structure, analyze_volatility, MIN_BARS,
 };
 pub use error::AnalyticsError;
 pub use footprint::{
@@ -139,6 +140,10 @@ pub use market_structure::{
 };
 pub use multiscale::{
     DataQuality, FrameAvailability, MultiTimeframeObservation, TimeframeObservation,
+};
+pub use neuro_market::{
+    encode as encode_market, masked_reconstruction_error, similarity as representation_similarity,
+    MarketRepresentation, RepresentationConfig,
 };
 pub use opportunity_scanner::{
     scan_instrument, InstrumentProfile, ScanRecommendation, ScanVerdict, ScreeningLevel,
