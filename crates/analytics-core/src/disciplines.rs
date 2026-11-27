@@ -19,6 +19,7 @@ use crate::indicators::quant2::{bayesian_drift, garch, hmm_regime};
 use crate::market_structure::{detect_market_structure, Trend};
 use crate::multiscale::{MultiTimeframeObservation, TimeframeObservation};
 use crate::neuro_market::{encode as encode_representation, RepresentationConfig};
+use crate::research_methods::{bocpd, egarch, hurst_exponent, wavelet_energy};
 
 /// Minimum completed candles most adapters need before concluding anything.
 pub const MIN_BARS: usize = 30;
@@ -275,6 +276,93 @@ pub fn analyze_statistical(frame: &TimeframeObservation) -> Option<TimeframeAnal
     )
 }
 
+/// Nonlinear-dynamics adapter: persistence, fractal scaling and Haar detail.
+pub fn analyze_nonlinear(frame: &TimeframeObservation) -> Option<TimeframeAnalysis> {
+    let closes = closes(frame, MIN_BARS)?;
+    let hurst = hurst_exponent(&closes, 2, 8)?;
+    let energy = wavelet_energy(&closes, 2)?;
+    let mean = closes.iter().sum::<f64>() / closes.len() as f64;
+    let direction = if closes.last().is_some_and(|last| *last > mean) {
+        Direction::Bullish
+    } else {
+        Direction::Bearish
+    };
+    Some(
+        TimeframeAnalysis::new(
+            frame.timeframe,
+            direction,
+            bounded((hurst - 0.5).abs() * 2.0),
+            frame.data_quality.score(),
+        )
+        .ok()?
+        .with_observation(format!("Hurst {hurst:.3}, Haar detail energy {energy:.3}")),
+    )
+}
+
+/// Bayesian online change-point adapter: a short current run means a fresh
+/// regime, which is a transition state rather than a directional claim.
+pub fn analyze_bayesian_online(frame: &TimeframeObservation) -> Option<TimeframeAnalysis> {
+    let closes = closes(frame, MIN_BARS)?;
+    let runs = bocpd(&closes, 0.05, closes.last().copied()?.max(1e-6))?;
+    let run = *runs.last()?;
+    let direction = if closes.len() > 1 && closes[closes.len() - 1] > closes[closes.len() - 2] {
+        Direction::Bullish
+    } else {
+        Direction::Bearish
+    };
+    Some(
+        TimeframeAnalysis::new(
+            frame.timeframe,
+            direction,
+            bounded(1.0 / (1.0 + run as f64)),
+            frame.data_quality.score(),
+        )
+        .ok()?
+        .with_state(if run <= 5 {
+            MarketStateKind::Transition
+        } else {
+            MarketStateKind::Unknown
+        })
+        .with_observation(format!("BOCPD current run length {run} bars")),
+    )
+}
+
+/// Volatility-asymmetry adapter: EGARCH conditional sigma and rough-volatility
+/// persistence. Direction is deliberately neutral.
+pub fn analyze_rough_volatility(frame: &TimeframeObservation) -> Option<TimeframeAnalysis> {
+    let closes = closes(frame, MIN_BARS + 10)?;
+    let returns: Vec<f64> = closes
+        .windows(2)
+        .filter(|pair| pair[0] > 0.0)
+        .map(|pair| (pair[1] / pair[0]).ln())
+        .collect();
+    let sigma = last_finite(&egarch(&returns, 30, 0.1, 0.85, -0.05)?)?;
+    let roughness = hurst_exponent(
+        &returns.iter().map(|value| value.abs()).collect::<Vec<_>>(),
+        2,
+        16,
+    )
+    .unwrap_or(0.5);
+    let volatility = if roughness < 0.45 {
+        VolatilityState::Expanding
+    } else {
+        VolatilityState::Stable
+    };
+    Some(
+        TimeframeAnalysis::new(
+            frame.timeframe,
+            Direction::Neutral,
+            bounded(sigma * 100.0),
+            frame.data_quality.score(),
+        )
+        .ok()?
+        .with_volatility(volatility)
+        .with_observation(format!(
+            "EGARCH sigma {sigma:.5}, volatility Hurst {roughness:.3}"
+        )),
+    )
+}
+
 /// Deterministic OHLC representation adapter (NEURO-MARKET, no learned weights).
 pub fn analyze_representation(frame: &TimeframeObservation) -> Option<TimeframeAnalysis> {
     let representation = encode_representation(frame, &RepresentationConfig::default())?;
@@ -318,6 +406,9 @@ pub fn all_disciplines() -> &'static [(
         ("change_point", analyze_change_point),
         ("statistical", analyze_statistical),
         ("representation", analyze_representation),
+        ("nonlinear", analyze_nonlinear),
+        ("bayesian_online", analyze_bayesian_online),
+        ("rough_volatility", analyze_rough_volatility),
     ]
 }
 

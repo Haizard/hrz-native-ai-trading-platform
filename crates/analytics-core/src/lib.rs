@@ -114,9 +114,10 @@ pub use cross_scale::{
 pub use cvd::{calculate_cvd, detect_cvd_divergence, Cvd, CvdDivergence};
 pub use delta::{calculate_delta, calculate_delta_from_trades, calculate_deltas, DeltaReading};
 pub use disciplines::{
-    all_disciplines, analyze_bayesian, analyze_change_point, analyze_hidden_state,
-    analyze_hierarchy, analyze_information, analyze_representation, analyze_statistical,
-    analyze_structure, analyze_volatility, MIN_BARS,
+    all_disciplines, analyze_bayesian, analyze_bayesian_online, analyze_change_point,
+    analyze_hidden_state, analyze_hierarchy, analyze_information, analyze_nonlinear,
+    analyze_representation, analyze_rough_volatility, analyze_statistical, analyze_structure,
+    analyze_volatility, MIN_BARS,
 };
 pub use error::AnalyticsError;
 pub use footprint::{
