@@ -103,11 +103,28 @@ Full-hierarchy minus single-frame hit rate inside each regime:
 
 This is the first **consistent** cross-instrument result: multiscale hidden-state
 analysis helps in ranging markets on every instrument tested, and structure
-analysis consistently loses value in volatile markets. It is still only a
-hypothesis. The regimes were examined after seeing the aggregate results, so
-this is a post-hoc subgroup finding with five observations and no corrected
-multiple-testing procedure. It needs an untouched holdout period before any
-discipline can be promoted or any policy can key off the regime label.
+analysis consistently loses value in volatile markets. The regimes were
+examined after seeing the aggregate results, so this is a post-hoc subgroup
+finding with five observations and no corrected multiple-testing procedure.
+
+### Out-of-sample instrument holdout
+
+The hypothesis was then tested on two instruments not used in discovery:
+ADAUSDT and DOGEUSDT, captured the same way.
+
+| Discipline | Regime | ADA single → full | DOGE single → full |
+|---|---|---:|---:|
+| hidden_state | Ranging | 0.321 → **0.410** (+0.089) | 0.316 → **0.471** (+0.155) |
+| hidden_state | Trending | 0.545 → 0.548 (+0.003) | — |
+| structure | Ranging | 0.295 → 0.302 (+0.007) | 0.285 → 0.300 (+0.015) |
+| structure | Trending | 0.404 → 0.459 (+0.054) | 0.384 → 0.426 (+0.042) |
+
+The ranging hidden-state benefit survives on both holdout instruments (7/7
+positive ranging deltas including discovery). This is now a credible research
+hypothesis, but **still not a promoted capability**: there is no untouched
+*time* holdout, no trading-cost/slippage model, no corrected multiple-testing
+procedure, and no evidence of net expected value. Any future use of the regime
+label must be validated on a later period before it can guide decisions.
 
 Correctness fixes from these passes:
 - `ValidationConfig::min_directional_samples` prevents tiny-sample hit rates.

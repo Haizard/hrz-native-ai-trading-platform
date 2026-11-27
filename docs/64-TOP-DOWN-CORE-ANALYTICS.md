@@ -186,6 +186,7 @@ requires explicit operator authorisation and remains a recommendation only.
    boundary outside the deterministic Rust runtime.
 
 The real-data validation passes are recorded in `docs/65`. Aggregate results
-fail the ablation test, but a post-hoc regime split suggests a ranging-market
-benefit for hidden-state analysis. It is a hypothesis requiring an untouched
-holdout, not a promoted capability.
+fail the ablation test, but a post-hoc regime split found a ranging-market
+benefit for hidden-state analysis that survived an out-of-sample instrument
+holdout (ADA, DOGE). It remains a research hypothesis requiring a later time
+holdout and cost analysis, not a promoted capability.
