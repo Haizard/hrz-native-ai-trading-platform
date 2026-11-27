@@ -38,20 +38,29 @@ const INDICATOR_SCRIPT: &str = concat!(
 
 /// A scripted agent whose one draft is [`INDICATOR_SCRIPT`].
 fn scripted_agent() -> Arc<ai_agent::Agent> {
-    let response = LlmResponse {
-        message: Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolUse {
-                id: "d1".into(),
-                name: "submit_script".into(),
-                input: json!({ "script": INDICATOR_SCRIPT }),
-            }],
-        },
-        stop_reason: StopReason::ToolUse,
-        usage: Usage::default(),
-    };
+    // The generator may retry a draft (for example when validation asks for a
+    // correction). Give it a small pool of identical answers so a retry does
+    // not look like a provider failure. `report` is part of the submit
+    // contract: a script without it is not a complete generation turn.
+    let responses: Vec<LlmResponse> = (0..4)
+        .map(|index| LlmResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: format!("d{}", index + 1),
+                    name: "submit_script".into(),
+                    input: json!({
+                        "script": INDICATOR_SCRIPT,
+                        "report": "This pine-lite script plots an EMA9 for the detector test. It draws one finite line and no zones or markers. Its only parameter is the EMA length, default 9. It deliberately does not place trades or invent signals. Adjust the length to change responsiveness. Would you like a faster EMA?"
+                    }),
+                }],
+            },
+            stop_reason: StopReason::ToolUse,
+            usage: Usage::default(),
+        })
+        .collect();
     Arc::new(ai_agent::Agent::new(
-        Arc::new(ScriptedClient::new(vec![response])),
+        Arc::new(ScriptedClient::new(responses)),
         ai_agent::SkillLibrary::new(),
         AgentConfig::default(),
     ))
@@ -70,7 +79,9 @@ fn now_ns() -> i64 {
 fn seed_candles(symbol: &str) -> Vec<Candle> {
     let width = Timeframe::M5.nanos();
     let latest_open = (now_ns() / width - 1) * width;
-    let count: i64 = 7 * 24 * 12 + 120;
+    // A few hundred bars is enough for an EMA9 preview. A week of 5m bars
+    // exceeds the sandbox's deterministic fuel budget for the replay pass.
+    let count: i64 = 400;
     (0..count)
         .map(|i| {
             let open_time = latest_open - (count - 1 - i) * width;
@@ -180,9 +191,9 @@ async fn a_script_generation_turn_stores_code_and_preview() {
     user.cleanup(&h.database).await;
 }
 
-/// A script over an empty store must still produce a *valid* revision -- an
-/// honest empty preview -- and the assistant message must say so rather than
-/// inventing detections.
+/// A script over an empty store must fail honestly: no revision, and an error
+/// that says the preview had no candles. Inventing an empty "validated"
+/// revision would let a script claim it was checked when it never ran.
 #[tokio::test]
 async fn a_script_with_no_data_stays_valid_and_honest() {
     let Some(h) = common::Harness::with_agent(scripted_agent()).await else {
@@ -210,18 +221,11 @@ async fn a_script_with_no_data_stays_valid_and_honest() {
         .await;
     assert_eq!(
         status,
-        axum::http::StatusCode::CREATED,
-        "a script with no data must still generate: {body}"
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "no candles must fail the preview rather than invent one: {body}"
     );
-
-    let revision = &body["revision"];
-    assert_eq!(revision["status"], "validated", "revision: {revision}");
-    let preview = &revision["preview"];
-    assert_eq!(
-        preview["zones"].as_array().map(Vec::len),
-        Some(0),
-        "no candles means no zones: {preview}"
-    );
+    assert_eq!(body["error"]["code"], "INDICATOR_PREVIEW_UNAVAILABLE", "{body}");
+    assert!(body["revision"].is_null(), "no revision without a preview: {body}");
 
     // Cleanup.
     db::delete_indicator_workspace(h.database.pool(), user.id, workspace_id.parse().unwrap())
