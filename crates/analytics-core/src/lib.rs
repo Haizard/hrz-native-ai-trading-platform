@@ -80,6 +80,7 @@ pub mod regime;
 pub mod regions;
 pub mod resample;
 pub mod research_lab;
+pub mod research_methods;
 pub mod risk;
 pub mod rsi_divergence;
 pub mod rsi_pca;
@@ -154,6 +155,10 @@ pub use profile_memory::{build_profile_memory, LevelDeltaVisit, LevelMemory, Pro
 pub use regions::{detect_zones, Region, RegionKind, ZoneConfig};
 pub use resample::{resample, resample_all};
 pub use research_lab::{run_lab, LabConfig, LabFinding, LabReport, ScenarioSummary, ENGINE_NAMES};
+pub use research_methods::{
+    bocpd, egarch, hurst_exponent, particle_filter, recurrence_rate, transfer_entropy,
+    wavelet_energy,
+};
 pub use rsi_divergence::{
     latest_rsi_divergence, rsi_divergences, rsi_series, RsiDivergence, RsiDivergenceConfig,
     RsiDivergenceKind, DEFAULT_OVERBOUGHT, DEFAULT_OVERSOLD,
