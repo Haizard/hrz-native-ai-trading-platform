@@ -151,6 +151,11 @@ A proposed setup is converted into the chart engine's existing
 type was needed. Three integration tests exercise the route through the real
 router with candles seated in RAM.
 
+The scan panel has a **Core scan** button. It calls the route for the named
+symbol with a 4H/1H/15M/5M ladder and stores any proposed overlays, scoped to
+that symbol, for injection into the next chart scene request. The shell never
+calculates a price level: every overlay comes from the Rust scanner.
+
 ## What is explicitly not claimed
 
 - no trained neural network, foundation model or learned weights;
@@ -167,7 +172,7 @@ router with candles seated in RAM.
 1. Run the validation harness across multiple instruments and regimes, inspect
    ablations, and keep only disciplines that show a reproducible benefit.
 2. Opportunity validation, chart evidence display and scanner integration.
-3. Add a shell control that injects the route's overlays into the chart scene
-   request, and record prediction outcomes against future candles.
+3. Persist prediction outcomes through the gateway's database so drift
+   detection can run across restarts and instruments.
 4. Only after validation: learned representations with an explicit training
    boundary outside the deterministic Rust runtime.

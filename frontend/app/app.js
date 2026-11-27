@@ -42,6 +42,9 @@ let botNotifications = {}; // bot id -> notifications, once asked for
 let notificationsOpen = null; // the bot whose notifications are shown
 let venues = []; // the last venue list, so opt-in state has one source
 let scan = null; // the last `GET /scan`, or null before the first one
+// Deterministic Core Analytics setups, scoped to one symbol: a price overlay is
+// meaningless on a different instrument, so the chart filter is deliberate.
+let multiscaleScan = null; // { symbol, overlays, recommendation, ranking_score }
 
 let agentSocket = null; // the agent channel, opened on first ask
 let agentReady = null; // resolves when it is open
@@ -3948,6 +3951,12 @@ function createChartPane(root, hooks = {}) {
       // because the read that throws is the one after the guard.
       overlays: [
         ...(thesis && thesis.symbol === el("symbol").value ? thesisOverlays(thesis) : []),
+        // Core Analytics setups arrive from GET /scan/multiscale in the chart
+        // engine's own overlay shape. The symbol check lives here because this
+        // is where the chart's instrument is known; the engine only sees prices.
+        ...(multiscaleScan && multiscaleScan.symbol === el("symbol").value
+          ? multiscaleScan.overlays
+          : []),
       ],
       // Concept detections as bounded shapes: zones from origin to end,
       // patterns as names on their candle, structure as segments. The engine
@@ -13899,6 +13908,64 @@ async function runScan() {
   }
 }
 
+/// Run the deterministic multi-timeframe Core Analytics scan.
+///
+/// The route returns chart overlays in the engine's own price-level shape; the
+/// shell only stores them for the named symbol and injects them into the next
+/// scene request. It never computes a level here -- every price comes from the
+/// Rust scanner, and a proposal still needs strategy and risk validation.
+async function runMultiscaleScan() {
+  const button = el("scanCoreGo");
+  button.disabled = true;
+  el("scanOut").innerHTML = `<p class="empty">Running Core Analytics…</p>`;
+  const typed = el("scanSymbols").value.trim();
+  const symbol = (typed ? typed.split(",")[0] : el("symbol").value).trim().toUpperCase();
+  if (!symbol) {
+    el("scanOut").innerHTML = `<p class="fail">Name a symbol first.</p>`;
+    button.disabled = false;
+    return;
+  }
+  try {
+    const params = new URLSearchParams();
+    params.set("symbols", symbol);
+    params.set("timeframes", "4h,1h,15m,5m");
+    params.set("discipline", "bayesian");
+    params.set("lookback", "90");
+    const result = await api(`/scan/multiscale?${params.toString()}`);
+    const rows = result.rows || [];
+    const row = rows[0];
+    multiscaleScan =
+      row && row.overlays && row.overlays.length
+        ? {
+            symbol,
+            overlays: row.overlays,
+            recommendation: row.recommendation,
+            ranking_score: row.ranking_score,
+          }
+        : null;
+
+    const lines = rows.map(
+      (r) =>
+        `<tr><td>${escapeHtml(r.symbol)}</td><td>${escapeHtml(r.recommendation)}</td>` +
+        `<td>${typeof r.ranking_score === "number" ? r.ranking_score.toFixed(2) : "—"}</td>` +
+        `<td class="muted">${escapeHtml((r.reasons || []).join(" · "))}</td></tr>`,
+    );
+    const failures = (result.failures || [])
+      .map((r) => `<li>${escapeHtml(r.symbol)}: ${escapeHtml(r.error)}</li>`)
+      .join("");
+    el("scanOut").innerHTML = `
+      <p class="muted">${escapeHtml(result.note || "")}</p>
+      ${lines.length ? `<table class="scan"><thead><tr><th>symbol</th><th>result</th><th>score</th><th>stages</th></tr></thead><tbody>${lines.join("")}</tbody></table>` : `<p class="empty">No Core Analytics result.</p>`}
+      ${failures ? `<details class="steps-wrap"><summary>${(result.failures || []).length} could not be scanned</summary><ul>${failures}</ul></details>` : ""}
+      <p class="muted">${multiscaleScan ? "Proposed levels appear on the next chart refresh." : "No chart levels were proposed."}</p>`;
+  } catch (e) {
+    multiscaleScan = null;
+    el("scanOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 /// The live-trading panel, drawn from state.
 ///
 /// Two facts per venue, and they are shown separately on purpose.
@@ -18071,6 +18138,7 @@ el("authorChips").addEventListener("click", (event) => {
   // field with one box beside it has to answer to Enter -- a user who types three
   // symbols and hits return should not be told to reach for the mouse.
   el("scanGo").addEventListener("click", runScan);
+  el("scanCoreGo").addEventListener("click", runMultiscaleScan);
   el("scanSymbols").addEventListener("keydown", (e) => {
     if (e.key === "Enter") runScan();
   });
