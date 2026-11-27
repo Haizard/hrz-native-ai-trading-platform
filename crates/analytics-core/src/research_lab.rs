@@ -15,6 +15,7 @@ use crate::cross_scale::reconstruct;
 use crate::disciplines::{analyze_hidden_state, analyze_structure};
 use crate::forecast::{bootstrap_forecast, ForecastSpec};
 use crate::hierarchy::Direction;
+use crate::market_mechanics::{estimate_dealer_state, estimate_participant_mix};
 use crate::multiscale::MultiTimeframeObservation;
 use crate::types::{Candle, Timeframe};
 
@@ -117,34 +118,50 @@ fn bounded(value: f64) -> f64 {
 /// buy/sell volume split and candle bodies visible in the data. Calling it
 /// "institutional flow" would be a claim the data cannot support.
 fn participant_finding(candles: &[Candle], timeframe: Timeframe) -> LabFinding {
-    let (buy, sell) = candles.iter().fold((0.0_f64, 0.0_f64), |(b, s), candle| {
-        (
-            b + candle.buy_volume.max(0.0),
-            s + candle.sell_volume.max(0.0),
-        )
-    });
-    let total = buy + sell;
-    let dominance = if total > 0.0 {
-        (buy - sell) / total
+    let mix = estimate_participant_mix(candles);
+    let dealer = estimate_dealer_state(candles);
+    let (buy, sell) = candles
+        .iter()
+        .fold((0.0_f64, 0.0_f64), |(buy, sell), candle| {
+            (
+                buy + candle.buy_volume.max(0.0),
+                sell + candle.sell_volume.max(0.0),
+            )
+        });
+    let raw = if buy + sell > 0.0 {
+        (buy - sell) / (buy + sell)
     } else {
         0.0
     };
-    let direction = if dominance > 0.05 {
+    let proxy = mix
+        .as_ref()
+        .map_or(0.0, |mix| mix.informed_trader - mix.trend_follower * 0.5);
+    let dominance = raw * 0.7 + proxy * 0.3;
+    let direction = if dominance > 0.1 {
         Direction::Bullish
-    } else if dominance < -0.05 {
+    } else if dominance < -0.1 {
         Direction::Bearish
     } else {
         Direction::Neutral
+    };
+    let observation = match (mix, dealer) {
+        (Some(mix), Some(dealer)) => format!(
+            "participant proxy: maker {:.2}, trend {:.2}, noise {:.2}, informed {:.2}; dealer exposure {:.2}; {}",
+            mix.market_maker,
+            mix.trend_follower,
+            mix.noise_trader,
+            mix.informed_trader,
+            dealer.exposure,
+            mix.limitation
+        ),
+        _ => "insufficient data for a participant proxy".to_string(),
     };
     LabFinding {
         engine: "participant_behaviour".to_string(),
         timeframe: Some(timeframe),
         direction,
         evidence_strength: bounded(dominance.abs()),
-        observation: format!(
-            "aggressor split buy {buy:.1} / sell {sell:.1} over {} bars; heuristic, not participant identity",
-            candles.len()
-        ),
+        observation,
     }
 }
 

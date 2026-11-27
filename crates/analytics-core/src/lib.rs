@@ -69,6 +69,7 @@ pub mod indicator_series;
 pub mod indicator_signals;
 pub mod indicators;
 pub mod liquidity;
+pub mod market_mechanics;
 pub mod market_structure;
 pub mod multiplier;
 pub mod multiscale;
@@ -135,6 +136,10 @@ pub use imbalance::{detect_imbalances, detect_imbalances_with, ImbalanceConfig, 
 pub use liquidity::{
     detect_liquidity_levels, detect_liquidity_levels_with, LiquidityConfig, LiquidityKind,
     LiquidityLevel,
+};
+pub use market_mechanics::{
+    cross_market_transfer_entropy, estimate_dealer_state, estimate_participant_mix,
+    simulate_participants, DealerState, ParticipantMix, SimulationConfig,
 };
 pub use market_structure::{
     detect_market_structure, BreakKind, MarketStructure, StructureBreak, StructureConfig,
