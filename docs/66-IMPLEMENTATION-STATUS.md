@@ -25,6 +25,18 @@ reader can distinguish working code from research intent.
 | Agent tools | `ai-agent/src/tools.rs`, `modes.rs` | `analyze_multiscale`, `reverse_engineer_market`, `analyze_markov_hierarchy`, `unify_opportunities` |
 | HTTP and shell | `api-gateway/src/multiscale_routes.rs`, `analytics_routes.rs`, `frontend/app/app.js` | `GET /scan/multiscale`, `/analytics/*`, **Core scan** button, chart overlays |
 
+## Remaining research items — now implemented
+
+| Discussion item | Where | Exposed as |
+|---|---|---|
+| Hierarchical/coupled hidden states and switching state-space | `analytics-core/src/hierarchical_state_space.rs` | `analyze_coupled_states`, `switching_kalman` |
+| Options positioning and dealer behaviour | `analytics-core/src/options_positioning.rs` | `analyze_positioning` from a supplied chain |
+| Rough volatility | `analytics-core/src/complexity_methods.rs` | `rough_volatility` |
+| Full transfer-entropy market network | `analytics-core/src/complexity_methods.rs` | `market_network` |
+| Fractal/multifractal and recurrence quantification | `analytics-core/src/complexity_methods.rs` | `multifractal_exponents`, `recurrence_quantification` |
+| Market manipulation / liquidity engineering | `analytics-core/src/liquidity_forensics.rs` | `analyze_liquidity_forensics` |
+| Strategy discovery with validation | `analytics-core/src/strategy_discovery.rs` | `validate_discovered_rules` |
+
 ## Not implemented (deliberate)
 
 - **Trained neural networks / learned weights.** The choice was pure-Rust
@@ -35,6 +47,8 @@ reader can distinguish working code from research intent.
 - **Full agent-based market simulation as a live signal.** The four-class
   simulation is a research instrument; it is not fitted to a venue or used to
   make decisions.
+- **Real options/dealer data feeds.** Proxies accept a caller-supplied chain;
+  the platform does not fetch options data.
 - **Automatic execution from Core Analytics findings.** Setups remain proposals
   behind strategy rules and the existing risk/live gate.
 - **Promoted multiscale signal.** Validation does not support promotion
