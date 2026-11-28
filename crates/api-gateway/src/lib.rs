@@ -621,6 +621,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/analytics/drift", get(analytics_routes::drift_report))
         .route(
+            "/analytics/opportunities",
+            get(analytics_routes::list_opportunities).post(analytics_routes::record_opportunity),
+        )
+        .route(
+            "/analytics/opportunities/settle",
+            post(analytics_routes::settle_opportunity),
+        )
+        .route(
             "/agent/generate-strategy",
             post(agent_routes::generate_strategy),
         )

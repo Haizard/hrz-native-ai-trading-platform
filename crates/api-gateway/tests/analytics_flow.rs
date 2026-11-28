@@ -100,6 +100,70 @@ async fn a_prediction_is_recorded_settled_once_and_reported() {
 }
 
 #[tokio::test]
+async fn an_opportunity_is_recorded_and_settled_once() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+    let observed_ms = market_data::symbols::now_ns() / 1_000_000;
+
+    let (status, body) = h
+        .post(
+            "/analytics/opportunities",
+            serde_json::json!({
+                "symbol": "memousdt",
+                "timeframe": "5m",
+                "direction": "Bullish",
+                "signature": 42,
+                "evidence_strength": 0.8,
+                "observed_at_ms": observed_ms,
+            }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["opportunity"]["symbol"], "MEMOUSDT");
+    assert_eq!(body["opportunity"]["settled_at"], serde_json::Value::Null);
+
+    let id = body["opportunity"]["id"].as_str().unwrap();
+    let (status, body) = h
+        .get("/analytics/opportunities?settled=false", Some(&user.token))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["opportunities"].as_array().unwrap().len(), 1);
+
+    let (status, body) = h
+        .post(
+            "/analytics/opportunities/settle",
+            serde_json::json!({
+                "id": id,
+                "realized_return": 0.01,
+                "hit": true,
+                "settled_at_ms": observed_ms + 10 * MIN_MS,
+            }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["settled"], true, "{body}");
+
+    let (_, body) = h
+        .post(
+            "/analytics/opportunities/settle",
+            serde_json::json!({
+                "id": id,
+                "realized_return": -0.01,
+                "hit": false,
+                "settled_at_ms": observed_ms + 20 * MIN_MS,
+            }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(body["settled"], false, "{body}");
+    user.cleanup(&h.database).await;
+}
+
+#[tokio::test]
 async fn a_bad_prediction_is_refused_and_auth_is_required() {
     let Some(h) = Harness::new().await else {
         return;

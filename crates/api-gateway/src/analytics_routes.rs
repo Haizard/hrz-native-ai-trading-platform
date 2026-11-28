@@ -14,6 +14,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::extract::ApiJson;
@@ -23,6 +24,47 @@ use crate::AppState;
 use ai_agent::MarketDataSource;
 
 const MAX_PREDICTIONS: i64 = 1000;
+
+/// Body of `POST /analytics/opportunities`.
+#[derive(Debug, Deserialize)]
+pub struct RecordOpportunityBody {
+    /// Symbol.
+    pub symbol: String,
+    /// Resolution of the representation.
+    pub timeframe: String,
+    /// Direction at decision time.
+    pub direction: String,
+    /// Packed representation signature, 0..=255.
+    pub signature: i16,
+    /// Evidence strength in `[0, 1]`.
+    pub evidence_strength: f64,
+    /// Decision instant, milliseconds since the epoch.
+    pub observed_at_ms: i64,
+}
+
+/// Body of `POST /analytics/opportunities/settle`.
+#[derive(Debug, Deserialize)]
+pub struct SettleOpportunityBody {
+    /// Row id.
+    pub id: Uuid,
+    /// Realized forward return.
+    pub realized_return: f64,
+    /// Whether the directional call was correct.
+    pub hit: bool,
+    /// Settlement instant, milliseconds since the epoch.
+    pub settled_at_ms: i64,
+}
+
+/// Query of `GET /analytics/opportunities`.
+#[derive(Debug, Deserialize)]
+pub struct OpportunitiesQuery {
+    /// Filter by symbol.
+    pub symbol: Option<String>,
+    /// Filter by settlement state.
+    pub settled: Option<bool>,
+    /// Row limit.
+    pub limit: Option<i64>,
+}
 
 /// Body of `POST /analytics/predictions`.
 #[derive(Debug, Deserialize)]
@@ -257,6 +299,85 @@ fn rebuild_log(rows: &[db::CorePredictionRow]) -> Result<OutcomeLog, ApiError> {
         }
     }
     Ok(log)
+}
+
+/// Store an opportunity representation for later recall.
+pub async fn record_opportunity(
+    State(state): State<AppState>,
+    user: crate::auth::UserContext,
+    ApiJson(body): ApiJson<RecordOpportunityBody>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    timeframe_of(&body.timeframe)?;
+    direction_of(&body.direction)?;
+    if !(0..=255).contains(&body.signature) {
+        return Err(ApiError::bad_request(
+            "invalid_signature",
+            "a representation signature must be within [0, 255]",
+        ));
+    }
+    if !body.evidence_strength.is_finite() || !(0.0..=1.0).contains(&body.evidence_strength) {
+        return Err(ApiError::bad_request(
+            "invalid_evidence_strength",
+            "evidence strength must be finite and within [0, 1]",
+        ));
+    }
+    let row = db::insert_memory_opportunity(
+        database(&state)?.pool(),
+        user.user_id,
+        &db::NewOpportunity {
+            symbol: body.symbol,
+            timeframe: body.timeframe,
+            direction: body.direction,
+            signature: body.signature,
+            evidence_strength: body.evidence_strength,
+            observed_at: body.observed_at_ms.saturating_mul(1_000_000),
+        },
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(json!({ "opportunity": row }))))
+}
+
+/// List stored opportunities.
+pub async fn list_opportunities(
+    State(state): State<AppState>,
+    user: crate::auth::UserContext,
+    Query(query): Query<OpportunitiesQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let rows = db::list_memory_opportunities(
+        database(&state)?.pool(),
+        user.user_id,
+        query.symbol.as_deref(),
+        query.settled,
+        query.limit.unwrap_or(100).clamp(1, MAX_PREDICTIONS),
+    )
+    .await?;
+    Ok(Json(json!({ "opportunities": rows })))
+}
+
+/// Settle an opportunity once from realized data.
+pub async fn settle_opportunity(
+    State(state): State<AppState>,
+    user: crate::auth::UserContext,
+    ApiJson(body): ApiJson<SettleOpportunityBody>,
+) -> Result<Json<Value>, ApiError> {
+    if !body.realized_return.is_finite() {
+        return Err(ApiError::bad_request(
+            "invalid_realized_return",
+            "the realized return must be finite",
+        ));
+    }
+    let row = db::settle_memory_opportunity(
+        database(&state)?.pool(),
+        user.user_id,
+        body.id,
+        body.realized_return,
+        body.hit,
+        body.settled_at_ms.saturating_mul(1_000_000),
+    )
+    .await?;
+    Ok(Json(
+        json!({ "opportunity": row, "settled": row.is_some() }),
+    ))
 }
 
 /// Report drift and a promotion recommendation from settled outcomes.

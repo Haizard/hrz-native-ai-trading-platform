@@ -37,6 +37,7 @@ pub mod market;
 pub mod market_source;
 pub mod markov_evidence;
 pub mod models;
+pub mod opportunity_memory;
 pub mod paper;
 pub mod pattern_library;
 pub mod provider_configs;
@@ -130,6 +131,11 @@ pub use market::{
 };
 pub use market_source::MarketDataSource;
 pub use models::Database;
+pub use opportunity_memory::{
+    insert_opportunity as insert_memory_opportunity,
+    list_opportunities as list_memory_opportunities,
+    settle_opportunity as settle_memory_opportunity, NewOpportunity, OpportunityRow,
+};
 pub use paper::{
     bot_summary, count_audit_events, count_executed_trades, create_owner, find_or_create_strategy,
     find_user_by_email, insert_audit_events, insert_bot, insert_executed_trades,
