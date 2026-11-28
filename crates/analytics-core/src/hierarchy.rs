@@ -44,7 +44,7 @@ impl From<&str> for DisciplineId {
 }
 
 /// Directional conclusion of one discipline at one timeframe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Direction {
     /// Evidence leans upward.
     Bullish,

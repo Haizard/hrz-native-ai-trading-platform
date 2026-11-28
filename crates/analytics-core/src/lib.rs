@@ -74,6 +74,7 @@ pub mod market_structure;
 pub mod multiplier;
 pub mod multiscale;
 pub mod neuro_market;
+pub mod opportunity_memory;
 pub mod opportunity_scanner;
 pub mod patterns;
 pub mod profile_memory;
@@ -90,6 +91,7 @@ pub mod size_classes;
 pub mod smt;
 pub mod sr_zones;
 pub mod state;
+pub mod strategy_intelligence;
 pub mod tpo;
 pub mod types;
 pub mod validation;
@@ -152,6 +154,7 @@ pub use neuro_market::{
     encode as encode_market, masked_reconstruction_error, similarity as representation_similarity,
     MarketRepresentation, RepresentationConfig,
 };
+pub use opportunity_memory::{OpportunityMemory, RememberedOpportunity};
 pub use opportunity_scanner::{
     scan_instrument, InstrumentProfile, ScanRecommendation, ScanVerdict, ScreeningLevel,
     SetupProposal,
@@ -179,6 +182,10 @@ pub use size_classes::{
 pub use sr_zones::{detect_sr_zones, SrKind, SrZone, SrZoneConfig};
 pub use state::{
     build_market_state, MarketState, MarketStateConfig, ProfileBasis, StateProvenance,
+};
+pub use strategy_intelligence::{
+    discover_strategies, evaluate_policy, unify_opportunities, ChartIntelligenceConfig,
+    DiscoveredStrategy, PolicyDecision, StrategyPolicy, UnifiedOpportunity,
 };
 pub use types::{Candle, FootprintCell, OrderBookLevel, OrderBookSnapshot, Side, Timeframe, Trade};
 pub use validation::{

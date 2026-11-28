@@ -10,21 +10,29 @@ reader can distinguish working code from research intent.
 |---|---|---|
 | Synchronized multiscale observations, no look-ahead, data quality | `analytics-core/src/multiscale.rs` | `MultiTimeframeObservation` |
 | Top-down analysis with higher-frame reinforcement/veto | `analytics-core/src/hierarchy.rs` | `HierarchicalAnalyzer`, `conditioned_lower` |
-| Deterministic discipline adapters (8) | `analytics-core/src/disciplines.rs` | `structure`, `hidden_state`, `bayesian`, `volatility`, `information`, `change_point`, `statistical`, `representation` |
+| Deterministic discipline adapters (11) | `analytics-core/src/disciplines.rs` | `structure`, `hidden_state`, `bayesian`, `volatility`, `information`, `change_point`, `statistical`, `representation`, `nonlinear`, `bayesian_online`, `rough_volatility` |
 | Cross-scale categorical dependence and reconstruction | `analytics-core/src/cross_scale.rs` | `reconstruct_multiscale`, `measure_dependency` |
 | Six-engine market reverse-engineering lab | `analytics-core/src/research_lab.rs` | `run_lab`, agent tool `reverse_engineer_market` |
 | Deterministic NEURO-MARKET primitives (masked reconstruction, signatures, similarity) | `analytics-core/src/neuro_market.rs` | `representation` discipline |
+| Transfer entropy, Hurst/Haar/recurrence, particle filter, BOCPD, EGARCH | `analytics-core/src/research_methods.rs` | `transfer_entropy`, `hurst_exponent`, `particle_filter`, `bocpd`, `egarch`, plus `nonlinear`, `bayesian_online`, `rough_volatility` disciplines |
+| Participant simulation, participant/dealer proxies, cross-market TE | `analytics-core/src/market_mechanics.rs` | `simulate_participants`, `estimate_participant_mix`, `estimate_dealer_state`, `cross_market_transfer_entropy` |
+| Hierarchical coupling of the seven Markov engines | `crates/hierarchical-intelligence` | `analyze_markov_hierarchy` tool |
+| Strategy Intelligence Framework: per-chart policies, unified pipeline, discovery | `analytics-core/src/strategy_intelligence.rs` | `unify_opportunities` tool |
+| Market Opportunity Memory | `analytics-core/src/opportunity_memory.rs` | `OpportunityMemory` core (gateway persistence pending) |
 | Five-stage opportunity scanner and setup proposals | `analytics-core/src/opportunity_scanner.rs` | `scan_instrument`, `SetupProposal` |
 | Chronological validation with ablations, regimes and costs | `analytics-core/src/validation.rs` | `compare_hierarchies`, `validate_history` example, `cargo xtask validate-hierarchy` |
 | Outcome recording and drift/promotion gate | `analytics-core/src/continuous_learning.rs`, migration `0023` | `POST /analytics/predictions`, `/settle`, `GET /analytics/drift` |
-| Agent tools | `ai-agent/src/tools.rs`, `modes.rs` | `analyze_multiscale`, `reverse_engineer_market` |
+| Agent tools | `ai-agent/src/tools.rs`, `modes.rs` | `analyze_multiscale`, `reverse_engineer_market`, `analyze_markov_hierarchy`, `unify_opportunities` |
 | HTTP and shell | `api-gateway/src/multiscale_routes.rs`, `analytics_routes.rs`, `frontend/app/app.js` | `GET /scan/multiscale`, **Core scan** button, chart overlays |
 
 ## Not implemented (deliberate)
 
 - **Trained neural networks / learned weights.** The choice was pure-Rust
   deterministic encoders only. `representation` is an inspectable bucket
-  encoder, not a trained model.
+  encoder, not a trained model; Transformers/TCN/Mamba/VAE/JEPA remain future.
+- **Gateway persistence for Opportunity Memory.** The deterministic store and
+  similarity recall exist; wiring them into `core_analytics_predictions` is
+  still pending.
 - **Universal multi-broker scanner across Forex/equities.** The funnel and
   instrument profiles exist; live data sources are still Binance/Deriv gold.
 - **Automatic execution from Core Analytics findings.** Setups remain proposals

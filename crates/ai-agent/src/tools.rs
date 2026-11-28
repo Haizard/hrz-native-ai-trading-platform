@@ -33,10 +33,14 @@ use analytics_core::{
     all_disciplines, analyze_hierarchy, bar_delta_stats_window, build_market_state,
     calculate_cvd_by_size, calculate_volume_profile_from_candles, calculate_vpin_series,
     delta_by_size_per_candle, detect_absorption, detect_imbalances_with,
-    detect_liquidity_levels_with, detect_market_structure, run_lab, LabConfig, MarketState,
-    MarketStateConfig, MultiTimeframeObservation, SizeClass, SizeClassConfig, VpinConfig,
+    detect_liquidity_levels_with, detect_market_structure, run_lab, ChartIntelligenceConfig,
+    InstrumentProfile, LabConfig, MarketState, MarketStateConfig, MultiTimeframeObservation,
+    OpportunityCandidate, ScanVerdict, SetupProposal, SizeClass, SizeClassConfig, StrategyPolicy,
+    VpinConfig,
 };
 
+use analytics_core::opportunity_scanner::scan_instrument;
+use analytics_core::strategy_intelligence::unify_opportunities as unify_core;
 use hierarchical_intelligence::{
     analyze_hierarchy as analyze_markov_hierarchy, HierarchicalMarkovConfig,
 };
@@ -671,6 +675,12 @@ impl ToolRegistry {
                     exposed_tool: None, // Markov evidence, always available
                 },
                 ToolSpec {
+                    name: "unify_opportunities".into(),
+                    description: UNIFY_OPPORTUNITIES.into(),
+                    input_schema: opportunity_policy_schema(),
+                    exposed_tool: None,
+                },
+                ToolSpec {
                     name: "get_candles".into(),
                     description: GET_CANDLES.into(),
                     input_schema: symbol_timeframe_schema(Some("limit")),
@@ -1146,6 +1156,7 @@ impl ToolRegistry {
             "analyze_multiscale" => analyze_multiscale(ctx, &call.input).await,
             "reverse_engineer_market" => reverse_engineer_market(ctx, &call.input).await,
             "analyze_markov_hierarchy" => analyze_markov_hierarchy_tool(ctx, &call.input).await,
+            "unify_opportunities" => unify_opportunities_tool(ctx, &call.input).await,
             "get_candles" => get_candles(ctx, &call.input).await,
             "get_volume_profile" => get_volume_profile(ctx, &call.input).await,
             "get_footprint" => get_footprint(ctx, &call.input).await,
@@ -1311,6 +1322,17 @@ fn multi_timeframe_schema() -> Value {
         },
         "required": ["symbol", "timeframes"],
     })
+}
+
+fn opportunity_policy_schema() -> Value {
+    let mut schema = multi_timeframe_schema();
+    schema["properties"]["policy"] = json!({
+        "type": "string",
+        "enum": ["Contextual", "DirectionalAlignment", "Countertrend", "HierarchicalConfirmation"],
+        "description": "How higher timeframes participate in the lower-timeframe setup",
+    });
+    schema["required"] = json!(["symbol", "timeframes", "policy"]);
+    schema
 }
 
 fn multiscale_schema() -> Value {
@@ -1780,6 +1802,8 @@ const ANALYZE_MULTISCALE: &str = "Pure-deterministic top-down Core Analytics rea
     is not a probability; no trade is placed.";
 
 const ANALYZE_MARKOV_HIERARCHY: &str = "Run all seven Markov-family engines on each requested timeframe and couple their regime probabilities top-down. Returns per-frame evidence and a conditioned directional bias, never a trade instruction.";
+
+const UNIFY_OPPORTUNITIES: &str = "Apply a per-chart top-down policy to Core Analytics candidates and a scanner setup. Returns each opportunity with its source and policy decision; it never merges sources silently and never executes.";
 
 const REVERSE_ENGINEER_MARKET: &str = "Run the six-engine market reverse-engineering lab: \
     structural discovery, participant aggressor heuristics, hidden state, cross-scale \
@@ -2256,6 +2280,71 @@ async fn analyze_markov_hierarchy_tool(
             reason,
         })?;
     serde_json::to_value(report).map_err(|e| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: e.to_string(),
+    })
+}
+
+/// Apply a chart policy to Core Analytics candidates and a scanner setup.
+async fn unify_opportunities_tool(
+    ctx: &ToolContext<'_>,
+    args: &Value,
+) -> Result<Value, AgentError> {
+    const TOOL: &str = "unify_opportunities";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframes = timeframes_arg(args, TOOL)?;
+    let policy_raw = string_arg(args, "policy", TOOL)?;
+    let policy = match policy_raw.as_str() {
+        "Contextual" => StrategyPolicy::Contextual,
+        "DirectionalAlignment" => StrategyPolicy::DirectionalAlignment,
+        "Countertrend" => StrategyPolicy::Countertrend,
+        "HierarchicalConfirmation" => StrategyPolicy::HierarchicalConfirmation,
+        _ => {
+            return Err(AgentError::InvalidToolArgs {
+                tool: TOOL.into(),
+                reason: format!("unknown policy `{policy_raw}`"),
+            });
+        }
+    };
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let observation =
+        load_multiscale_observation(ctx, TOOL, &symbol, &timeframes, lookback).await?;
+    let analysis = analyze_hierarchy(&observation, "bayesian", "unifier").ok_or_else(|| {
+        AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason: "bayesian discipline unavailable".into(),
+        }
+    })?;
+    let higher = analysis.timeframe_results.first();
+    let higher_direction = higher.map_or(analytics_core::hierarchy::Direction::Neutral, |frame| {
+        frame.direction
+    });
+    let higher_confirmed = analysis.timeframe_results.iter().all(|frame| {
+        frame.direction == higher_direction
+            || frame.direction == analytics_core::hierarchy::Direction::Neutral
+    });
+    let verdict = scan_instrument(
+        &InstrumentProfile::new(symbol.clone(), timeframes.clone()),
+        &observation,
+        "bayesian",
+    );
+    let setups: Vec<SetupProposal> = verdict.setup.into_iter().collect();
+    let config = ChartIntelligenceConfig {
+        symbol: symbol.clone(),
+        timeframe: *timeframes.last().unwrap(),
+        policy,
+        enabled_disciplines: vec!["bayesian".to_string()],
+        min_evidence_strength: 0.5,
+    };
+    let unified = unify_core(
+        &config,
+        higher_direction,
+        higher_confirmed,
+        &[] as &[OpportunityCandidate],
+        &analysis.lower_timeframe_candidates,
+        &setups,
+    );
+    serde_json::to_value(unified).map_err(|e| AgentError::ToolFailed {
         tool: TOOL.into(),
         reason: e.to_string(),
     })
@@ -5272,6 +5361,7 @@ mod tests {
             "analyze_multiscale",
             "reverse_engineer_market",
             "analyze_markov_hierarchy",
+            "unify_opportunities",
             "analyze_markov",
             "backtest_strategy",
             "backtest_similar_setups",
@@ -5987,6 +6077,31 @@ mod tests {
             .unwrap()
             .iter()
             .any(|l| l.as_str().unwrap().contains("probabilit")));
+    }
+
+    #[tokio::test]
+    async fn the_unify_tool_applies_a_chart_policy() {
+        let fixture = LadderFixture { count: 80 };
+        let ctx = ToolContext::new(&fixture);
+        let out = ToolRegistry::market_analysis()
+            .execute(
+                &call(
+                    "unify_opportunities",
+                    json!({
+                        "symbol": "BTCUSDT",
+                        "timeframes": ["1h", "5m"],
+                        "policy": "DirectionalAlignment",
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_array());
+        for item in out.as_array().unwrap() {
+            assert!(item["source"].is_string());
+            assert!(item["decision"].is_string());
+        }
     }
 
     #[tokio::test]
