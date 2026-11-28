@@ -71,6 +71,7 @@ pub mod indicator_alerts;
 pub mod indicator_heatmap;
 pub mod indicator_preview;
 pub mod indicator_workspace_routes;
+pub mod kronos_routes;
 pub mod market_data;
 pub mod market_routes;
 pub mod markov_routes;
@@ -394,6 +395,7 @@ pub fn router(state: AppState) -> Router {
         // because a scan is one measurement over many instruments -- see the
         // module doc for why it is not a `/candles` parameter.
         .route("/scan", get(scan_routes::scan))
+        .route("/kronos/forecast", get(kronos_routes::forecast))
         .route("/scan/multiscale", get(multiscale_routes::scan_multiscale))
         .route("/footprint", get(footprint_routes::footprint))
         .route("/footprint/coverage", get(footprint_routes::coverage))

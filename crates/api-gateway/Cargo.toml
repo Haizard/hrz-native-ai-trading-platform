@@ -16,6 +16,7 @@ analytics-core = { workspace = true }
 # /capabilities. Nothing here resolves by hand.
 capabilities = { workspace = true }
 ai-agent = { workspace = true }
+kronos-intelligence = { workspace = true }
 # Phase 7: the gateway now runs strategies and bots itself, so it depends on the
 # crates that do that work rather than shelling out to the CLIs.
 backtester = { workspace = true }

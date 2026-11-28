@@ -215,6 +215,7 @@ dependencies = [
  "futures",
  "hmac",
  "http-body-util",
+ "kronos-intelligence",
  "market-data",
  "observability",
  "pdf-extract",
