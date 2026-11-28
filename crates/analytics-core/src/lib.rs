@@ -60,6 +60,7 @@ pub mod fibonacci;
 pub mod footprint;
 pub mod forecast;
 pub mod harmonics;
+pub mod hierarchical_state_space;
 pub mod hierarchy;
 pub mod iceberg;
 pub mod ict_models;
@@ -76,6 +77,7 @@ pub mod multiscale;
 pub mod neuro_market;
 pub mod opportunity_memory;
 pub mod opportunity_scanner;
+pub mod options_positioning;
 pub mod patterns;
 pub mod profile_memory;
 pub mod regime;
@@ -127,6 +129,10 @@ pub use footprint::{
     build_footprint, build_footprint_for_candle, build_footprint_from_candle, build_footprints,
     FootprintCandle,
 };
+pub use hierarchical_state_space::{
+    analyze_coupled_states, switching_kalman, CoupledStateConfig, CoupledStateResult, FrameStates,
+    LatentState,
+};
 pub use hierarchy::{
     AnalyticalEvidence, CalibrationStatus, CrossTimeframeRelationship, Direction,
     DirectionDistribution, DisciplineId, HierarchicalAnalyzer, MarketStateKind,
@@ -159,6 +165,7 @@ pub use opportunity_scanner::{
     scan_instrument, InstrumentProfile, ScanRecommendation, ScanVerdict, ScreeningLevel,
     SetupProposal,
 };
+pub use options_positioning::{analyze_positioning, OptionStrike, OptionsChain, PositioningReport};
 pub use patterns::{detect_patterns, PatternConfig, PatternDirection, PatternKind, PatternMatch};
 pub use profile_memory::{build_profile_memory, LevelDeltaVisit, LevelMemory, ProfileMemory};
 pub use regions::{detect_zones, Region, RegionKind, ZoneConfig};
