@@ -25,6 +25,13 @@ knowledge: >
   bearish BOS. An OB is valid until mitigated (price trades through its mean)
   or invalidated (close beyond its extreme).
 
+  SUPPLEMENTARY EVIDENCE: the platform also offers deterministic second opinions
+  (analyze_multiscale, analyze_markov_hierarchy, fit_hierarchical_hmm,
+  reverse_engineer_market, unify_opportunities) and a pretrained research
+  forecast (kronos_forecast). They are independent evidence, not an authority:
+  they cannot replace the sweep/structure/origin sequence above and their
+  numbers must still trace to a tool result.
+
   FAIR VALUE GAPS: a three-candle imbalance where candle 2's range does not
   overlap candles 1 and 3. FVGs act as magnets and entry zones; an FVG inside
   an OB is the highest-confluence entry.
@@ -60,6 +67,12 @@ rules:
   - "DRAW the trade as position_long or position_short: anchor1 at entry price on the signal candle, anchor2 forward in time, label with entry/stop/target and R multiple. This single object is the thesis on the chart."
   - "DRAW the target pool as an hline at the opposing liquidity price, label 'Target: buyside <price>' (or sellside)."
   - "Delete or update drawings that the market invalidates: a mitigated OB's rect gets updated with reason 'mitigated'; a broken range's hlines are deleted."
+  # --- Independent second opinions (supplementary, never overriding SMC) ---
+  - "On analysis turns, call analyze_multiscale with the ladder's structure and hidden_state disciplines. Agreement strengthens the thesis; disagreement must be recorded as a failed or UNKNOWN check, never hidden."
+  - "Call analyze_markov_hierarchy or fit_hierarchical_hmm when regime or hidden-state context decides whether a sweep is continuation or exhaustion. Their output is context, not an entry signal."
+  - "Use reverse_engineer_market for hypotheses and unify_opportunities for the chart's top-down policy. Neither may bypass the sweep, structure-shift and origin rules above."
+  - "kronos_forecast is exploratory research. Never use its predicted prices as entry, stop or target; a thesis leg must come from structure and liquidity tools."
+  - "When a thesis is accepted, the platform auto-draws its entry/stop/target zones from the finalized thesis numbers. Do not duplicate those setup zones with create_drawing; draw the structure and liquidity objects above instead."
 conditions:
   timeframes: ["1d", "4h", "1h", "15m"]
   risk:

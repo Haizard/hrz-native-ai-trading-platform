@@ -1977,6 +1977,22 @@ impl Agent {
                     thesis.narrative = thesis.fallback_narrative();
                 }
 
+                // Draw the accepted setup on the chart from the finalized
+                // numbers. Best-effort, like memory: a failed write must not
+                // undo the answer, and nothing is drawn for a stand-aside.
+                auto_draw_thesis_setup(
+                    &thesis,
+                    request
+                        .drawings
+                        .as_ref()
+                        .and_then(DrawingsContext::writer)
+                        .map(|writer| writer.as_ref()),
+                    request.drawings.as_ref().map_or("", DrawingsContext::user_id),
+                    &mut trace,
+                )
+                .await;
+                thesis.provenance = trace.clone();
+
                 // Auto-store, after the thesis is final: the levels it just
                 // stood behind are the facts most worth carrying into the
                 // next conversation. Best-effort and logged — a failed write
@@ -2818,6 +2834,19 @@ fn ask_system_prompt(
         );
     }
 
+    // Name the always-exposed tools explicitly. The model only sees tool
+    // schemas, not the registry, and a tool it cannot name is a tool it will
+    // never call even though it is offered on every turn.
+    out.push_str("## Core evidence tools (always available)\n");
+    out.push_str(
+        "These need no capability and can be called on any analysis turn: \
+         analyze_timeframe, analyze_multi_timeframe, analyze_multiscale, \
+         reverse_engineer_market, analyze_markov_hierarchy, \
+         fit_hierarchical_hmm, unify_opportunities, kronos_forecast, \
+         get_candles, detect_market_structure, detect_liquidity. \
+         Call the ones that answer the question instead of reasoning from prose.\n\n",
+    );
+
     // Capability summary: one line per tool that has a capability requirement
     let exposed_tools: Vec<&ToolSpec> = tools.iter().filter(|t| t.exposed_tool.is_some()).collect();
     if !exposed_tools.is_empty() {
@@ -3335,6 +3364,101 @@ async fn try_draw(
             });
             false
         }
+    }
+}
+
+/// Draw a thesis's own entry/stop/target zones after the thesis is accepted.
+///
+/// The numbers come only from the finalized thesis -- never from the model's
+/// prose -- and a stand-aside thesis draws nothing. `position_long` and
+/// `position_short` paint filled green/red profit bands with an outlined stop,
+/// matching the setup-zone style the platform already uses; `price_range` adds
+/// the entry band as a separate blue zone.
+async fn auto_draw_thesis_setup(
+    thesis: &crate::thesis::TradeThesis,
+    writer: Option<&dyn crate::user_drawings::DrawingWriter>,
+    user_id: &str,
+    trace: &mut Vec<ToolTrace>,
+) {
+    let Some(writer) = writer else {
+        return;
+    };
+    if thesis.direction == crate::thesis::Bias::None {
+        return;
+    }
+    let valid = |zone: &crate::thesis::PriceZone| {
+        zone.low.is_finite()
+            && zone.high.is_finite()
+            && zone.low > 0.0
+            && zone.high >= zone.low
+    };
+    if !valid(&thesis.entry) || !valid(&thesis.stop) || !valid(&thesis.target) {
+        return;
+    }
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |elapsed| elapsed.as_millis() as f64);
+    let past = now_ms - 2.0 * 60.0 * 60.0 * 1000.0;
+    let future = now_ms + 4.0 * 60.0 * 60.0 * 1000.0;
+    let entry_mid = (thesis.entry.low + thesis.entry.high) / 2.0;
+    let target_mid = (thesis.target.low + thesis.target.high) / 2.0;
+    let confidence = (thesis.confidence_pct / 100.0).clamp(0.0, 1.0);
+    let reason = format!(
+        "auto-rendered from the accepted thesis: entry {:.2}-{:.2}, stop {:.2}-{:.2}, target {:.2}-{:.2}",
+        thesis.entry.low, thesis.entry.high, thesis.stop.low, thesis.stop.high,
+        thesis.target.low, thesis.target.high
+    );
+    let provenance = Some(crate::user_drawings::DrawingProvenance {
+        confidence: Some(confidence),
+        reason: Some(reason),
+    });
+
+    let position_kind = if thesis.direction == crate::thesis::Bias::Long {
+        "position_long"
+    } else {
+        "position_short"
+    };
+    try_draw(
+        writer,
+        user_id,
+        &thesis.symbol,
+        crate::user_drawings::NewAgentDrawing {
+            kind: position_kind.into(),
+            label: Some(format!("thesis {} setup", thesis.timeframe)),
+            points: vec![
+                crate::user_drawings::AgentPoint::at(past, entry_mid),
+                crate::user_drawings::AgentPoint::at(future, target_mid),
+            ],
+            provenance: provenance.clone(),
+        },
+        trace,
+    )
+    .await;
+
+    // The entry band is its own zone so the exact thesis area stays visible,
+    // including when the position box's implied stop differs from the thesis
+    // stop. The stop is drawn as a second band for the same reason.
+    for (kind, zone, label) in [
+        ("price_range", &thesis.entry, "thesis entry zone"),
+        ("price_range", &thesis.stop, "thesis stop zone"),
+    ] {
+        try_draw(
+            writer,
+            user_id,
+            &thesis.symbol,
+            crate::user_drawings::NewAgentDrawing {
+                kind: kind.into(),
+                label: Some(label.into()),
+                points: vec![
+                    crate::user_drawings::AgentPoint::at(past, zone.low),
+                    crate::user_drawings::AgentPoint::at(future, zone.high),
+                ],
+                provenance: provenance.clone(),
+            },
+            trace,
+        )
+        .await;
     }
 }
 
@@ -5567,6 +5691,28 @@ invalidation: []
     }
 
     #[tokio::test]
+    async fn an_accepted_thesis_auto_draws_its_setup_zones() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let drawings =
+            DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer.clone());
+        let request = AskRequest::new("BTCUSDT", "give me the entry setup").with_drawings(drawings);
+        let agent = Agent::new(
+            Arc::new(ScriptedClient::new(vec![thesis_call(100_100.0, 100_000.0, 100_400.0)])),
+            SkillLibrary::new(),
+            AgentConfig::default(),
+        );
+
+        let answer = agent.ask(&request, &source).await.expect("thesis completes");
+        assert_eq!(answer.thesis.direction, crate::thesis::Bias::Long);
+        let created = writer.created.lock().expect("lock poisoned").clone();
+        assert_eq!(created.len(), 3, "position + entry band + stop band: {created:?}");
+        assert!(created.iter().any(|drawing| drawing.kind == "position_long"));
+        assert_eq!(created.iter().filter(|drawing| drawing.kind == "price_range").count(), 2);
+        assert!(created.iter().all(|drawing| drawing.provenance.is_some()));
+    }
+
+    #[tokio::test]
     async fn a_drawing_skill_rejects_a_thesis_until_the_patterns_are_on_the_chart() {
         let source = Fixture::new();
         let writer = Arc::new(RecordingWriter::default());
@@ -5588,10 +5734,10 @@ invalidation: []
             .await
             .expect("the corrected run completes");
 
-        assert_eq!(
-            writer.created.lock().expect("lock poisoned").len(),
-            1,
-            "the zone must exist on the chart before the thesis was accepted"
+        let created = writer.created.lock().expect("lock poisoned").clone();
+        assert!(
+            created.iter().any(|drawing| drawing.kind == "rect"),
+            "the model's zone must exist on the chart before the thesis was accepted: {created:?}"
         );
         // The correction is visible in the conversation: the first submission
         // got a tool result naming the missing drawings.
@@ -5635,7 +5781,11 @@ invalidation: []
 
         let answer = agent.ask(&request, &source).await.expect("one clean turn");
         assert_eq!(answer.turns, 1);
-        assert!(writer.created.lock().expect("lock poisoned").is_empty());
+        let created = writer.created.lock().expect("lock poisoned").clone();
+        assert!(
+            !created.iter().any(|drawing| drawing.kind == "rect"),
+            "no drawing duty means no model-drawn zone: {created:?}"
+        );
     }
 
     /// Mentor mode is a promise the shell renders -- a card that waits for
@@ -5855,10 +6005,10 @@ invalidation: []
             .await
             .expect("the mark landed in the answer phase");
 
-        assert_eq!(
-            writer.created.lock().expect("lock poisoned").len(),
-            1,
-            "a lesson's drawing must run in the answer phase, not be refused"
+        let created = writer.created.lock().expect("lock poisoned").clone();
+        assert!(
+            created.iter().any(|drawing| drawing.kind == "rect"),
+            "a lesson's drawing must run in the answer phase, not be refused: {created:?}"
         );
     }
 
@@ -6380,10 +6530,10 @@ invalidation: []
             .await
             .expect("the duty discharged in the answer phase, then the thesis");
 
-        assert_eq!(
-            writer.created.lock().expect("lock poisoned").len(),
-            1,
-            "the drawing made in the answer phase must land"
+        let created = writer.created.lock().expect("lock poisoned").clone();
+        assert!(
+            created.iter().any(|drawing| drawing.kind == "rect"),
+            "the drawing made in the answer phase must land: {created:?}"
         );
         assert_eq!(answer.turns, analysis_turns + 2);
 

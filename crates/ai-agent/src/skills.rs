@@ -1011,6 +1011,25 @@ capability_requirements:
         );
     }
     #[test]
+    fn smc_skill_names_the_new_evidence_tools() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../skills");
+        let library = SkillLibrary::load_dir(dir).unwrap();
+        let skill = library.by_id("smart-money-concepts-v1").expect("the SMC skill ships");
+        let text = format!("{} {}", skill.knowledge, skill.rules.join(" "));
+        for tool in [
+            "analyze_multiscale",
+            "reverse_engineer_market",
+            "analyze_markov_hierarchy",
+            "fit_hierarchical_hmm",
+            "unify_opportunities",
+            "kronos_forecast",
+        ] {
+            assert!(text.contains(tool), "SMC doctrine never mentions {tool}");
+        }
+        assert!(text.contains("auto-draws"), "the setup-zone duty must be in the doctrine");
+    }
+
+    #[test]
     fn the_markov_skill_pins_trigger_phrases_and_a_single_tool_family() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../skills");
         let library = SkillLibrary::load_dir(dir).unwrap();
