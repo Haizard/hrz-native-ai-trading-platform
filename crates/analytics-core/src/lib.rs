@@ -48,6 +48,7 @@
 pub mod absorption;
 pub mod bar_delta;
 pub mod candlesticks;
+pub mod complexity_methods;
 pub mod concepts;
 pub mod continuous_learning;
 pub mod cross_scale;
@@ -70,6 +71,7 @@ pub mod indicator_series;
 pub mod indicator_signals;
 pub mod indicators;
 pub mod liquidity;
+pub mod liquidity_forensics;
 pub mod market_mechanics;
 pub mod market_structure;
 pub mod multiplier;
@@ -93,6 +95,7 @@ pub mod size_classes;
 pub mod smt;
 pub mod sr_zones;
 pub mod state;
+pub mod strategy_discovery;
 pub mod strategy_intelligence;
 pub mod tpo;
 pub mod types;
@@ -104,6 +107,10 @@ pub mod vwap;
 
 pub use absorption::{detect_absorption, AbsorptionConfig, AbsorptionEvent};
 pub use bar_delta::{bar_delta_stats, bar_delta_stats_window, BarDeltaStats};
+pub use complexity_methods::{
+    market_network, multifractal_exponents, recurrence_quantification, rough_volatility,
+    MultifractalReport, RecurrenceReport, RoughVolatilityReport, TransmissionEdge,
+};
 pub use concepts::{
     detect as detect_concept, validate as validate_concept, Compare, Concept, Requirement,
     Selector, SelectorKind, MAX_WINDOW, MIN_WINDOW,
@@ -144,6 +151,9 @@ pub use imbalance::{detect_imbalances, detect_imbalances_with, ImbalanceConfig, 
 pub use liquidity::{
     detect_liquidity_levels, detect_liquidity_levels_with, LiquidityConfig, LiquidityKind,
     LiquidityLevel,
+};
+pub use liquidity_forensics::{
+    analyze_liquidity_forensics, observe_book, BookObservation, LiquidityForensics,
 };
 pub use market_mechanics::{
     cross_market_transfer_entropy, estimate_dealer_state, estimate_participant_mix,
@@ -189,6 +199,9 @@ pub use size_classes::{
 pub use sr_zones::{detect_sr_zones, SrKind, SrZone, SrZoneConfig};
 pub use state::{
     build_market_state, MarketState, MarketStateConfig, ProfileBasis, StateProvenance,
+};
+pub use strategy_discovery::{
+    validate_discovered_rules, CandidateRule, DiscoveryConfig, RuleObservation, RuleValidation,
 };
 pub use strategy_intelligence::{
     discover_strategies, evaluate_policy, unify_opportunities, ChartIntelligenceConfig,
