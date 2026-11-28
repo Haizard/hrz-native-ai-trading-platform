@@ -42,7 +42,8 @@ use analytics_core::{
 use analytics_core::opportunity_scanner::scan_instrument;
 use analytics_core::strategy_intelligence::unify_opportunities as unify_core;
 use hierarchical_intelligence::{
-    analyze_hierarchy as analyze_markov_hierarchy, HierarchicalMarkovConfig,
+    analyze_hierarchy as analyze_markov_hierarchy, fit_hierarchical_hmm, HierarchicalHmmConfig,
+    HierarchicalMarkovConfig,
 };
 use kronos_intelligence::{ForecastConfig, KronosModel, ModelPaths};
 
@@ -688,6 +689,12 @@ impl ToolRegistry {
                     exposed_tool: None,
                 },
                 ToolSpec {
+                    name: "fit_hierarchical_hmm".into(),
+                    description: FIT_HIERARCHICAL_HMM.into(),
+                    input_schema: multi_timeframe_schema(),
+                    exposed_tool: None,
+                },
+                ToolSpec {
                     name: "get_candles".into(),
                     description: GET_CANDLES.into(),
                     input_schema: symbol_timeframe_schema(Some("limit")),
@@ -1165,6 +1172,7 @@ impl ToolRegistry {
             "analyze_markov_hierarchy" => analyze_markov_hierarchy_tool(ctx, &call.input).await,
             "unify_opportunities" => unify_opportunities_tool(ctx, &call.input).await,
             "kronos_forecast" => kronos_forecast(ctx, &call.input).await,
+            "fit_hierarchical_hmm" => fit_hierarchical_hmm_tool(ctx, &call.input).await,
             "get_candles" => get_candles(ctx, &call.input).await,
             "get_volume_profile" => get_volume_profile(ctx, &call.input).await,
             "get_footprint" => get_footprint(ctx, &call.input).await,
@@ -1828,6 +1836,8 @@ const UNIFY_OPPORTUNITIES: &str = "Apply a per-chart top-down policy to Core Ana
 
 const KRONOS_FORECAST: &str = "Run pretrained Kronos-mini inference on completed candles and return a deterministic OHLC forecast cone. No training is performed; the MIT-licensed weights are loaded from models/kronos. This is research output, not a trading signal.";
 
+const FIT_HIERARCHICAL_HMM: &str = "Fit a genuine two-level hidden Markov model with Baum-Welch: the higher timeframe's hidden state conditions the lower timeframe's transition matrix. Returns fitted parameters and decoded paths, not a trade instruction.";
+
 const REVERSE_ENGINEER_MARKET: &str = "Run the six-engine market reverse-engineering lab: \
     structural discovery, participant aggressor heuristics, hidden state, cross-scale \
     information discovery, a seeded bootstrap scenario cone and an explicit validation \
@@ -2373,6 +2383,47 @@ async fn unify_opportunities_tool(
     })
 }
 
+/// Fit a real hierarchical HMM from two timeframe return streams.
+async fn fit_hierarchical_hmm_tool(
+    ctx: &ToolContext<'_>,
+    args: &Value,
+) -> Result<Value, AgentError> {
+    const TOOL: &str = "fit_hierarchical_hmm";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframes = timeframes_arg(args, TOOL)?;
+    if timeframes.len() != 2 {
+        return Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: "provide exactly two timeframes: the higher and the lower frame".into(),
+        });
+    }
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let higher = timeframes[0];
+    let lower = timeframes[1];
+    let (higher_candles, _) = load_window(ctx, &symbol, higher, lookback).await?;
+    let (lower_candles, _) = load_window(ctx, &symbol, lower, lookback).await?;
+    let returns = |candles: &[analytics_core::Candle]| -> Vec<f64> {
+        candles
+            .windows(2)
+            .filter(|pair| pair[0].close > 0.0)
+            .map(|pair| pair[1].close / pair[0].close - 1.0)
+            .collect()
+    };
+    let result = fit_hierarchical_hmm(
+        &returns(&higher_candles),
+        &returns(&lower_candles),
+        &HierarchicalHmmConfig::default(),
+    )
+    .ok_or_else(|| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: "not enough completed returns to fit the hierarchical HMM".into(),
+    })?;
+    serde_json::to_value(result).map_err(|error| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: error.to_string(),
+    })
+}
+
 /// Pretrained Kronos inference: load one candle window and generate a forecast.
 async fn kronos_forecast(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
     const TOOL: &str = "kronos_forecast";
@@ -2381,15 +2432,14 @@ async fn kronos_forecast(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, A
     let lookback = ctx
         .clamp_lookback(optional_u64(args, "lookback", TOOL)?)
         .min(512);
-    let horizon = optional_u64(args, "horizon", TOOL)?
-        .map_or(12, |value| value.clamp(1, 60) as usize);
+    let horizon =
+        optional_u64(args, "horizon", TOOL)?.map_or(12, |value| value.clamp(1, 60) as usize);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
-    let model = KronosModel::load(&ModelPaths::default()).map_err(|reason| {
-        AgentError::ToolFailed {
+    let model =
+        KronosModel::load(&ModelPaths::default()).map_err(|reason| AgentError::ToolFailed {
             tool: TOOL.into(),
             reason,
-        }
-    })?;
+        })?;
     let config = ForecastConfig {
         lookback: lookback.min(candles.len()),
         horizon,
@@ -5421,6 +5471,7 @@ mod tests {
             "analyze_markov_hierarchy",
             "unify_opportunities",
             "kronos_forecast",
+            "fit_hierarchical_hmm",
             "analyze_markov",
             "backtest_strategy",
             "backtest_similar_setups",
@@ -6136,6 +6187,25 @@ mod tests {
             .unwrap()
             .iter()
             .any(|l| l.as_str().unwrap().contains("probabilit")));
+    }
+
+    #[tokio::test]
+    async fn the_hierarchical_hmm_tool_fits_a_real_model() {
+        let fixture = LadderFixture { count: 80 };
+        let ctx = ToolContext::new(&fixture);
+        let out = ToolRegistry::market_analysis()
+            .execute(
+                &call(
+                    "fit_hierarchical_hmm",
+                    json!({"symbol": "BTCUSDT", "timeframes": ["1h", "5m"], "lookback": 60}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out["model"]["log_likelihood"].as_f64().is_some());
+        assert_eq!(out["low_path"]["states"].as_array().unwrap().len(), 59);
+        assert!(out["conditioning_effect"].as_f64().is_some());
     }
 
     #[tokio::test]

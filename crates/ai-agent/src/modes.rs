@@ -57,6 +57,7 @@ impl AgentMode {
                 "analyze_markov_hierarchy",
                 "unify_opportunities",
                 "kronos_forecast",
+                "fit_hierarchical_hmm",
                 "analyze_markov",
                 "fuse_intelligence",
                 "get_candles",
@@ -84,6 +85,7 @@ impl AgentMode {
                 "analyze_markov_hierarchy",
                 "unify_opportunities",
                 "kronos_forecast",
+                "fit_hierarchical_hmm",
                 "fuse_intelligence",
             ]),
             Self::Smc => Some(&[
@@ -99,6 +101,7 @@ impl AgentMode {
                 "analyze_markov_hierarchy",
                 "unify_opportunities",
                 "kronos_forecast",
+                "fit_hierarchical_hmm",
                 "fuse_intelligence",
             ]),
             Self::Strategy => Some(&[
@@ -118,6 +121,7 @@ impl AgentMode {
                 "analyze_markov_hierarchy",
                 "unify_opportunities",
                 "kronos_forecast",
+                "fit_hierarchical_hmm",
                 "fuse_intelligence",
                 "get_candles",
             ]),

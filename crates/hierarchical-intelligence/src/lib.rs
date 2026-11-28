@@ -7,6 +7,13 @@
 //! the deterministic counterpart of the roadmap's coupled/switching state-space
 //! model — it does not claim to be a fitted hierarchical HMM.
 
+pub mod hierarchical_hmm;
+
+pub use hierarchical_hmm::{
+    fit_hierarchical_hmm, observation_sequence, FittedHierarchicalHmm, HierarchicalHmmConfig,
+    HierarchicalHmmResult, HmmPath,
+};
+
 use std::collections::BTreeMap;
 
 use analytics_core::calculate_vwap;
