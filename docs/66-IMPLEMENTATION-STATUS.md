@@ -56,8 +56,10 @@ reader can distinguish working code from research intent.
 After any accepted directional thesis, the agent writes three chart objects from
 the finalized thesis numbers: a green `demand_zone` for entry, a pink
 `supply_zone` for stop (reversed for shorts), and a green `demand_zone` for the
-take-profit area. They are full-width filled bands like the reference setup
-image, and they stretch forward according to the decision timeframe (4h for 5m
+take-profit area. They are time-bounded filled rectangles, not full-width bands:
+their price edges touch so the three zones read as one contiguous setup region,
+they begin 15 minutes behind the current price area where the entry may be
+reached, and they run forward according to the decision timeframe (4h for 5m
 setups up to 21 days for daily/weekly), so a pending setup can mature hours or
 days later. A stand-aside thesis draws nothing. Writes are best-effort and carry
 provenance with the thesis confidence. The SMC skill now names the new evidence

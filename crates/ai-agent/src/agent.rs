@@ -3370,10 +3370,10 @@ async fn try_draw(
 /// Draw a thesis's own entry/stop/target zones after the thesis is accepted.
 ///
 /// The numbers come only from the finalized thesis -- never from the model's
-/// prose -- and a stand-aside thesis draws nothing. `position_long` and
-/// `position_short` paint filled green/red profit bands with an outlined stop,
-/// matching the setup-zone style the platform already uses; `price_range` adds
-/// the entry band as a separate blue zone.
+/// prose -- and a stand-aside thesis draws nothing. The three zones are
+/// contiguous: their price edges touch, so they read as one setup region, and
+/// they start at the current price area and run forward to the projected
+/// target time instead of covering the chart's whole history.
 async fn auto_draw_thesis_setup(
     thesis: &crate::thesis::TradeThesis,
     writer: Option<&dyn crate::user_drawings::DrawingWriter>,
@@ -3399,9 +3399,33 @@ async fn auto_draw_thesis_setup(
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |elapsed| elapsed.as_millis() as f64);
-    let past = now_ms - 2.0 * 60.0 * 60.0 * 1000.0;
+    // The setup starts where price is expected to reach the entry. A small
+    // look-back keeps the current candle visible; the forward edge reaches the
+    // horizon in which the setup may mature.
+    let past = now_ms - 15.0 * 60.0 * 1000.0;
     let future = now_ms + setup_future_span_ms(&thesis.timeframe);
-    let _ = (&thesis.entry, &thesis.stop, &thesis.target);
+
+    let entry_low = thesis.entry.low.min(thesis.entry.high);
+    let entry_high = thesis.entry.low.max(thesis.entry.high);
+    let stop_low = thesis.stop.low.min(thesis.stop.high);
+    let stop_high = thesis.stop.low.max(thesis.stop.high);
+    let target_low = thesis.target.low.min(thesis.target.high);
+    let target_high = thesis.target.low.max(thesis.target.high);
+    let (stop_band, entry_band, target_band) = if thesis.direction == crate::thesis::Bias::Long {
+        // Below -> above: stop, entry, target, with shared edges.
+        (
+            (stop_low.min(entry_low), entry_low),
+            (entry_low, entry_high),
+            (entry_high, target_high.max(entry_high)),
+        )
+    } else {
+        // Above -> below: stop, entry, target, with shared edges.
+        (
+            (entry_high, stop_high.max(entry_high)),
+            (entry_low, entry_high),
+            (target_low.min(entry_low), entry_low),
+        )
+    };
     let confidence = (thesis.confidence_pct / 100.0).clamp(0.0, 1.0);
     let reason = format!(
         "auto-rendered from the accepted thesis: entry {:.2}-{:.2}, stop {:.2}-{:.2}, target {:.2}-{:.2}",
@@ -3422,10 +3446,10 @@ async fn auto_draw_thesis_setup(
     } else {
         ("supply_zone", "demand_zone")
     };
-    for (kind, zone, label) in [
-        (aligned, &thesis.entry, "thesis entry zone"),
-        (opposite, &thesis.stop, "thesis stop zone"),
-        (aligned, &thesis.target, "thesis take-profit zone"),
+    for (kind, (low, high), label) in [
+        (opposite, stop_band, "thesis stop zone"),
+        (aligned, entry_band, "thesis entry zone"),
+        (aligned, target_band, "thesis take-profit zone"),
     ] {
         try_draw(
             writer,
@@ -3435,8 +3459,8 @@ async fn auto_draw_thesis_setup(
                 kind: kind.into(),
                 label: Some(label.into()),
                 points: vec![
-                    crate::user_drawings::AgentPoint::at(past, zone.low),
-                    crate::user_drawings::AgentPoint::at(future, zone.high),
+                    crate::user_drawings::AgentPoint::at(past, low),
+                    crate::user_drawings::AgentPoint::at(future, high),
                 ],
                 provenance: provenance.clone(),
             },
@@ -5714,7 +5738,23 @@ invalidation: []
         assert_eq!(created.len(), 3, "entry + stop + take-profit zones: {created:?}");
         assert_eq!(created.iter().filter(|drawing| drawing.kind == "demand_zone").count(), 2);
         assert_eq!(created.iter().filter(|drawing| drawing.kind == "supply_zone").count(), 1);
-        assert!(created.iter().any(|drawing| drawing.label.as_deref() == Some("thesis take-profit zone")));
+        assert!(created.iter().all(|drawing| drawing.points.len() == 2));
+        let bands: Vec<(String, f64, f64)> = created
+            .iter()
+            .map(|drawing| {
+                (
+                    drawing.label.clone().unwrap_or_default(),
+                    drawing.points[0].price,
+                    drawing.points[1].price,
+                )
+            })
+            .collect();
+        let stop = bands.iter().find(|band| band.0 == "thesis stop zone").unwrap();
+        let entry = bands.iter().find(|band| band.0 == "thesis entry zone").unwrap();
+        let target = bands.iter().find(|band| band.0 == "thesis take-profit zone").unwrap();
+        assert_eq!(stop.2, entry.1, "stop and entry zones must touch: {bands:?}");
+        assert_eq!(entry.2, target.1, "entry and target zones must touch: {bands:?}");
+        assert!(target.2 > stop.1, "the setup must span stop to target: {bands:?}");
         assert!(created.iter().all(|drawing| drawing.provenance.is_some()));
     }
 

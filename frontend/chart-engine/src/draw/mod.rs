@@ -423,7 +423,10 @@ pub fn parts(kind: DrawingKind, selected: bool, geometry: Geometry<'_>) -> Vec<D
         DrawingKind::SineLine => cyclic::sine(geometry),
         // Measurement and forecast.
         DrawingKind::PriceRange => measurement::price_band(geometry),
-        DrawingKind::DemandZone | DrawingKind::SupplyZone => measurement::price_band(geometry),
+        // Setup zones are bounded in time: they start where price is expected
+        // to reach the entry and run to the projected target time, rather than
+        // covering the whole chart's width.
+        DrawingKind::DemandZone | DrawingKind::SupplyZone => shapes::rect(geometry),
         DrawingKind::DateRange => measurement::time_band(geometry),
         DrawingKind::Forecast => measurement::forecast(geometry),
         DrawingKind::FixedRangeVP => measurement::fixed_vp(geometry),
