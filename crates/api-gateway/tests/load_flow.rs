@@ -245,7 +245,10 @@ async fn stopping_one_bot_leaves_the_feed_working_for_the_others() {
     let Some(h) = Harness::new().await else {
         return;
     };
-    let user = h.register().await;
+    // Three bots exceed the free plan's single paper-bot allowance. Buy the
+    // plan the way a customer would; loosening the gate in a test would stop
+    // testing the gate.
+    let user = h.register_with_plan("pro").await;
     let strategy_id = strategy(&h, &user.token).await;
 
     let mut ids = Vec::new();
