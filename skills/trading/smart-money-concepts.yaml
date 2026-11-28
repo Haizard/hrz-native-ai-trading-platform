@@ -66,6 +66,7 @@ rules:
   - "Delete or update drawings that the market invalidates: a mitigated OB's rect gets updated with reason 'mitigated'; a broken range's hlines are deleted."
   # --- Independent second opinions (supplementary, never overriding SMC) ---
   - "On analysis turns, call analyze_multiscale with the ladder's structure and hidden_state disciplines. Agreement strengthens the thesis; disagreement must be recorded as a failed or UNKNOWN check, never hidden."
+  - "Use analyze_heatmap as the indicator-confluence cross-check: its five families and consensus come from the same candles. A heatmap that disagrees with the SMC read is a failed check, not a reason to override the sweep/structure sequence."
   - "Call analyze_markov_hierarchy or fit_hierarchical_hmm when regime or hidden-state context decides whether a sweep is continuation or exhaustion. Their output is context, not an entry signal."
   - "Use reverse_engineer_market for hypotheses and unify_opportunities for the chart's top-down policy. Neither may bypass the sweep, structure-shift and origin rules above."
   - "kronos_forecast is exploratory research. Never use its predicted prices as entry, stop or target; a thesis leg must come from structure and liquidity tools."

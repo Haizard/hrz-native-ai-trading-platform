@@ -36,6 +36,7 @@ pub fn is_core_evidence_tool(name: &str) -> bool {
             | "fit_hierarchical_hmm"
             | "unify_opportunities"
             | "kronos_forecast"
+            | "analyze_heatmap"
     )
 }
 
@@ -681,6 +682,12 @@ impl ToolRegistry {
                     exposed_tool: None, // pure deterministic evidence: always available
                 },
                 ToolSpec {
+                    name: "analyze_heatmap".into(),
+                    description: ANALYZE_HEATMAP.into(),
+                    input_schema: multi_timeframe_schema(),
+                    exposed_tool: None, // candle-derived indicator confluence, always available
+                },
+                ToolSpec {
                     name: "reverse_engineer_market".into(),
                     description: REVERSE_ENGINEER_MARKET.into(),
                     input_schema: multi_timeframe_schema(),
@@ -1186,6 +1193,7 @@ impl ToolRegistry {
             "analyze_multiscale" => analyze_multiscale(ctx, &call.input).await,
             "reverse_engineer_market" => reverse_engineer_market(ctx, &call.input).await,
             "analyze_markov_hierarchy" => analyze_markov_hierarchy_tool(ctx, &call.input).await,
+            "analyze_heatmap" => analyze_heatmap(ctx, &call.input).await,
             "unify_opportunities" => unify_opportunities_tool(ctx, &call.input).await,
             "kronos_forecast" => kronos_forecast(ctx, &call.input).await,
             "fit_hierarchical_hmm" => fit_hierarchical_hmm_tool(ctx, &call.input).await,
@@ -1839,6 +1847,8 @@ const ANALYZE_MULTI_TIMEFRAME: &str = "Run analyze_timeframe across several time
     once, ordered coarse to fine. Use it to check higher-timeframe context before \
     an entry trigger. Returns one state per timeframe.";
 
+const ANALYZE_HEATMAP: &str = "Compute the indicator heatmap from completed candles across the requested timeframes. Returns five families (volume, trend, momentum, volatility, statistical) and a consensus, all derived in Rust. No quote-tick activity is assumed on venues that do not supply it.";
+
 const ANALYZE_MULTISCALE: &str = "Pure-deterministic top-down Core Analytics read. Runs one \
     named mathematical discipline (structure, hidden_state, bayesian, volatility, \
     information, change_point or statistical) across the requested timeframes, \
@@ -2397,6 +2407,69 @@ async fn unify_opportunities_tool(
         tool: TOOL.into(),
         reason: e.to_string(),
     })
+}
+
+/// Candle-derived indicator confluence across several timeframes.
+async fn analyze_heatmap(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "analyze_heatmap";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframes = timeframes_arg(args, TOOL)?;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let base = timeframes[0];
+    let mut inputs = Vec::with_capacity(timeframes.len());
+    let mut unavailable = Vec::new();
+    for timeframe in &timeframes {
+        match load_window(ctx, &symbol, *timeframe, lookback).await {
+            Ok((candles, _)) => inputs.push((*timeframe, candles, None)),
+            Err(error) => unavailable.push(json!({"timeframe": timeframe.to_string(), "reason": error.to_string()})),
+        }
+    }
+    if inputs.is_empty() {
+        return Err(AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason: "no timeframe had candles for a heatmap".into(),
+        });
+    }
+    let heatmap = analytics_core::indicator_heatmap::calculate(&symbol, base, &inputs);
+    let frames: Vec<Value> = heatmap
+        .frames
+        .iter()
+        .map(|frame| {
+            let families: Vec<Value> = frame
+                .families
+                .iter()
+                .map(|family| {
+                    json!({
+                        "id": family.id,
+                        "state": family.state,
+                        "score": family.score,
+                        "confidence": family.confidence,
+                        "basis": family.basis,
+                    })
+                })
+                .collect();
+            json!({
+                "timeframe": frame.timeframe,
+                "bars": frame.bars,
+                "observed_at_ns": frame.observed_at_ns,
+                "families": families,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "symbol": heatmap.symbol,
+        "base_timeframe": heatmap.base_timeframe,
+        "consensus": {
+            "score": heatmap.consensus.score,
+            "signal": heatmap.consensus.signal,
+            "confidence": heatmap.consensus.confidence,
+            "alignment_pct": heatmap.consensus.alignment_pct,
+            "readings": heatmap.consensus.readings,
+        },
+        "frames": frames,
+        "unavailable_frames": unavailable,
+        "note": heatmap.consensus.note,
+    }))
 }
 
 /// Fit a real hierarchical HMM from two timeframe return streams.
@@ -6222,6 +6295,28 @@ mod tests {
         assert!(out["model"]["log_likelihood"].as_f64().is_some());
         assert_eq!(out["low_path"]["states"].as_array().unwrap().len(), 59);
         assert!(out["conditioning_effect"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn the_heatmap_tool_returns_five_families_and_a_consensus() {
+        let fixture = Fixture::rising(300);
+        let ctx = ToolContext::new(&fixture);
+        let out = ToolRegistry::market_analysis()
+            .execute(
+                &call(
+                    "analyze_heatmap",
+                    json!({"symbol": "BTCUSDT", "timeframes": ["1h", "5m"], "lookback": 200}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["frames"].as_array().unwrap().len(), 2);
+        for frame in out["frames"].as_array().unwrap() {
+            assert_eq!(frame["families"].as_array().unwrap().len(), 5);
+        }
+        assert!(out["consensus"]["signal"].as_str().is_some());
+        assert!(out["note"].as_str().unwrap().contains("confluence") || !out["note"].as_str().unwrap().is_empty());
     }
 
     #[tokio::test]

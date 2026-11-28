@@ -22,7 +22,7 @@ reader can distinguish working code from research intent.
 | Five-stage opportunity scanner and setup proposals | `analytics-core/src/opportunity_scanner.rs` | `scan_instrument`, `SetupProposal` |
 | Chronological validation with ablations, regimes and costs | `analytics-core/src/validation.rs` | `compare_hierarchies`, `validate_history` example, `cargo xtask validate-hierarchy` |
 | Outcome recording and drift/promotion gate | `analytics-core/src/continuous_learning.rs`, migration `0023` | `POST /analytics/predictions`, `/settle`, `GET /analytics/drift` |
-| Agent tools | `ai-agent/src/tools.rs`, `modes.rs` | `analyze_multiscale`, `reverse_engineer_market`, `analyze_markov_hierarchy`, `unify_opportunities`, `kronos_forecast`, `fit_hierarchical_hmm` |
+| Agent tools | `ai-agent/src/tools.rs`, `modes.rs` | `analyze_multiscale`, `analyze_heatmap`, `reverse_engineer_market`, `analyze_markov_hierarchy`, `unify_opportunities`, `kronos_forecast`, `fit_hierarchical_hmm` |
 | HTTP and shell | `api-gateway/src/multiscale_routes.rs`, `analytics_routes.rs`, `kronos_routes.rs`, `frontend/app/app.js` | `GET /scan/multiscale`, `/analytics/*`, `GET /kronos/forecast`, **Core scan** button, chart overlays |
 
 ## Remaining research items — now implemented

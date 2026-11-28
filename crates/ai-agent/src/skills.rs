@@ -1023,6 +1023,7 @@ capability_requirements:
             "fit_hierarchical_hmm",
             "unify_opportunities",
             "kronos_forecast",
+            "analyze_heatmap",
         ] {
             assert!(text.contains(tool), "SMC doctrine never mentions {tool}");
         }

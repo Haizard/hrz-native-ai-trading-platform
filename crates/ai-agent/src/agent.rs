@@ -1318,6 +1318,31 @@ impl Agent {
             }]));
         }
 
+        // The heatmap is the second deterministic prelude: five candle-derived
+        // indicator families and their consensus, so the model reads the same
+        // confluence the chart shows instead of guessing it from prose.
+        let heatmap_call = ToolCall {
+            id: "heatmap-prelude".into(),
+            name: "analyze_heatmap".into(),
+            input: json!({
+                "symbol": request.symbol,
+                "timeframes": ["1h", "15m", "5m"],
+                "lookback": 120,
+            }),
+        };
+        if let Ok(result) = self.registry.execute(&heatmap_call, &ctx).await {
+            trace.push(ToolTrace {
+                tool: "analyze_heatmap".into(),
+                args: heatmap_call.input.clone(),
+                result: result.clone(),
+            });
+            messages.push(Message::tool_results(vec![ToolResult {
+                tool_use_id: "heatmap-prelude".into(),
+                content: result,
+                is_error: false,
+            }]));
+        }
+
         // The memory tools get the same grant the loop already holds, so the
         // model's explicit `remember` cannot write where the auto-store could
         // not: one identity, one door.
@@ -2927,7 +2952,7 @@ fn ask_system_prompt(
     out.push_str(
         "These need no capability and can be called on any analysis turn: \
          analyze_timeframe, analyze_multi_timeframe, analyze_multiscale, \
-         reverse_engineer_market, analyze_markov_hierarchy, \
+         analyze_heatmap, reverse_engineer_market, analyze_markov_hierarchy, \
          fit_hierarchical_hmm, unify_opportunities, kronos_forecast, \
          get_candles, detect_market_structure, detect_liquidity. \
          Call the ones that answer the question instead of reasoning from prose.\n\n",
@@ -4367,6 +4392,7 @@ mod tests {
         assert!(answer.trace.iter().all(|t| {
             t.tool == "analyze_timeframe"
                 || t.tool == "analyze_multiscale"
+                || t.tool == "analyze_heatmap"
                 || t.tool == "evidence_summary"
         }));
         assert!(!answer.thesis.narrative.is_empty());
@@ -5867,7 +5893,7 @@ invalidation: []
 
         let answer = agent.ask(&request, &source).await.expect("thesis completes");
         assert_eq!(answer.thesis.direction, crate::thesis::Bias::Long);
-        assert!(answer.thesis.narrative.contains("Evidence engines used: analyze_multiscale"));
+        assert!(answer.thesis.narrative.contains("Evidence engines used: analyze_multiscale, analyze_heatmap"));
         assert!(answer.trace.iter().any(|entry| entry.tool == "evidence_summary"));
         let created = writer.created.lock().expect("lock poisoned").clone();
         assert_eq!(created.len(), 3, "entry + stop + take-profit zones: {created:?}");
