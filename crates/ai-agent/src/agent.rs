@@ -3400,9 +3400,8 @@ async fn auto_draw_thesis_setup(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |elapsed| elapsed.as_millis() as f64);
     let past = now_ms - 2.0 * 60.0 * 60.0 * 1000.0;
-    let future = now_ms + 4.0 * 60.0 * 60.0 * 1000.0;
-    let entry_mid = (thesis.entry.low + thesis.entry.high) / 2.0;
-    let target_mid = (thesis.target.low + thesis.target.high) / 2.0;
+    let future = now_ms + setup_future_span_ms(&thesis.timeframe);
+    let _ = (&thesis.entry, &thesis.stop, &thesis.target);
     let confidence = (thesis.confidence_pct / 100.0).clamp(0.0, 1.0);
     let reason = format!(
         "auto-rendered from the accepted thesis: entry {:.2}-{:.2}, stop {:.2}-{:.2}, target {:.2}-{:.2}",
@@ -3414,34 +3413,19 @@ async fn auto_draw_thesis_setup(
         reason: Some(reason),
     });
 
-    let position_kind = if thesis.direction == crate::thesis::Bias::Long {
-        "position_long"
+    // Three colored zones, as a trader would mark them: green for the side the
+    // thesis favors, pink for its opposite. A pending setup can mature hours or
+    // days later, so the bands stretch forward according to the decision
+    // timeframe instead of only covering the next few bars.
+    let (aligned, opposite) = if thesis.direction == crate::thesis::Bias::Long {
+        ("demand_zone", "supply_zone")
     } else {
-        "position_short"
+        ("supply_zone", "demand_zone")
     };
-    try_draw(
-        writer,
-        user_id,
-        &thesis.symbol,
-        crate::user_drawings::NewAgentDrawing {
-            kind: position_kind.into(),
-            label: Some(format!("thesis {} setup", thesis.timeframe)),
-            points: vec![
-                crate::user_drawings::AgentPoint::at(past, entry_mid),
-                crate::user_drawings::AgentPoint::at(future, target_mid),
-            ],
-            provenance: provenance.clone(),
-        },
-        trace,
-    )
-    .await;
-
-    // The entry band is its own zone so the exact thesis area stays visible,
-    // including when the position box's implied stop differs from the thesis
-    // stop. The stop is drawn as a second band for the same reason.
     for (kind, zone, label) in [
-        ("price_range", &thesis.entry, "thesis entry zone"),
-        ("price_range", &thesis.stop, "thesis stop zone"),
+        (aligned, &thesis.entry, "thesis entry zone"),
+        (opposite, &thesis.stop, "thesis stop zone"),
+        (aligned, &thesis.target, "thesis take-profit zone"),
     ] {
         try_draw(
             writer,
@@ -3460,6 +3444,27 @@ async fn auto_draw_thesis_setup(
         )
         .await;
     }
+}
+
+/// How far forward a setup zone should stretch for a decision timeframe.
+fn setup_future_span_ms(timeframe: &str) -> f64 {
+    let hours = match timeframe.parse::<analytics_core::Timeframe>() {
+        Ok(analytics_core::Timeframe::M1)
+        | Ok(analytics_core::Timeframe::M3)
+        | Ok(analytics_core::Timeframe::M5) => 4.0,
+        Ok(analytics_core::Timeframe::M15)
+        | Ok(analytics_core::Timeframe::M30)
+        | Ok(analytics_core::Timeframe::H1) => 24.0,
+        Ok(analytics_core::Timeframe::H2)
+        | Ok(analytics_core::Timeframe::H4)
+        | Ok(analytics_core::Timeframe::H6) => 72.0,
+        Ok(analytics_core::Timeframe::H8)
+        | Ok(analytics_core::Timeframe::H12)
+        | Ok(analytics_core::Timeframe::D1) => 168.0,
+        Ok(analytics_core::Timeframe::D3) | Ok(analytics_core::Timeframe::W1) => 504.0,
+        Err(_) => 24.0,
+    };
+    hours * 60.0 * 60.0 * 1000.0
 }
 
 /// The auto-draw provenance: every fallback object says, in its reason, both
@@ -5706,9 +5711,10 @@ invalidation: []
         let answer = agent.ask(&request, &source).await.expect("thesis completes");
         assert_eq!(answer.thesis.direction, crate::thesis::Bias::Long);
         let created = writer.created.lock().expect("lock poisoned").clone();
-        assert_eq!(created.len(), 3, "position + entry band + stop band: {created:?}");
-        assert!(created.iter().any(|drawing| drawing.kind == "position_long"));
-        assert_eq!(created.iter().filter(|drawing| drawing.kind == "price_range").count(), 2);
+        assert_eq!(created.len(), 3, "entry + stop + take-profit zones: {created:?}");
+        assert_eq!(created.iter().filter(|drawing| drawing.kind == "demand_zone").count(), 2);
+        assert_eq!(created.iter().filter(|drawing| drawing.kind == "supply_zone").count(), 1);
+        assert!(created.iter().any(|drawing| drawing.label.as_deref() == Some("thesis take-profit zone")));
         assert!(created.iter().all(|drawing| drawing.provenance.is_some()));
     }
 

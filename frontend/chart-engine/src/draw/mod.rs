@@ -423,6 +423,7 @@ pub fn parts(kind: DrawingKind, selected: bool, geometry: Geometry<'_>) -> Vec<D
         DrawingKind::SineLine => cyclic::sine(geometry),
         // Measurement and forecast.
         DrawingKind::PriceRange => measurement::price_band(geometry),
+        DrawingKind::DemandZone | DrawingKind::SupplyZone => measurement::price_band(geometry),
         DrawingKind::DateRange => measurement::time_band(geometry),
         DrawingKind::Forecast => measurement::forecast(geometry),
         DrawingKind::FixedRangeVP => measurement::fixed_vp(geometry),

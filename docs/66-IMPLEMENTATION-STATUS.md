@@ -54,12 +54,15 @@ reader can distinguish working code from research intent.
 ## Thesis-to-chart setup zones
 
 After any accepted directional thesis, the agent writes three chart objects from
-the finalized thesis numbers: a `position_long`/`position_short` risk box (green
-or red filled profit band with an outlined stop), and two `price_range` bands
-for the exact entry and stop zones. A stand-aside thesis draws nothing. Writes
-are best-effort and carry provenance with the thesis confidence. The SMC skill
-now names the new evidence tools and states that setup zones are auto-drawn, so
-the model stops duplicating them with `create_drawing`.
+the finalized thesis numbers: a green `demand_zone` for entry, a pink
+`supply_zone` for stop (reversed for shorts), and a green `demand_zone` for the
+take-profit area. They are full-width filled bands like the reference setup
+image, and they stretch forward according to the decision timeframe (4h for 5m
+setups up to 21 days for daily/weekly), so a pending setup can mature hours or
+days later. A stand-aside thesis draws nothing. Writes are best-effort and carry
+provenance with the thesis confidence. The SMC skill now names the new evidence
+tools and states that setup zones are auto-drawn, so the model stops duplicating
+them with `create_drawing`.
 
 ## Not implemented (deliberate)
 

@@ -75,7 +75,7 @@ use crate::repositories::dt_to_ns;
 /// runs one way, a cross, an info line, a regression fit, arrows) and the two
 /// families that draw a *band* rather than a line: the disjoint and flat-top/bottom
 /// channels, and the four pitchfork templates.
-pub const KINDS: [&str; 77] = [
+pub const KINDS: [&str; 79] = [
     "trendline",
     "hline",
     "vline",
@@ -89,6 +89,8 @@ pub const KINDS: [&str; 77] = [
     "arrow_mark_up",
     "arrow_mark_down",
     "rect",
+    "demand_zone",
+    "supply_zone",
     "fib",
     "fib_extension",
     "trend_fib_extension",

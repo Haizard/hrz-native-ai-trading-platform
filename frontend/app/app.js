@@ -629,6 +629,8 @@ const CHART_PALETTE_DARK = {
   trendline: "#4a9eff",
   hline: "#edb541",
   rect: "#9564e2",
+  demand_zone: "#2ebd85",
+  supply_zone: "#f6465d",
   fib: "#4caf8e",
   fib_extension: "#26a69a",
   // The rest of the Fibonacci group. One hue for the whole family, because
@@ -788,6 +790,8 @@ const CHART_PALETTE_LIGHT = {
   trendline: "#2563eb",
   hline: "#b45309",
   rect: "#7c3aed",
+  demand_zone: "#067a4d",
+  supply_zone: "#c0394b",
   fib: "#0f7b6c",
   fib_extension: "#0f766e",
   // The rest of the Fibonacci group, one hue for the family and the ruler's blue

@@ -854,7 +854,8 @@ pub fn parse_thesis(args: &Value) -> Result<TradeThesis, AgentError> {
                     return Ok(number);
                 }
                 if let Some(text) = value.as_str() {
-                    if let Ok(number) = text.trim().parse::<f64>() {
+                    let cleaned = text.trim().trim_end_matches('%').trim();
+                    if let Ok(number) = cleaned.parse::<f64>() {
                         return Ok(number);
                     }
                 }
@@ -882,7 +883,13 @@ pub fn parse_thesis(args: &Value) -> Result<TradeThesis, AgentError> {
         symbol,
         timeframe,
         direction,
-        confidence_pct: number(&["confidence_pct", "confidence", "confidence_percent"])?,
+        confidence_pct: number(&[
+            "confidence_pct",
+            "confidence",
+            "confidence_percent",
+            "confidencePercent",
+            "confidence_pct_value",
+        ])?,
         higher_timeframe_checks: parse_checks(args.get("higher_timeframe_checks")),
         order_flow_checks: parse_checks(args.get("order_flow_checks")),
         entry: zone("entry")?,
@@ -1301,7 +1308,7 @@ mod tests {
         });
         for alias in ["confidence_pct", "confidence", "confidence_percent"] {
             let mut args = base.clone();
-            args[alias] = json!("62.5");
+            args[alias] = json!("62.5%");
             assert!((parse_thesis(&args).unwrap().confidence_pct - 62.5).abs() < 1e-9, "{alias}");
         }
         assert!(parse_thesis(&base).is_err());

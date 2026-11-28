@@ -170,6 +170,10 @@ pub enum DrawingKind {
     ArrowMarkDown,
     /// The rectangle the two anchors span.
     Rect,
+    /// A full-width green demand/entry zone: two prices, one filled band.
+    DemandZone,
+    /// A full-width pink supply/stop zone: two prices, one filled band.
+    SupplyZone,
     /// Two parallel lines whose edges start and end independently.
     ///
     /// Four points, not two: the whole point of the disjoint channel is that a
@@ -358,7 +362,7 @@ impl DrawingKind {
     /// The order is the flyout order, so a kind listed here in the wrong block is
     /// a tool that sits in the wrong menu -- and a kind missing is one the toolbar
     /// cannot offer at all.
-    pub const ALL: [Self; 77] = [
+    pub const ALL: [Self; 79] = [
         // Lines.
         Self::Trendline,
         Self::Ray,
@@ -384,6 +388,8 @@ impl DrawingKind {
         Self::InsidePitchfork,
         // Shapes.
         Self::Rect,
+        Self::DemandZone,
+        Self::SupplyZone,
         Self::Triangle,
         Self::Circle,
         Self::Arc,
@@ -470,6 +476,8 @@ impl DrawingKind {
             Self::ArrowMarkUp => "arrow_mark_up",
             Self::ArrowMarkDown => "arrow_mark_down",
             Self::Rect => "rect",
+            Self::DemandZone => "demand_zone",
+            Self::SupplyZone => "supply_zone",
             Self::DisjointChannel => "disjoint_channel",
             Self::FlatTopBottom => "flat_top_bottom",
             Self::Pitchfork => "pitchfork",
@@ -585,6 +593,8 @@ impl DrawingKind {
             | Self::Regression
             | Self::Arrow
             | Self::Rect
+            | Self::DemandZone
+            | Self::SupplyZone
             | Self::Fib
             | Self::FibExtension
             | Self::FibTimeZone
@@ -743,7 +753,7 @@ pub struct ToolSpec {
 /// The cursor is deliberately absent: it is not an object the engine can draw,
 /// it is the shell's "select and pan" state, and a registry of *objects*
 /// pretending to contain it would be one more thing to filter out.
-pub const REGISTRY: [ToolSpec; 77] = [
+pub const REGISTRY: [ToolSpec; 79] = [
     ToolSpec {
         kind: DrawingKind::Trendline,
         label: "Trend",
@@ -844,6 +854,22 @@ pub const REGISTRY: [ToolSpec; 77] = [
         kind: DrawingKind::Rect,
         label: "Rect",
         title: "Drag out a rectangle",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::DemandZone,
+        label: "Demand zone",
+        title: "Two prices: a green entry/demand band spanning the chart",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::SupplyZone,
+        label: "Supply zone",
+        title: "Two prices: a pink stop/supply band spanning the chart",
         group: ToolGroup::Shapes,
         group_label: "Shapes",
         anchors: AnchorCount::fixed(2),
