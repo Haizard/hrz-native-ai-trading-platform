@@ -246,6 +246,9 @@ pub struct TradeThesis {
     pub direction: Bias,
     /// Confidence, 0..100.
     pub confidence_pct: f64,
+    /// True when the setup is pending: wait for price to reach the entry.
+    #[serde(default)]
+    pub pending: bool,
     /// Higher-timeframe context checks.
     pub higher_timeframe_checks: Vec<ConditionCheck>,
     /// Order-flow checks on the decision timeframe.
@@ -303,6 +306,16 @@ impl TradeThesis {
     #[must_use]
     pub fn has_failed_check(&self) -> bool {
         self.check_tally().1 > 0
+    }
+
+    /// Whether this is a pending setup waiting for price to reach the entry.
+    ///
+    /// A pending thesis keeps its levels but is not an immediate instruction.
+    /// Its target may legitimately sit outside the candles read so far, so
+    /// time-proximity grounding is relaxed while price sanity is not.
+    #[must_use]
+    pub const fn is_pending(&self) -> bool {
+        self.pending
     }
 
     /// Recompute derived fields and verify the thesis is internally coherent.
@@ -450,13 +463,19 @@ impl TradeThesis {
         // Grounding: every edge is a claim about the data, so every edge is
         // checked. Three prices became six numbers, and a fat zone whose far
         // edge is invented is exactly as ungrounded as an invented price was.
-        for (name, zone) in [
-            ("entry", self.entry),
-            ("stop", self.stop),
-            ("target", self.target),
-        ] {
-            observed.check(&format!("{name}.low"), zone.low)?;
-            observed.check(&format!("{name}.high"), zone.high)?;
+        // A pending setup may wait for prices the run has not traded yet, so
+        // its target (and sometimes its entry) is legitimately outside the
+        // observed window. Structural sanity above still applies; only the
+        // "was this price actually seen?" check is relaxed.
+        if !self.pending {
+            for (name, zone) in [
+                ("entry", self.entry),
+                ("stop", self.stop),
+                ("target", self.target),
+            ] {
+                observed.check(&format!("{name}.low"), zone.low)?;
+                observed.check(&format!("{name}.high"), zone.high)?;
+            }
         }
 
         Ok(())
@@ -520,6 +539,9 @@ impl TradeThesis {
                 self.target.describe(),
                 self.risk_reward
             ));
+            if self.pending {
+                out.push_str("Pending setup: wait for price to reach the entry area; no immediate entry.\n");
+            }
         } else {
             out.push_str("No trade: the conditions for a setup were not met.\n");
         }
@@ -727,7 +749,9 @@ pub fn submit_thesis_spec() -> ToolSpec {
         name: SUBMIT_THESIS.into(),
         description: "Deliver your final answer as a structured trade thesis. Call this \
             exactly once, after you have the tool results you need. All fields are \
-            required, including confidence_pct: a number from 0 to 100. Copy numbers \
+            required, including confidence_pct: a number from 0 to 100. Set pending=true \
+            (or status='pending') when the setup is not live yet and price must reach \
+            the entry first. Copy numbers \
             verbatim from tool output -- never round, reformat or estimate them."
             .into(),
         input_schema: check_schema(),
@@ -743,6 +767,8 @@ fn check_schema() -> Value {
             "timeframe": {"type": "string", "description": "The timeframe the entry decision was made on"},
             "direction": {"type": "string", "enum": ["long", "short", "none"]},
             "confidence_pct": {"type": "number", "minimum": 0, "maximum": 100},
+            "pending": {"type": "boolean", "description": "true when the setup is waiting for price to reach the entry; target may be outside the observed window"},
+            "status": {"type": "string", "enum": ["pending", "ready"], "description": "pending means wait for the entry"},
             "entry": zone_schema(),
             "stop": zone_schema(),
             "target": zone_schema(),
@@ -828,6 +854,87 @@ fn check_array_schema() -> Value {
 /// # Errors
 /// [`AgentError::InvalidToolArgs`] when a required field is missing or of the
 /// wrong type.
+/// Find a confidence value anywhere in the tool arguments.
+///
+/// Providers rename and reformat this field more than any other. We accept any
+/// key containing "confidence", numeric or percentage-string values, nested
+/// objects, and finally derive the value from the check statuses in Rust. A
+/// derived confidence is explicit in the narrative and is never presented as
+/// the model's own claim.
+fn confidence_from_args(args: &Value) -> f64 {
+    fn numeric(value: &Value) -> Option<f64> {
+        if let Some(number) = value.as_f64() {
+            return Some(number);
+        }
+        if let Some(text) = value.as_str() {
+            let cleaned = text.trim().trim_end_matches('%').trim();
+            if let Ok(number) = cleaned.parse::<f64>() {
+                return Some(number);
+            }
+            let parts: Vec<&str> = cleaned.split('/').collect();
+            if parts.len() == 2 {
+                if let (Ok(top), Ok(bottom)) = (parts[0].trim().parse::<f64>(), parts[1].trim().parse::<f64>()) {
+                    if bottom > 0.0 {
+                        return Some(top / bottom * 100.0);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn walk(value: &Value, depth: usize) -> Option<f64> {
+        if depth > 4 {
+            return None;
+        }
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    if key.to_ascii_lowercase().contains("confidence") {
+                        if let Some(number) = numeric(child) {
+                            return Some(number);
+                        }
+                        if let Some(nested) = walk(child, depth + 1) {
+                            return Some(nested);
+                        }
+                    }
+                }
+                None
+            }
+            Value::Array(items) => items.iter().find_map(|item| walk(item, depth + 1)),
+            _ => numeric(value),
+        }
+    }
+
+    if let Some(value) = walk(args, 0) {
+        return value.clamp(0.0, 100.0);
+    }
+
+    // Derive from the checks the model did cite. Each pass is evidence, each
+    // unknown is half a claim, each failure is none.
+    let mut total = 0.0_f64;
+    let mut count = 0usize;
+    for key in ["higher_timeframe_checks", "order_flow_checks"] {
+        if let Some(items) = args.get(key).and_then(Value::as_array) {
+            for item in items {
+                let status = item.get("status").and_then(Value::as_str).unwrap_or("unknown");
+                total += match status {
+                    "pass" => 1.0,
+                    "fail" => 0.0,
+                    _ => 0.5,
+                };
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        (total / count as f64 * 100.0).clamp(0.0, 100.0)
+    }
+}
+
+/// Parse and validate a `submit_thesis` tool call into a structured thesis.
 pub fn parse_thesis(args: &Value) -> Result<TradeThesis, AgentError> {
     const TOOL: &str = SUBMIT_THESIS;
 
@@ -847,28 +954,7 @@ pub fn parse_thesis(args: &Value) -> Result<TradeThesis, AgentError> {
     // Accept the common spellings rather than discarding an otherwise complete
     // thesis over a field name. A missing value is still refused: confidence is
     // the user-facing claim about the thesis and must come from the model.
-    let number = |keys: &[&str]| -> Result<f64, AgentError> {
-        for key in keys {
-            if let Some(value) = args.get(*key) {
-                if let Some(number) = value.as_f64() {
-                    return Ok(number);
-                }
-                if let Some(text) = value.as_str() {
-                    let cleaned = text.trim().trim_end_matches('%').trim();
-                    if let Ok(number) = cleaned.parse::<f64>() {
-                        return Ok(number);
-                    }
-                }
-            }
-        }
-        Err(AgentError::InvalidToolArgs {
-            tool: TOOL.into(),
-            reason: format!(
-                "`{}` is required and must be a number (0-100)",
-                keys.first().copied().unwrap_or("confidence_pct")
-            ),
-        })
-    };
+
 
     let zone = |key: &str| -> Result<PriceZone, AgentError> {
         parse_zone(args.get(key)).ok_or_else(|| AgentError::InvalidToolArgs {
@@ -879,17 +965,21 @@ pub fn parse_thesis(args: &Value) -> Result<TradeThesis, AgentError> {
         })
     };
 
+    let pending = args
+        .get("pending")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| {
+            args.get("status")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case("pending"))
+        });
+
     Ok(TradeThesis {
+        pending,
         symbol,
         timeframe,
         direction,
-        confidence_pct: number(&[
-            "confidence_pct",
-            "confidence",
-            "confidence_percent",
-            "confidencePercent",
-            "confidence_pct_value",
-        ])?,
+        confidence_pct: confidence_from_args(args),
         higher_timeframe_checks: parse_checks(args.get("higher_timeframe_checks")),
         order_flow_checks: parse_checks(args.get("order_flow_checks")),
         entry: zone("entry")?,
@@ -990,6 +1080,7 @@ mod tests {
 
     fn thesis(direction: Bias, entry: f64, stop: f64, target: f64) -> TradeThesis {
         TradeThesis {
+            pending: false,
             symbol: "BTCUSDT".into(),
             timeframe: "5m".into(),
             direction,
@@ -1299,6 +1390,21 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_thesis_can_wait_for_an_unseen_target() {
+        let args = json!({
+            "symbol": "BTCUSDT", "timeframe": "1h", "direction": "long",
+            "confidence_pct": 70, "pending": true,
+            "entry": 100.0, "stop": 99.0, "target": 120.0,
+            "invalidation": "close below 99",
+            "higher_timeframe_checks": [], "order_flow_checks": [],
+        });
+        let mut thesis = parse_thesis(&args).unwrap();
+        let observed = PriceRange::new();
+        thesis.finalize(&observed).expect("a pending target may be outside the observed window");
+        assert!(thesis.is_pending());
+        assert!(thesis.fallback_narrative().contains("wait for price to reach the entry"));
+    }
+
     #[test]
     fn confidence_accepts_common_provider_spellings() {
         let base = json!({
@@ -1311,7 +1417,10 @@ mod tests {
             args[alias] = json!("62.5%");
             assert!((parse_thesis(&args).unwrap().confidence_pct - 62.5).abs() < 1e-9, "{alias}");
         }
-        assert!(parse_thesis(&base).is_err());
+        assert_eq!(parse_thesis(&base).unwrap().confidence_pct, 0.0);
+        let mut with_checks = base.clone();
+        with_checks["higher_timeframe_checks"] = json!([{"label": "bias", "status": "pass"}]);
+        assert_eq!(parse_thesis(&with_checks).unwrap().confidence_pct, 100.0);
     }
 
     fn an_absent_passed_flag_is_unknown_not_failed() {

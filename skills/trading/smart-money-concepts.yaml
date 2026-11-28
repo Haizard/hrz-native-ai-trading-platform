@@ -72,6 +72,7 @@ rules:
   - "Call analyze_markov_hierarchy or fit_hierarchical_hmm when regime or hidden-state context decides whether a sweep is continuation or exhaustion. Their output is context, not an entry signal."
   - "Use reverse_engineer_market for hypotheses and unify_opportunities for the chart's top-down policy. Neither may bypass the sweep, structure-shift and origin rules above."
   - "kronos_forecast is exploratory research. Never use its predicted prices as entry, stop or target; a thesis leg must come from structure and liquidity tools."
+  - "Do not force an immediate entry. When the sweep/structure conditions are valid but price has not reached the origin zone, submit the thesis with pending=true (or status='pending') and say that the setup waits for price to reach the entry. A pending thesis may target a pool outside the candles already read."
   - "When a thesis is accepted, the platform auto-draws three contiguous time-bounded zones from the finalized thesis numbers: a green demand_zone for entry, a pink supply_zone for stop (reversed for shorts), and a green demand_zone for the take-profit area. Their price edges touch, they begin at the current price area where the entry may be reached, and they run forward to the setup's horizon. Do not duplicate them with create_drawing; draw the structure and liquidity objects above instead."
 conditions:
   timeframes: ["1d", "4h", "1h", "15m"]

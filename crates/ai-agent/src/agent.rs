@@ -112,6 +112,12 @@ impl DrawingsContext {
         self.writer.as_ref()
     }
 
+    /// The read side, used to find setup zones that have expired.
+    #[must_use]
+    pub fn source(&self) -> &dyn crate::user_drawings::UserDrawingsSource {
+        self.source.as_ref()
+    }
+
     /// The user whose drawings this is, opaque to the agent.
     #[must_use]
     pub fn user_id(&self) -> &str {
@@ -1283,6 +1289,35 @@ impl Agent {
         if let Some(view) = &request.capabilities {
             ctx = ctx.with_capabilities(view.clone());
         }
+
+        // Deterministic Core Analytics prelude: the new engines run in Rust on
+        // this run's ladder before the model speaks. The result is both traced
+        // (so the shell shows the tool was used) and handed to the model as a
+        // tool result, so a provider that ignores its tool list cannot skip
+        // the platform's own evidence.
+        let prelude_call = ToolCall {
+            id: "core-prelude".into(),
+            name: "analyze_multiscale".into(),
+            input: json!({
+                "symbol": request.symbol,
+                "timeframes": ["1h", "15m", "5m"],
+                "discipline": "structure",
+                "lookback": 120,
+            }),
+        };
+        if let Ok(result) = self.registry.execute(&prelude_call, &ctx).await {
+            trace.push(ToolTrace {
+                tool: "analyze_multiscale".into(),
+                args: prelude_call.input.clone(),
+                result: result.clone(),
+            });
+            messages.push(Message::tool_results(vec![ToolResult {
+                tool_use_id: "core-prelude".into(),
+                content: result,
+                is_error: false,
+            }]));
+        }
+
         // The memory tools get the same grant the loop already holds, so the
         // model's explicit `remember` cannot write where the auto-store could
         // not: one identity, one door.
@@ -1809,6 +1844,27 @@ impl Agent {
                 // away a minute of analysis the user already waited for -- and
                 // with a model that fumbles schemas, this path is the
                 // difference between a corrected answer and no answer.
+                // A thesis must rest on the platform's own mathematical
+                // evidence, not only on the SMC pattern read. If none of the
+                // new engines ran, send the model back for one before accepting
+                // the thesis (the last turn still stands aside rather than
+                // looping forever).
+                if !last && !used_core_evidence(&trace) {
+                    progress.report(Progress::Correcting {
+                        reason: "the thesis used no Core Analytics evidence tool".into(),
+                    });
+                    messages.push(Message::tool_results(vec![ToolResult {
+                        tool_use_id: call.id.clone(),
+                        content: json!({
+                            "accepted": false,
+                            "error": "the thesis used no Core Analytics evidence tool",
+                            "instruction": "Call at least one of analyze_multiscale, reverse_engineer_market, analyze_markov_hierarchy, fit_hierarchical_hmm or unify_opportunities, read its result, then call submit_thesis again.",
+                        }),
+                        is_error: true,
+                    }]));
+                    continue;
+                }
+
                 let mut thesis = match parse_thesis(&call.input) {
                     Ok(thesis) => thesis,
                     Err(err) => {
@@ -1982,6 +2038,10 @@ impl Agent {
                 // undo the answer, and nothing is drawn for a stand-aside.
                 auto_draw_thesis_setup(
                     &thesis,
+                    request
+                        .drawings
+                        .as_ref()
+                        .map(|drawings| drawings.source()),
                     request
                         .drawings
                         .as_ref()
@@ -3367,6 +3427,19 @@ async fn try_draw(
     }
 }
 
+/// Whether this run actually used one of the new Core Analytics evidence tools.
+fn used_core_evidence(trace: &[ToolTrace]) -> bool {
+    const TOOLS: [&str; 6] = [
+        "analyze_multiscale",
+        "reverse_engineer_market",
+        "analyze_markov_hierarchy",
+        "fit_hierarchical_hmm",
+        "unify_opportunities",
+        "kronos_forecast",
+    ];
+    trace.iter().any(|entry| TOOLS.contains(&entry.tool.as_str()))
+}
+
 /// Draw a thesis's own entry/stop/target zones after the thesis is accepted.
 ///
 /// The numbers come only from the finalized thesis -- never from the model's
@@ -3376,13 +3449,29 @@ async fn try_draw(
 /// target time instead of covering the chart's whole history.
 async fn auto_draw_thesis_setup(
     thesis: &crate::thesis::TradeThesis,
+    source: Option<&dyn crate::user_drawings::UserDrawingsSource>,
     writer: Option<&dyn crate::user_drawings::DrawingWriter>,
     user_id: &str,
     trace: &mut Vec<ToolTrace>,
 ) {
-    let Some(writer) = writer else {
+    let (Some(writer), Some(source)) = (writer, source) else {
         return;
     };
+    // A setup zone has a finite life: once the next thesis supersedes it, the
+    // old marks are removed rather than accumulating on the chart.
+    if let Ok(existing) = source.drawings(user_id, &thesis.symbol).await {
+        for drawing in existing {
+            if drawing
+                .label
+                .as_deref()
+                .is_some_and(|label| label.starts_with("thesis "))
+            {
+                if let Some(id) = drawing.id {
+                    let _ = writer.delete(user_id, &thesis.symbol, &id).await;
+                }
+            }
+        }
+    }
     if thesis.direction == crate::thesis::Bias::None {
         return;
     }
@@ -4011,6 +4100,7 @@ fn synthesize_stand_aside(
         timeframe: timeframe.into(),
         direction: crate::thesis::Bias::None,
         confidence_pct: 0.0,
+        pending: false,
         higher_timeframe_checks: Vec::new(),
         order_flow_checks: Vec::new(),
         entry: PriceZone::default(),
@@ -4255,7 +4345,9 @@ mod tests {
         );
         // Provenance: the ladder was read before the model spoke.
         assert!(!answer.trace.is_empty());
-        assert!(answer.trace.iter().all(|t| t.tool == "analyze_timeframe"));
+        assert!(answer.trace.iter().all(|t| {
+            t.tool == "analyze_timeframe" || t.tool == "analyze_multiscale"
+        }));
         assert!(!answer.thesis.narrative.is_empty());
     }
 
@@ -5632,9 +5724,28 @@ invalidation: []
         }
     }
 
+    struct OldThesisDrawing;
+
+    #[async_trait::async_trait]
+    impl crate::user_drawings::UserDrawingsSource for OldThesisDrawing {
+        async fn drawings(
+            &self,
+            _user_id: &str,
+            _symbol: &str,
+        ) -> Result<Vec<crate::user_drawings::UserDrawing>, AgentError> {
+            Ok(vec![crate::user_drawings::UserDrawing {
+                id: Some("old-setup".into()),
+                kind: "demand_zone".into(),
+                label: Some("thesis entry zone".into()),
+                points: vec![crate::user_drawings::AgentPoint::at(1.0, 100.0)],
+            }])
+        }
+    }
+
     #[derive(Default)]
     struct RecordingWriter {
         created: std::sync::Mutex<Vec<crate::user_drawings::NewAgentDrawing>>,
+        deleted: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
@@ -5670,8 +5781,9 @@ invalidation: []
             &self,
             _user_id: &str,
             _symbol: &str,
-            _id: &str,
+            id: &str,
         ) -> Result<bool, AgentError> {
+            self.deleted.lock().expect("lock poisoned").push(id.to_string());
             Ok(true)
         }
     }
@@ -5723,8 +5835,8 @@ invalidation: []
     async fn an_accepted_thesis_auto_draws_its_setup_zones() {
         let source = Fixture::new();
         let writer = Arc::new(RecordingWriter::default());
-        let drawings =
-            DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer.clone());
+        let drawings = DrawingsContext::new(Arc::new(OldThesisDrawing), "test-user")
+            .with_writer(writer.clone());
         let request = AskRequest::new("BTCUSDT", "give me the entry setup").with_drawings(drawings);
         let agent = Agent::new(
             Arc::new(ScriptedClient::new(vec![thesis_call(100_100.0, 100_000.0, 100_400.0)])),
@@ -5755,6 +5867,11 @@ invalidation: []
         assert_eq!(stop.2, entry.1, "stop and entry zones must touch: {bands:?}");
         assert_eq!(entry.2, target.1, "entry and target zones must touch: {bands:?}");
         assert!(target.2 > stop.1, "the setup must span stop to target: {bands:?}");
+        assert_eq!(
+            writer.deleted.lock().expect("lock poisoned").as_slice(),
+            ["old-setup"],
+            "the superseded setup zone must be removed"
+        );
         assert!(created.iter().all(|drawing| drawing.provenance.is_some()));
     }
 

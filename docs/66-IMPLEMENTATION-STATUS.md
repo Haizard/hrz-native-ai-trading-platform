@@ -61,10 +61,20 @@ their price edges touch so the three zones read as one contiguous setup region,
 they begin 15 minutes behind the current price area where the entry may be
 reached, and they run forward according to the decision timeframe (4h for 5m
 setups up to 21 days for daily/weekly), so a pending setup can mature hours or
-days later. A stand-aside thesis draws nothing. Writes are best-effort and carry
-provenance with the thesis confidence. The SMC skill now names the new evidence
-tools and states that setup zones are auto-drawn, so the model stops duplicating
-them with `create_drawing`.
+days later. A stand-aside thesis draws nothing. A **pending** thesis is allowed: it keeps its
+levels while price waits to reach the entry, and only its structural sanity is
+checked because its target may sit outside the candles read so far. Old setup
+zones are deleted when a new thesis supersedes them. Writes are best-effort and
+carry provenance with the thesis confidence. The SMC skill now names the new
+evidence tools and states that setup zones are auto-drawn, so the model stops
+duplicating them with `create_drawing`.
+
+Confidence is robust to provider formatting: any nested field whose name
+contains "confidence" is accepted as a number or percentage string, and when no
+value is supplied Rust derives one from the cited check statuses instead of
+rejecting the thesis. The Core Analytics prelude runs `analyze_multiscale` in
+Rust on every run before the model speaks, so the platform's own evidence is
+always present in the trace and handed to the model as a tool result.
 
 ## Not implemented (deliberate)
 
