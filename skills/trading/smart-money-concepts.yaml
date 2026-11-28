@@ -60,12 +60,9 @@ rules:
   - "Entry at the OB extreme (or the FVG midpoint when present), stop beyond the OB's far extreme, target the opposing liquidity pool from detect_liquidity. risk_reward must be >= 2 or the thesis says 'no trade'."
   - "Position the entry in the correct half of the dealing range: longs only below the range midpoint (discount), shorts only above it (premium). Compute nothing yourself -- the midpoint comes from the swing prices the structure tool returned."
   # --- Drawing doctrine (this is a chart-analysis skill: draw what you find) ---
-  - "DRAW the dealing range: one hline at the major swing high and one at the major swing low, labels 'Range High 4H' / 'Range Low 4H'."
   - "DRAW the order block as a rect: anchor1 = the OB candle's open time (ms) at its extreme price (low for a bullish OB), anchor2 = the current candle's time at the OB candle's other extreme, label 'Bullish OB 1H <low>-<high>' or 'Bearish OB 1H <high>-<low>'."
   - "DRAW each FVG inside or near the OB as its own rect spanning the gap, label 'FVG 15m <bottom>-<top>'."
   - "DRAW the structure shift as a trendline from the broken swing's time/price to the break candle's time/price, label 'BOS 1H' or 'CHoCH 1H' with the level it broke."
-  - "DRAW the trade as position_long or position_short: anchor1 at entry price on the signal candle, anchor2 forward in time, label with entry/stop/target and R multiple. This single object is the thesis on the chart."
-  - "DRAW the target pool as an hline at the opposing liquidity price, label 'Target: buyside <price>' (or sellside)."
   - "Delete or update drawings that the market invalidates: a mitigated OB's rect gets updated with reason 'mitigated'; a broken range's hlines are deleted."
   # --- Independent second opinions (supplementary, never overriding SMC) ---
   - "On analysis turns, call analyze_multiscale with the ladder's structure and hidden_state disciplines. Agreement strengthens the thesis; disagreement must be recorded as a failed or UNKNOWN check, never hidden."
@@ -73,6 +70,7 @@ rules:
   - "Use reverse_engineer_market for hypotheses and unify_opportunities for the chart's top-down policy. Neither may bypass the sweep, structure-shift and origin rules above."
   - "kronos_forecast is exploratory research. Never use its predicted prices as entry, stop or target; a thesis leg must come from structure and liquidity tools."
   - "Do not force an immediate entry. When the sweep/structure conditions are valid but price has not reached the origin zone, submit the thesis with pending=true (or status='pending') and say that the setup waits for price to reach the entry. A pending thesis may target a pool outside the candles already read."
+  - "Do not draw hlines for entry, stop or target, and do not draw a position tool: the thesis setup zones cover those levels. Draw only the structure objects above."
   - "When a thesis is accepted, the platform auto-draws three contiguous time-bounded zones from the finalized thesis numbers: a green demand_zone for entry, a pink supply_zone for stop (reversed for shorts), and a green demand_zone for the take-profit area. Their price edges touch, they begin at the current price area where the entry may be reached, and they run forward to the setup's horizon. Do not duplicate them with create_drawing; draw the structure and liquidity objects above instead."
 conditions:
   timeframes: ["1d", "4h", "1h", "15m"]

@@ -2032,6 +2032,32 @@ impl Agent {
                 if thesis.narrative.trim().is_empty() {
                     thesis.narrative = thesis.fallback_narrative();
                 }
+                // Say plainly which of the platform's engines actually
+                // contributed to this thesis, and record it in the trace so
+                // the shell's step log shows the work rather than only the
+                // final prose.
+                let evidence_tools: Vec<String> = {
+                    let mut seen = Vec::new();
+                    for entry in &trace {
+                        if crate::tools::is_core_evidence_tool(&entry.tool)
+                            && !seen.contains(&entry.tool)
+                        {
+                            seen.push(entry.tool.clone());
+                        }
+                    }
+                    seen
+                };
+                if !evidence_tools.is_empty() {
+                    thesis.narrative.push_str(&format!(
+                        "\nEvidence engines used: {}.\n",
+                        evidence_tools.join(", ")
+                    ));
+                    trace.push(ToolTrace {
+                        tool: "evidence_summary".into(),
+                        args: json!({"tools": evidence_tools}),
+                        result: json!({"used": true, "count": evidence_tools.len()}),
+                    });
+                }
 
                 // Draw the accepted setup on the chart from the finalized
                 // numbers. Best-effort, like memory: a failed write must not
@@ -3488,11 +3514,12 @@ async fn auto_draw_thesis_setup(
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |elapsed| elapsed.as_millis() as f64);
-    // The setup starts where price is expected to reach the entry. A small
-    // look-back keeps the current candle visible; the forward edge reaches the
-    // horizon in which the setup may mature.
-    let past = now_ms - 15.0 * 60.0 * 1000.0;
-    let future = now_ms + setup_future_span_ms(&thesis.timeframe);
+    // Fixed width: six bars behind and twenty-four ahead, in the decision
+    // timeframe's own bars. The zones begin at the current price area where
+    // the entry may be reached and never expand into a long forecast ribbon.
+    let (lookback_ms, forward_ms) = setup_window_ms(&thesis.timeframe);
+    let past = now_ms - lookback_ms;
+    let future = now_ms + forward_ms;
 
     let entry_low = thesis.entry.low.min(thesis.entry.high);
     let entry_high = thesis.entry.low.max(thesis.entry.high);
@@ -3559,25 +3586,17 @@ async fn auto_draw_thesis_setup(
     }
 }
 
-/// How far forward a setup zone should stretch for a decision timeframe.
-fn setup_future_span_ms(timeframe: &str) -> f64 {
-    let hours = match timeframe.parse::<analytics_core::Timeframe>() {
-        Ok(analytics_core::Timeframe::M1)
-        | Ok(analytics_core::Timeframe::M3)
-        | Ok(analytics_core::Timeframe::M5) => 4.0,
-        Ok(analytics_core::Timeframe::M15)
-        | Ok(analytics_core::Timeframe::M30)
-        | Ok(analytics_core::Timeframe::H1) => 24.0,
-        Ok(analytics_core::Timeframe::H2)
-        | Ok(analytics_core::Timeframe::H4)
-        | Ok(analytics_core::Timeframe::H6) => 72.0,
-        Ok(analytics_core::Timeframe::H8)
-        | Ok(analytics_core::Timeframe::H12)
-        | Ok(analytics_core::Timeframe::D1) => 168.0,
-        Ok(analytics_core::Timeframe::D3) | Ok(analytics_core::Timeframe::W1) => 504.0,
-        Err(_) => 24.0,
-    };
-    hours * 60.0 * 60.0 * 1000.0
+/// Fixed zone width: six bars of history plus twenty-four bars ahead.
+///
+/// A setup zone is a mark at a price, not a forecast ribbon that grows with the
+/// decision timeframe. Keeping the width in bars gives every setup the same
+/// footprint on the chart and stops daily theses swallowing weeks of history.
+fn setup_window_ms(timeframe: &str) -> (f64, f64) {
+    let bar_ns = timeframe
+        .parse::<analytics_core::Timeframe>()
+        .map_or(analytics_core::Timeframe::M5.nanos(), |frame| frame.nanos());
+    let bar_ms = (bar_ns / 1_000_000) as f64;
+    (6.0 * bar_ms, 24.0 * bar_ms)
 }
 
 /// The auto-draw provenance: every fallback object says, in its reason, both
@@ -4346,7 +4365,9 @@ mod tests {
         // Provenance: the ladder was read before the model spoke.
         assert!(!answer.trace.is_empty());
         assert!(answer.trace.iter().all(|t| {
-            t.tool == "analyze_timeframe" || t.tool == "analyze_multiscale"
+            t.tool == "analyze_timeframe"
+                || t.tool == "analyze_multiscale"
+                || t.tool == "evidence_summary"
         }));
         assert!(!answer.thesis.narrative.is_empty());
     }
@@ -5846,11 +5867,17 @@ invalidation: []
 
         let answer = agent.ask(&request, &source).await.expect("thesis completes");
         assert_eq!(answer.thesis.direction, crate::thesis::Bias::Long);
+        assert!(answer.thesis.narrative.contains("Evidence engines used: analyze_multiscale"));
+        assert!(answer.trace.iter().any(|entry| entry.tool == "evidence_summary"));
         let created = writer.created.lock().expect("lock poisoned").clone();
         assert_eq!(created.len(), 3, "entry + stop + take-profit zones: {created:?}");
         assert_eq!(created.iter().filter(|drawing| drawing.kind == "demand_zone").count(), 2);
         assert_eq!(created.iter().filter(|drawing| drawing.kind == "supply_zone").count(), 1);
         assert!(created.iter().all(|drawing| drawing.points.len() == 2));
+        // Six bars behind plus twenty-four ahead on a 5m decision: fixed width.
+        assert!(created.iter().all(|drawing| {
+            (drawing.points[1].time_ms - drawing.points[0].time_ms - 9_000_000.0).abs() < 1.0
+        }));
         let bands: Vec<(String, f64, f64)> = created
             .iter()
             .map(|drawing| {

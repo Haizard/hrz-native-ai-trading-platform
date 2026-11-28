@@ -69,12 +69,17 @@ carry provenance with the thesis confidence. The SMC skill now names the new
 evidence tools and states that setup zones are auto-drawn, so the model stops
 duplicating them with `create_drawing`.
 
+The zones have a fixed width — six decision-timeframe bars behind and twenty-four ahead — so they do not grow into long forecast ribbons. They are always sent to the chart even when the AI layer is toggled off, so a refresh keeps them visible. The SMC skill no longer draws range/target hlines or a position tool; only the structure objects and the thesis zones remain.
+
 Confidence is robust to provider formatting: any nested field whose name
 contains "confidence" is accepted as a number or percentage string, and when no
 value is supplied Rust derives one from the cited check statuses instead of
 rejecting the thesis. The Core Analytics prelude runs `analyze_multiscale` in
 Rust on every run before the model speaks, so the platform's own evidence is
-always present in the trace and handed to the model as a tool result.
+always present in the trace and handed to the model as a tool result. The
+accepted thesis's narrative names the evidence engines used and an
+`evidence_summary` trace entry records them, so the shell's step log shows the
+work.
 
 ## Not implemented (deliberate)
 

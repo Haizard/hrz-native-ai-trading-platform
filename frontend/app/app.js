@@ -3928,8 +3928,14 @@ function createChartPane(root, hooks = {}) {
       // a filter can live — the engine draws what it is sent, and the shell is
       // what decides what was sent. `placing` is never filtered: it is the
       // shape under the user's own pointer right now.
+      // A thesis setup zone is the answer's own chart object, not an optional
+      // AI annotation: it must survive a refresh with the AI layer off.
       drawings: (placing ? [...drawings, placing] : drawings)
-        .filter((drawing) => aiLayerOn || drawing.created_by !== "ai")
+        .filter((drawing) =>
+          aiLayerOn ||
+          drawing.created_by !== "ai" ||
+          (String(drawing.label || "").startsWith("thesis ") &&
+            (drawing.kind === "demand_zone" || drawing.kind === "supply_zone")))
         .map((drawing) => ({
           ...drawing,
           selected: drawing.id === selectedDrawing,

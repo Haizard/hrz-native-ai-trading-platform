@@ -7,6 +7,7 @@
 //! `analytics-core` already calculates. A tool that did would create a second
 //! source of truth, and then the number on the chart, the number in the
 //! backtest and the number in the thesis could disagree.
+
 //!
 //! ## Why data access is a trait, not a dependency
 //!
@@ -22,6 +23,21 @@
 //! `get_user_drawings`, and the host decides whose drawings those are.
 //! Read-only is the whole contract -- an agent that could move a level would
 //! be able to edit the analysis it is being asked to reason about.
+
+/// Whether a tool name is one of the deterministic Core Analytics evidence
+/// engines. The thesis narrative uses this to report what actually contributed.
+#[must_use]
+pub fn is_core_evidence_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "analyze_multiscale"
+            | "reverse_engineer_market"
+            | "analyze_markov_hierarchy"
+            | "fit_hierarchical_hmm"
+            | "unify_opportunities"
+            | "kronos_forecast"
+    )
+}
 
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
