@@ -32,6 +32,9 @@ reader can distinguish working code from research intent.
   encoder, not a trained model; Transformers/TCN/Mamba/VAE/JEPA remain future.
 - **Universal multi-broker scanner across Forex/equities.** The funnel and
   instrument profiles exist; live data sources are still Binance/Deriv gold.
+- **Full agent-based market simulation as a live signal.** The four-class
+  simulation is a research instrument; it is not fitted to a venue or used to
+  make decisions.
 - **Automatic execution from Core Analytics findings.** Setups remain proposals
   behind strategy rules and the existing risk/live gate.
 - **Promoted multiscale signal.** Validation does not support promotion
