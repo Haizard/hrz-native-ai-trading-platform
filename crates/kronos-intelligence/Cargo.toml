@@ -1,0 +1,12 @@
+[package]
+name = "kronos-intelligence"
+description = "Pure-Rust inference for pretrained Kronos candlestick models."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+analytics-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

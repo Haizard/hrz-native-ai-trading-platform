@@ -101,6 +101,7 @@ dependencies = [
  "hex",
  "hierarchical-intelligence",
  "hmac",
+ "kronos-intelligence",
  "markov-intelligence",
  "reqwest",
  "serde",
@@ -1645,6 +1646,15 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kronos-intelligence"
+version = "0.1.0"
+dependencies = [
+ "analytics-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

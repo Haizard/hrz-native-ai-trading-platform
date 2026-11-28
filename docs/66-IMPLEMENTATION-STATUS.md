@@ -37,11 +37,25 @@ reader can distinguish working code from research intent.
 | Market manipulation / liquidity engineering | `analytics-core/src/liquidity_forensics.rs` | `analyze_liquidity_forensics` |
 | Strategy discovery with validation | `analytics-core/src/strategy_discovery.rs` | `validate_discovered_rules` |
 
+## Pretrained neural inference (no training step)
+
+- `crates/kronos-intelligence` loads the MIT-licensed pretrained Kronos-mini
+  checkpoint (~16 MB) and Kronos-Tokenizer-2k (~16 MB) from `models/kronos` and
+  implements the full forward pass in pure Rust: hierarchical token embedding,
+  temporal embeddings, four Transformer blocks with RoPE, dual s1/s2 heads,
+  dependency-aware cross-attention, the binary spherical tokenizer and
+  deterministic argmax autoregressive generation.
+- Exposed as the agent tool `kronos_forecast(symbol, timeframe, lookback?, horizon?)`.
+  No training, Python runtime, GPU or external service is involved.
+- The forecast is research output only. It is not validated for QUANTERA's
+  instruments and is never a trading signal.
+
 ## Not implemented (deliberate)
 
-- **Trained neural networks / learned weights.** The choice was pure-Rust
-  deterministic encoders only. `representation` is an inspectable bucket
-  encoder, not a trained model; Transformers/TCN/Mamba/VAE/JEPA remain future.
+- **Training neural networks locally.** The choice was to use pretrained
+  weights and deterministic encoders, not to train on this machine. Future
+  work could train a dedicated model, but it is not required to use the neural
+  feature.
 - **Universal multi-broker scanner across Forex/equities.** The funnel and
   instrument profiles exist; live data sources are still Binance/Deriv gold.
 - **Full agent-based market simulation as a live signal.** The four-class

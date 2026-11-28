@@ -44,6 +44,7 @@ use analytics_core::strategy_intelligence::unify_opportunities as unify_core;
 use hierarchical_intelligence::{
     analyze_hierarchy as analyze_markov_hierarchy, HierarchicalMarkovConfig,
 };
+use kronos_intelligence::{ForecastConfig, KronosModel, ModelPaths};
 
 use crate::error::AgentError;
 use crate::llm_client::ToolCall;
@@ -681,6 +682,12 @@ impl ToolRegistry {
                     exposed_tool: None,
                 },
                 ToolSpec {
+                    name: "kronos_forecast".into(),
+                    description: KRONOS_FORECAST.into(),
+                    input_schema: kronos_schema(),
+                    exposed_tool: None,
+                },
+                ToolSpec {
                     name: "get_candles".into(),
                     description: GET_CANDLES.into(),
                     input_schema: symbol_timeframe_schema(Some("limit")),
@@ -1157,6 +1164,7 @@ impl ToolRegistry {
             "reverse_engineer_market" => reverse_engineer_market(ctx, &call.input).await,
             "analyze_markov_hierarchy" => analyze_markov_hierarchy_tool(ctx, &call.input).await,
             "unify_opportunities" => unify_opportunities_tool(ctx, &call.input).await,
+            "kronos_forecast" => kronos_forecast(ctx, &call.input).await,
             "get_candles" => get_candles(ctx, &call.input).await,
             "get_volume_profile" => get_volume_profile(ctx, &call.input).await,
             "get_footprint" => get_footprint(ctx, &call.input).await,
@@ -1321,6 +1329,19 @@ fn multi_timeframe_schema() -> Value {
             "lookback": {"type": "integer", "minimum": 1, "description": "Bars per timeframe"},
         },
         "required": ["symbol", "timeframes"],
+    })
+}
+
+fn kronos_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
+            "timeframe": {"type": "string", "enum": timeframe_enum()},
+            "lookback": {"type": "integer", "minimum": 8, "description": "Historical candles, at most 256 are used"},
+            "horizon": {"type": "integer", "minimum": 1, "description": "Future bars to generate"},
+        },
+        "required": ["symbol", "timeframe"],
     })
 }
 
@@ -1804,6 +1825,8 @@ const ANALYZE_MULTISCALE: &str = "Pure-deterministic top-down Core Analytics rea
 const ANALYZE_MARKOV_HIERARCHY: &str = "Run all seven Markov-family engines on each requested timeframe and couple their regime probabilities top-down. Returns per-frame evidence and a conditioned directional bias, never a trade instruction.";
 
 const UNIFY_OPPORTUNITIES: &str = "Apply a per-chart top-down policy to Core Analytics candidates and a scanner setup. Returns each opportunity with its source and policy decision; it never merges sources silently and never executes.";
+
+const KRONOS_FORECAST: &str = "Run pretrained Kronos-mini inference on completed candles and return a deterministic OHLC forecast cone. No training is performed; the MIT-licensed weights are loaded from models/kronos. This is research output, not a trading signal.";
 
 const REVERSE_ENGINEER_MARKET: &str = "Run the six-engine market reverse-engineering lab: \
     structural discovery, participant aggressor heuristics, hidden state, cross-scale \
@@ -2347,6 +2370,41 @@ async fn unify_opportunities_tool(
     serde_json::to_value(unified).map_err(|e| AgentError::ToolFailed {
         tool: TOOL.into(),
         reason: e.to_string(),
+    })
+}
+
+/// Pretrained Kronos inference: load one candle window and generate a forecast.
+async fn kronos_forecast(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "kronos_forecast";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let lookback = ctx
+        .clamp_lookback(optional_u64(args, "lookback", TOOL)?)
+        .min(512);
+    let horizon = optional_u64(args, "horizon", TOOL)?
+        .map_or(12, |value| value.clamp(1, 60) as usize);
+    let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
+    let model = KronosModel::load(&ModelPaths::default()).map_err(|reason| {
+        AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason,
+        }
+    })?;
+    let config = ForecastConfig {
+        lookback: lookback.min(candles.len()),
+        horizon,
+        context: 512,
+        ..ForecastConfig::default()
+    };
+    let forecast = model
+        .forecast(&symbol, &candles, &config)
+        .map_err(|reason| AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason,
+        })?;
+    serde_json::to_value(forecast).map_err(|error| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: error.to_string(),
     })
 }
 
@@ -5362,6 +5420,7 @@ mod tests {
             "reverse_engineer_market",
             "analyze_markov_hierarchy",
             "unify_opportunities",
+            "kronos_forecast",
             "analyze_markov",
             "backtest_strategy",
             "backtest_similar_setups",
@@ -6077,6 +6136,24 @@ mod tests {
             .unwrap()
             .iter()
             .any(|l| l.as_str().unwrap().contains("probabilit")));
+    }
+
+    #[tokio::test]
+    async fn the_kronos_tool_forecasts_from_pretrained_weights() {
+        let fixture = LadderFixture { count: 64 };
+        let ctx = ToolContext::new(&fixture);
+        let out = ToolRegistry::market_analysis()
+            .execute(
+                &call(
+                    "kronos_forecast",
+                    json!({"symbol": "BTCUSDT", "timeframe": "5m", "lookback": 32, "horizon": 2}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["bars"].as_array().unwrap().len(), 2);
+        assert!(out["limitation"].as_str().unwrap().contains("pretrained"));
     }
 
     #[tokio::test]

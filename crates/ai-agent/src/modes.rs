@@ -56,6 +56,7 @@ impl AgentMode {
                 "reverse_engineer_market",
                 "analyze_markov_hierarchy",
                 "unify_opportunities",
+                "kronos_forecast",
                 "analyze_markov",
                 "fuse_intelligence",
                 "get_candles",
@@ -82,6 +83,7 @@ impl AgentMode {
                 "reverse_engineer_market",
                 "analyze_markov_hierarchy",
                 "unify_opportunities",
+                "kronos_forecast",
                 "fuse_intelligence",
             ]),
             Self::Smc => Some(&[
@@ -96,6 +98,7 @@ impl AgentMode {
                 "reverse_engineer_market",
                 "analyze_markov_hierarchy",
                 "unify_opportunities",
+                "kronos_forecast",
                 "fuse_intelligence",
             ]),
             Self::Strategy => Some(&[
@@ -114,6 +117,7 @@ impl AgentMode {
                 "reverse_engineer_market",
                 "analyze_markov_hierarchy",
                 "unify_opportunities",
+                "kronos_forecast",
                 "fuse_intelligence",
                 "get_candles",
             ]),
