@@ -726,7 +726,8 @@ pub fn submit_thesis_spec() -> ToolSpec {
     ToolSpec {
         name: SUBMIT_THESIS.into(),
         description: "Deliver your final answer as a structured trade thesis. Call this \
-            exactly once, after you have the tool results you need. Copy numbers \
+            exactly once, after you have the tool results you need. All fields are \
+            required, including confidence_pct: a number from 0 to 100. Copy numbers \
             verbatim from tool output -- never round, reformat or estimate them."
             .into(),
         input_schema: check_schema(),
@@ -842,13 +843,30 @@ pub fn parse_thesis(args: &Value) -> Result<TradeThesis, AgentError> {
         .to_string();
     let direction = Bias::parse(args.get("direction").and_then(Value::as_str).unwrap_or(""));
 
-    let number = |key: &str| -> Result<f64, AgentError> {
-        args.get(key)
-            .and_then(Value::as_f64)
-            .ok_or_else(|| AgentError::InvalidToolArgs {
-                tool: TOOL.into(),
-                reason: format!("`{key}` is required and must be a number"),
-            })
+    // Providers sometimes rename this field or send it as a numeric string.
+    // Accept the common spellings rather than discarding an otherwise complete
+    // thesis over a field name. A missing value is still refused: confidence is
+    // the user-facing claim about the thesis and must come from the model.
+    let number = |keys: &[&str]| -> Result<f64, AgentError> {
+        for key in keys {
+            if let Some(value) = args.get(*key) {
+                if let Some(number) = value.as_f64() {
+                    return Ok(number);
+                }
+                if let Some(text) = value.as_str() {
+                    if let Ok(number) = text.trim().parse::<f64>() {
+                        return Ok(number);
+                    }
+                }
+            }
+        }
+        Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: format!(
+                "`{}` is required and must be a number (0-100)",
+                keys.first().copied().unwrap_or("confidence_pct")
+            ),
+        })
     };
 
     let zone = |key: &str| -> Result<PriceZone, AgentError> {
@@ -864,7 +882,7 @@ pub fn parse_thesis(args: &Value) -> Result<TradeThesis, AgentError> {
         symbol,
         timeframe,
         direction,
-        confidence_pct: number("confidence_pct")?,
+        confidence_pct: number(&["confidence_pct", "confidence", "confidence_percent"])?,
         higher_timeframe_checks: parse_checks(args.get("higher_timeframe_checks")),
         order_flow_checks: parse_checks(args.get("order_flow_checks")),
         entry: zone("entry")?,
@@ -1274,6 +1292,21 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn confidence_accepts_common_provider_spellings() {
+        let base = json!({
+            "symbol": "BTCUSDT", "timeframe": "5m", "direction": "long",
+            "entry": 1.0, "stop": 0.9, "target": 1.3, "invalidation": "x",
+            "higher_timeframe_checks": [], "order_flow_checks": [],
+        });
+        for alias in ["confidence_pct", "confidence", "confidence_percent"] {
+            let mut args = base.clone();
+            args[alias] = json!("62.5");
+            assert!((parse_thesis(&args).unwrap().confidence_pct - 62.5).abs() < 1e-9, "{alias}");
+        }
+        assert!(parse_thesis(&base).is_err());
+    }
+
     fn an_absent_passed_flag_is_unknown_not_failed() {
         let args = json!({
             "symbol": "BTCUSDT", "timeframe": "5m", "direction": "long",

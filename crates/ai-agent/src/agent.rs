@@ -1822,7 +1822,7 @@ impl Agent {
                                 content: json!({
                                     "accepted": false,
                                     "error": err.to_string(),
-                                    "instruction": "Fix the fields and call submit_thesis again.",
+                                    "instruction": "Call submit_thesis again with ALL required fields: symbol, timeframe, direction, confidence_pct as a number from 0 to 100, entry, stop, target, invalidation, higher_timeframe_checks, order_flow_checks.",
                                 }),
                                 is_error: true,
                             }]));
