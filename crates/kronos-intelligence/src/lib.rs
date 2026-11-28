@@ -590,7 +590,10 @@ impl KronosModel {
                     high: value[1],
                     low: value[2],
                     close: value[3],
-                    volume: value[4],
+                    // A denormalized volume can go slightly negative at the
+                    // tail; a traded quantity cannot. Clamp rather than
+                    // presenting a negative volume as a forecast.
+                    volume: value[4].max(0.0),
                 }
             })
             .collect();
@@ -688,7 +691,9 @@ mod tests {
         let second = model.forecast("BTCUSDT", &candles(), &config).unwrap();
         assert_eq!(first, second);
         assert_eq!(first.bars.len(), 2);
-        assert!(first.bars.iter().all(|bar| bar.open.is_finite() && bar.close.is_finite()));
+        assert!(first.bars.iter().all(|bar| {
+            bar.open.is_finite() && bar.close.is_finite() && bar.volume >= 0.0
+        }));
     }
 
     #[test]
